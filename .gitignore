@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# 凭证绝不入库
+.env
+server/.env
+server/.venv/
+__pycache__/
+*.pyc
+tsconfig.tsbuildinfo

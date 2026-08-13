@@ -1,0 +1,223 @@
+"""节点服务的集成测试：把 SSO 和 datalego 都换成假的，跑通整条链路。
+
+不需要真凭证，也不会打真实平台。
+
+    cd server && .venv/bin/python test_service.py
+"""
+import json
+import sys
+import types
+
+# 必须在导入服务之前塞好假凭证 —— robot 模块只在换票时才读，但 manifest
+# 和端点常量是导入时求值的
+import os
+os.environ.update(
+    OAUTH_CLIENT_ID="x", OAUTH_CLIENT_SECRET="x",
+    OAUTH_USERNAME="x", OAUTH_PASSWORD="x",
+)
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from sql_service import datalego, main, robot, wecom  # noqa: E402
+
+PASS, FAIL = [], []
+
+
+def ok(name, got, want):
+    (PASS if got == want else FAIL).append((name, got, want))
+
+
+def truthy(name, got):
+    (PASS if got else FAIL).append((name, got, "truthy"))
+
+
+# ---------------------------------------------------------------- 假上游
+JOBS = {}          # job_id -> 还要被轮询几次才完成
+SUBMITTED = []     # 记下提交过的 SQL，用来断言渲染结果
+CANCELLED = []
+
+
+class FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+        self.headers = {}
+        self.text = json.dumps(payload)
+
+    @property
+    def ok(self):
+        return self.status_code < 400
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if not self.ok:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def fake_post(url, **kw):
+    if "oauth" in url:
+        return FakeResp({"access_token": "tok_" + "x" * 20, "expires_in": 7200})
+    if "job/trigger" in url:
+        body = kw.get("json") or {}
+        SUBMITTED.append(body)
+        job_id = f"job_{len(SUBMITTED):08d}"
+        JOBS[job_id] = 1  # 第一次轮询未完成，第二次完成
+        return FakeResp({"id": job_id})
+    raise AssertionError(f"没预料到的 POST {url}")
+
+
+def fake_get(url, **kw):
+    job_id = url.rstrip("/").split("/")[-2]
+    remaining = JOBS.get(job_id)
+    if remaining is None:
+        return FakeResp({}, status=404)
+    if remaining > 0:
+        JOBS[job_id] -= 1
+        # 进度先冲到 100 但 schema 还是 None —— 复现平台的非单调进度，
+        # 判完成只能看 schema
+        return FakeResp({"status": "running", "progress": 100.0, "schema": None})
+    return FakeResp({
+        "status": "success", "progress": 100.0,
+        "schema": [{"name": "vid", "type": "bigint"}, {"name": "name", "type": "string"}],
+        "data": [[88031, "acme"], [88032, "globex"]],
+        "sql": "SELECT ...", "createdAt": "2026-08-12T10:00:00Z",
+    })
+
+
+def fake_put(url, **kw):
+    CANCELLED.append(url.rstrip("/").split("/")[-2])
+    return FakeResp({})
+
+
+fake_requests = types.SimpleNamespace(
+    post=fake_post, get=fake_get, put=fake_put,
+    RequestException=Exception, Response=FakeResp,
+)
+datalego.requests = fake_requests
+robot.requests = fake_requests
+
+# 企微也必须换成假的。去掉 dry_run 之后，执行端点是真的会往外发 HTTP 的 ——
+# 这个文件以前只假了 datalego，靠 dry_run 短路才没打出去。
+WECOM_POSTED = []
+
+
+def fake_wecom_post(url, **kw):
+    WECOM_POSTED.append((url, kw.get("json")))
+    return FakeResp({"errcode": 0, "errmsg": "ok"})
+
+
+wecom.requests = types.SimpleNamespace(post=fake_wecom_post, RequestException=Exception)
+
+client = TestClient(main.app)
+
+# ---------------------------------------------------------------- 注册表
+r = client.get("/health").json()
+ok("health.ok", r["ok"], True)
+ok("health 没有缺凭证", r["missingCredentials"], [])
+
+nodes = client.get("/registry/nodes").json()["nodes"]
+by_type = {n["type"]: n for n in nodes}
+ok("注册表上报两个节点", sorted(by_type), ["notify.wecom", "sql.query"])
+ok("SQL 是异步节点", by_type["sql.query"]["runtime"]["kind"], "http-async")
+ok("企微是同步节点", by_type["notify.wecom"]["runtime"]["kind"], "http")
+truthy("输出结构标了动态探测", by_type["sql.query"]["output"].get("x-dynamic") == "probe")
+truthy("SQL 字段声明了自有占位符语法",
+       by_type["sql.query"]["input"]["properties"]["sql"].get("x-placeholders") == {"valuesFrom": "params"})
+# 企微：@成员字段在 markdown_v2 下要隐藏（企微不支持）
+ok("markdown_v2 隐藏 @成员字段",
+   by_type["notify.wecom"]["input"]["properties"]["mentioned"].get("x-hide"),
+   {"msgtype": ["markdown_v2"]})
+ok("不再有 dryRun 参数（调用即发送）",
+   "dryRun" in by_type["notify.wecom"]["input"]["properties"], False)
+
+# 企微节点的执行端点。requests 是假的，不会真打到企微
+r = client.post("/nodes/notify.wecom/execute", json={"params": {
+    "webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234efgh5678ijkl",
+    "msgtype": "markdown_v2", "content": "# hi",
+}})
+ok("企微执行成功", r.status_code, 200)
+ok("确实发出去了", r.json()["output"]["sent"], True)
+ok("输出里 key 已打码", r.json()["output"]["target"], "…key=abcd***kl")
+ok("真的打了一次请求", len(WECOM_POSTED), 1)
+
+_before = len(WECOM_POSTED)
+ok("非法 webhook → 400",
+   client.post("/nodes/notify.wecom/execute", json={"params": {
+       "webhook": "https://evil.com/send?key=x", "msgtype": "text", "content": "hi"}}).status_code, 400)
+ok("非法 webhook 一个请求都不发", len(WECOM_POSTED), _before)
+
+opts = client.get("/options/sql.engines").json()["options"]
+ok("引擎选项", [o["value"] for o in opts], ["hive", "doris", "clickhouse"])
+ok("未知选项集 404", client.get("/options/nope").status_code, 404)
+
+# ---------------------------------------------------------------- 提交
+resp = client.post("/nodes/sql.query/submit", json={"params": {
+    "engine": "hive",
+    "sql": "SELECT vid, name FROM ods.vendor WHERE vid = :vid",
+    "params": {"vid": 88031},
+    "limit": 500,
+}})
+ok("submit 成功", resp.status_code, 200)
+handle = resp.json()["handle"]
+truthy("拿到 handle", handle)
+ok("占位符已渲染且套了 LIMIT",
+   SUBMITTED[-1]["sql"],
+   "SELECT * FROM (\nSELECT vid, name FROM ods.vendor WHERE vid = 88031\n) AS __wf_limited LIMIT 500")
+ok("引擎透传", SUBMITTED[-1]["engine"], "hive")
+
+# ---------------------------------------------------------------- 轮询
+first = client.get(f"/nodes/sql.query/poll?handle={handle}&limit=500").json()
+ok("进度到 100 但没 schema 时仍是未完成", first["done"], False)
+
+second = client.get(f"/nodes/sql.query/poll?handle={handle}&limit=500").json()
+ok("第二次完成", second["done"], True)
+ok("行数", second["output"]["rowCount"], 2)
+ok("行转成了对象", second["output"]["rows"][0], {"vid": 88031, "name": "acme"})
+ok("列信息带类型", second["output"]["columns"][0], {"name": "vid", "type": "bigint"})
+ok("没到上限不算截断", second["output"]["truncated"], False)
+
+# ---------------------------------------------------------------- 截断标记
+ok("行数顶到上限即标截断",
+   client.get(f"/nodes/sql.query/poll?handle={handle}&limit=2").json()["output"]["truncated"], True)
+
+# ---------------------------------------------------------------- 探测
+resp = client.post("/nodes/sql.query/probe", json={"params": {
+    "engine": "hive", "sql": "SELECT * FROM t", "params": {}, "limit": 9999,
+}})
+ok("probe 成功", resp.status_code, 200)
+ok("probe 强制 LIMIT 1（不受节点 limit 影响）",
+   SUBMITTED[-1]["sql"], "SELECT * FROM (\nSELECT * FROM t\n) AS __wf_limited LIMIT 1")
+
+# ---------------------------------------------------------------- 参数错误
+bad = client.post("/nodes/sql.query/submit", json={"params": {
+    "sql": "SELECT :a, :b", "params": {"a": 1},
+}})
+ok("缺参数 → 400", bad.status_code, 400)
+truthy("错误里点名了缺哪个", ":b" in bad.json()["detail"])
+
+bad = client.post("/nodes/sql.query/submit", json={"params": {
+    "sql": "DROP TABLE t", "params": {},
+}})
+ok("写操作 → 400", bad.status_code, 400)
+truthy("说清只读限制", "只读" in bad.json()["detail"])
+
+bad = client.post("/nodes/sql.query/submit", json={"params": {
+    "sql": "SELECT 1", "params": {}, "engine": "mysql",
+}})
+ok("未知引擎 → 400", bad.status_code, 400)
+
+# ---------------------------------------------------------------- 失效 / 取消
+gone = client.get("/nodes/sql.query/poll?handle=job_99999999")
+ok("结果被清理 → 410", gone.status_code, 410)
+
+ok("非法 handle 不拼进 URL", client.get("/nodes/sql.query/poll?handle=../../etc").status_code, 400)
+
+ok("取消", client.post("/nodes/sql.query/cancel", json={"handle": handle}).json()["cancelled"], True)
+truthy("取消请求确实发给了平台", handle in CANCELLED)
+
+for name, got, want in FAIL:
+    print(f"✗ {name}\n    实际: {got!r}\n    期望: {want!r}")
+print(f"\n{len(PASS)} 通过, {len(FAIL)} 失败")
+sys.exit(1 if FAIL else 0)

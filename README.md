@@ -1,0 +1,230 @@
+# Workflow Studio（空壳前端）
+
+内部工作流编排平台的前端外壳。SQL / Kibana / Grafana 等现有服务以「节点」形式注册进来，
+用户在画布上拖拉拽自由组合。当前无后端，所有数据在前端内存里。
+
+```bash
+npm install
+npm run dev     # http://localhost:5273
+```
+
+SQL 节点已经接了真实的数据平台。要跑真查询还需要起节点服务：
+
+```bash
+cd server && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env    # 填四项 OAUTH_* 机器人凭证
+.venv/bin/python -m uvicorn sql_service.main:app --port 8791
+```
+
+已经有别处的 `.env`（比如 abtest 项目）就直接 source，不用把凭证复制成第二份：
+
+```bash
+cd server && set -a && . ~/Desktop/abtest/.env && set +a && .venv/bin/python -m uvicorn sql_service.main:app --port 8791
+```
+
+端口用 8791 —— 8787 被内网的 agora-gateway 占着。
+
+**服务不起也能用** —— 探不到就整站退回 mock，编辑器照常摆流程。工具栏右上角
+会显示当前状态：`已连接` / `缺凭证` / `mock`。
+
+## SQL 节点（真实执行）
+
+服务在 `server/`，参考内网 `runsql.py` 的做法实现。四条要点：
+
+**1. 凭证只有一个来源：机器人账号。** 四项 `OAUTH_*` 从 `server/.env` 读，
+绝不接受调用方传入 —— 那样会进流程定义、进日志、进 git。票缓存在进程内提前
+2 分钟续，一条流程里几十个 SQL 节点不会换几十次票。
+
+**2. 异步节点协议。** manifest 声明 `runtime.kind: "http-async"`：submit 秒回
+handle，引擎按 `pollIntervalMs` 轮询。Hive 慢查询跑几分钟，同步等必然撞网关
+的 `proxy_read_timeout`，而且每个慢查询占死一个 worker。中止运行会调 cancel
+把平台上的任务撤掉 —— 不撤的话它会继续跑完，白烧集群资源。
+
+**3. 判完成看 schema，不看进度。** 平台的 progress 不单调，多阶段任务会走到
+100 再掉回去重爬。拿进度判完成会提前取到空结果。
+
+**4. 占位符由 SQL 推导，参数行自动列出来。**
+
+「占位符参数」不是自由填的键值对 —— 它的行**从 SQL 里扫出来**：写了
+`{{date}}` 或 `:vid`，表单里立刻出现对应的行。这样不用手抄一遍名字、
+改 SQL 时行自动跟着变，也不可能填出 SQL 里没有的多余参数（后端会为此报错）。
+
+每行右侧标出值从哪来：
+
+| 标签 | 含义 |
+|---|---|
+| `↑ 整数` | 留空，自动取同名流程入参（并显示类型） |
+| `已覆盖` | 填了值，以填的为准 |
+| `缺值` | 既没同名入参也没填 —— 保存期就报错 |
+
+清空输入框会把这个键**删掉**而不是存成空字符串，否则会被渲染成 SQL 里的 `''`。
+删掉某个占位符后，之前填的值也会从定义里剔除 —— 参数集合永远以 SQL 为准。
+
+**5. 两种写法都认，且自动代入流程入参。**
+
+SQL 里写 `{{date}}`（数据平台自带 UI 的写法）或 `:date` 都行，可以混用。
+**只要有同名的流程入参，值就自动代入** —— 现成的 SQL 直接贴进来就能跑，
+不用再填一遍键值对。要覆盖或算值时才用「占位符参数」，显式填的优先。
+
+这里有个语法冲突必须讲清楚：`{{ }}` 同时是工作流的变量引用语法。判别规则是
+**`$.` 前缀**：
+
+| 写法 | 含义 | 谁解析 |
+|---|---|---|
+| `{{ $.trigger.date }}` | 工作流变量 | 前端引擎 |
+| `{{date}}` | SQL 占位符 | 后端渲染 |
+
+前端遇到裸 `{{name}}` 会原样透传，不解析。哪些字段有自己的占位符语法由
+manifest 里的 `x-placeholders` 声明，不是硬编码 —— 别的服务想要同样的行为，
+在自己的 manifest 里声明一句就行。
+
+没声明这个的普通字段里写裸 `{{date}}` 仍然会报错，因为那基本都是笔误：
+早先的实现会把它原样还回去，SQL 变成 `where date = date`，恒真且全表扫，
+静默出错。现在保存期就拦。
+
+**6. 平台不支持绑定参数，所以参数渲染层就是唯一的注入防线。**
+`sqlparams.py` 做三件事，每件都有测试：
+- 占位符扫描跳过字符串/注释/`::` 转型 —— 否则 `SELECT 'a:b'` 里的 `:b` 会被替换
+- 字符串**先转义反斜杠再转义引号**（三个引擎都把反斜杠当转义符，只转义单引号会被 `\'` 绕过）
+- 占位符与参数必须一一对应，多了少了都报错 —— 静默留下 `:vid` 会被平台报成
+  语法错，完全看不出是名字拼错了
+
+另外只放行只读语句（SELECT/WITH/SHOW/DESC/EXPLAIN），并在外面套一层 LIMIT。
+自助平台不该让人从流程节点里改数据。
+
+```bash
+cd server
+python3 test_sqlparams.py          # 33 用例：注入、扫描器、只读、LIMIT
+.venv/bin/python test_service.py   # 29 用例：假上游跑通 submit/poll/probe/cancel
+```
+
+## 已经能用的
+
+- 左侧节点面板按分类分组，**拖拽或点击**都能加到画布
+- 画布连线、移动、框选、删除（`Delete` / `Backspace`）
+- 多出口节点：`条件分支` 真/假两口，`循环遍历` 每一项/完成两口
+- 右侧 Inspector 按节点的 **input JSON Schema 自动渲染表单**
+  （select / 代码框 / 键值对 / 数字 / 开关，由 `x-ui.widget` 决定）
+- **变量选择器**：`{ }` 按钮列出当前节点可引用的全部变量，按来源分组，点击插入光标处
+- **静态校验**：必填项、引用了不存在或非上游的变量，实时反映在
+  字段下方 chip → Inspector 错误区 → 工具栏计数 → 节点角标
+- **试运行探测**：SQL 这类输出结构运行时才确定的节点，探测一次把真实列缓存到节点实例，下游即可提示
+- 流程定义 JSON 的导出 / 导入，逻辑与布局分离
+
+## 从 n8n 抄来的（按其源码实测语义实现）
+
+- **条件显示 `x-show` / `x-hide`**（= n8n `displayOptions`）：
+  show 的多个 key 之间 AND、候选值数组内 OR；hide 跨 key OR、优先于 show；
+  被引用参数未填时用 default 参与比较；隐藏字段不做必填校验；
+  隐藏参数编辑器里保留、**导出时剥离**（n8n 是编辑器里就 strip）。
+  示例：`http.request` 的请求体只在 POST/PUT/PATCH 时出现
+- **固定输出 pinData**：NDV 输出栏可把节点输出固定 / 手写 JSON；
+  调试运行直接用固定数据不真正执行（生产触发忽略，注释里已标）；
+  pinned 节点跳过参数校验；只有**恰好一个出口**的节点能 pin
+  （If/foreach/终点节点不行）；对 pinned 节点试运行先弹「取消固定并执行」确认；
+  pinData 随流程定义导出（n8n 同款）
+- **mock 执行引擎 + 运行态**：拓扑执行、if 分支跳过（只灭「仅从死分支可达」的节点）、
+  foreach 循环体每项跑一遍（一个节点多条 StepRun，对齐 n8n `ITaskData[]`）、
+  onError fail/continue 两种策略
+- **NDV 节点详情**（双击节点打开）：输入（解析后入参 + 上游输出）| 参数 | 输出 三栏，
+  输出栏 表格/JSON 切换、循环多次执行的运行选择器、单节点试运行
+  （上游数据用最近一次运行 + pinned 覆盖，改参数不用重跑整条流程）
+- **画布运行反馈**：节点 ✓/✗/⊘/📌/spinner 角标；连线条数标签
+  （pinned 源显示 `n 项 📌`，多次执行显示 `共 n 项`）
+- **dirty 标记**：参数改过但没重跑 → 黄色 ⚠ 替代绿色 ✓ + NDV 里过期提示
+  （= n8n `PARAMETERS_UPDATED`），重跑或单节点试运行后清除
+- **表达式预览**：跑过一次后，字段下的引用 chip 显示 `→ 实际值`
+- **底部运行面板**：触发表单（流程入参渲染）、运行历史、分步时间线（点击跳 NDV）
+
+## 代码结构
+
+| 文件 | 作用 |
+|---|---|
+| `src/types.ts` | 节点 manifest、流程 DSL、运行态（FlowRun/StepRun）的类型契约 |
+| `src/registry.ts` | 节点注册表（**写死的假数据**，正式版从 `GET /registry/nodes` 拉） |
+| `src/store.ts` | zustand 状态 + 序列化 + 运行/pin/dirty 状态 |
+| `src/lib/vars.ts` | 上游节点遍历、可用变量计算、静态校验 |
+| `src/lib/display.ts` | `x-show`/`x-hide` 条件显示求值（n8n displayParameter 语义） |
+| `src/lib/engine.ts` | **mock 执行引擎**：拓扑执行、分支/循环、表达式解析、单节点试运行。后端接上后整个文件换成订阅 run 的 SSE/WS 流，UI 不用改 |
+| `src/components/SchemaForm.tsx` | JSON Schema → 表单渲染器（含条件显示、表达式预览） |
+| `src/components/VarPicker.tsx` | 变量选择器 |
+| `src/components/NodeDetailView.tsx` | NDV：输入/参数/输出三栏 + pin + 试运行 |
+| `src/components/RunPanel.tsx` | 底部运行面板：触发表单、历史、分步时间线 |
+
+## 接后端时要改的地方
+
+SQL 节点已经走完这条路了（`src/lib/client.ts` + `server/`），其余节点还是 mock。
+照着 SQL 节点接下一个时：
+
+1. ~~`src/registry.ts` → `GET /registry/nodes`~~ **已完成**：后端上报的 manifest
+   会覆盖同名本地 mock，`MOCK_OPTIONS` 退化成后端拉不到时的兜底
+2. ~~`store.probeNode()` → `POST /nodes/{type}/probe`~~ **已完成**：后端在线时
+   真跑一行拿 schema，下游变量提示里就是真实列名
+3. `toDefinition()` 的结果 → `PUT /flows/{id}`；运行 → `POST /flows/{id}/runs`
+4. `src/lib/engine.ts` 的编排部分 → 换成订阅后端 run 的事件流（SSE/WS），
+   `FlowRun`/`StepRun` 的形状就是后端要吐的事件格式。
+   节点执行部分（`runLiveNode`）已经是真的，可以直接搬到后端引擎
+5. 引擎侧记得实现：pinned 只在手动运行生效、pinned 跳过参数校验、
+   生产触发忽略 pinData —— 这些语义前端已按 n8n 对齐，
+   `ExecuteOptions.mode` 就是留给这条的接口
+6. 静态校验目前在前端做了一遍，**后端保存时必须再做一遍**（前端校验只是体验，不是防线）
+
+## 还没做
+
+定时/webhook 触发配置、子流程、版本发布与回滚、权限、
+NDV 的 Schema 视图（n8n 有 Table/JSON/Schema 三种）、拖字段生成表达式。
+
+## 企微通知节点（真实发送）
+
+填群机器人的 webhook 地址，直接推。三种消息类型的能力**不一样**，按
+[官方文档](https://developer.work.weixin.qq.com/document/path/99110) 实测：
+
+| msgtype | 上限 | 表格/列表 | @成员 | 字体颜色 |
+|---|---|---|---|---|
+| `text` | 2048 字节 | ✗ | ✓ | ✗ |
+| `markdown` | 4096 字节 | **✗** | ✓ | ✓ |
+| `markdown_v2` | 4096 字节 | **✓** | ✗ | ✗ |
+
+**要发查询结果表格就得用 `markdown_v2`，但那样 @不到人** —— 这是企微的限制，
+不是这里的取舍。要两者都要，就发两条。
+
+限制在服务端先挡掉，不等企微拒绝：字节数（按 **UTF-8 字节**不是字符数算，
+中文一个字 3 字节）、20 条/分钟的限流、msgtype 与 @成员的兼容性。
+
+**`dryRun` 默认开着** —— 调消息格式时先看渲染结果，别把群刷屏。确认好了再关掉。
+
+webhook 等同凭证：拿到的人就能往群里发，而它随流程定义一起导出入库，
+所以**流程 JSON 要当凭证管**。节点输出里的 key 会打码（`…key=abcd***kl`），
+运行记录截图外传时不至于连 key 一起泄露。
+
+## 模板格式化过滤器
+
+查询结果直接塞进消息只会得到一坨 JSON。引用后面可以接过滤器：
+
+```
+{{ $.nodes.n2.output.rows | table(name, avg_dc) }}   markdown 表格（仅 markdown_v2 能渲染）
+{{ $.nodes.n2.output.rows | list(uid, avg_dc) }}     一行一条：- uid=1，avg_dc=2
+{{ $.nodes.n2.output.rows | lines(installid) }}      只出一列，一行一个值
+{{ $.nodes.n2.output.rows | count }}                 条数
+{{ $.nodes.n2.output.rows | json }}                  原样 JSON
+```
+
+不写列名就取全部列。空结果输出「（无数据）」而不是空白。
+
+## 前端驱动轮询的局限
+
+现在编排跑在浏览器里，轮询用的是 `setTimeout`。**标签页切到后台会被浏览器
+节流**（Chrome 隐藏标签页降到每秒一次，久了降到每分钟一次），表现为：慢查询
+仍会在平台上正常跑完，但 UI 上的进度和结果会滞后；关掉标签页则整条流程中断，
+已提交的平台任务无人接管（不过引擎在中止路径上会调 cancel）。
+
+这不是 bug，是"编排在前端"这个阶段的固有属性，也是把编排搬到后端的主要理由。
+搬过去之后前端只订阅事件流，切后台/关页面都不影响流程本身。
+
+## mock 引擎的已知边界
+
+- **嵌套循环不支持**：循环体里再放一个 `flow.foreach` 会显式报错
+  （而不是静默产出错误数据）；后端真实引擎实现后放开
+- 循环体里的 `flow.if` 支持按迭代求值；`flow.merge` 在循环体里按普通节点处理
+- 表达式只支持单个引用 / 字面量 / 二元比较，函数调用、算术运算不支持
+  （正式版换 CEL / expr-lang，这里只是 mock）

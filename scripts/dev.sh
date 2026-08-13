@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# 一条命令拉起整套：SQL 节点服务 + 前端 dev server。
+#
+# 凭证由 server/.env 自动加载，使用者不需要知道里面是什么。
+# 退出时会把后端一起收掉 —— 否则改天再跑会撞端口，而且带着凭证的进程
+# 不该在后台无声无息地活着。
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# 刻意不叫 PORT —— 各种启动器（IDE、预览面板）会把 PORT 设成前端端口，
+# 复用这个名字会让后端去抢前端的端口，且现象很隐蔽。
+# 8787 也别用，被内网 agora-gateway 占着。
+API_PORT="${API_PORT:-8791}"
+WEB_PORT="${WEB_PORT:-5273}"
+VENV="server/.venv"
+
+# ---------- 后端 ----------
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "→ 首次运行，建 venv 并装依赖…"
+  python3 -m venv "$VENV"
+  "$VENV/bin/pip" install -q -r server/requirements.txt
+fi
+
+if [ ! -f server/.env ]; then
+  echo "⚠ 没有 server/.env —— SQL 节点会因缺凭证报错，其余节点仍走 mock。"
+  echo "  照 server/.env.example 建一份即可。"
+fi
+
+# 端口占着就先收掉旧的，避免"改了代码没生效"这类找半天的问题
+if lsof -tiTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "→ 端口 $API_PORT 上有旧进程，先停掉"
+  lsof -tiTCP:"$API_PORT" -sTCP:LISTEN | xargs kill 2>/dev/null || true
+  sleep 1
+fi
+
+echo "→ 启动 SQL 节点服务 :$API_PORT"
+(cd server && exec ../"$VENV"/bin/python -m uvicorn sql_service.main:app \
+  --port "$API_PORT" --host 127.0.0.1 --log-level warning) &
+API_PID=$!
+
+cleanup() {
+  echo
+  echo "→ 收掉 SQL 节点服务"
+  kill "$API_PID" 2>/dev/null || true
+  wait "$API_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# 等它起来，顺便把凭证状态说清楚
+for _ in $(seq 1 15); do
+  sleep 0.5
+  if HEALTH=$(curl -s -m 2 "http://127.0.0.1:$API_PORT/health" 2>/dev/null); then
+    case "$HEALTH" in
+      *'"ok":true'*)  echo "  ✓ 已连接数据平台，SQL 节点走真实执行" ;;
+      *)              echo "  ⚠ 服务在，但缺凭证 —— SQL 节点会报错，其余节点走 mock" ;;
+    esac
+    break
+  fi
+done
+
+# ---------- 前端 ----------
+[ -d node_modules ] || { echo "→ 装前端依赖…"; npm install; }
+
+echo "→ 启动前端 http://localhost:$WEB_PORT"
+echo
+# 显式传端口并清掉继承来的 PORT —— vite 也会读它，不清的话两边抢同一个口
+unset PORT
+exec npx vite --port "$WEB_PORT" --strictPort
