@@ -191,4 +191,65 @@ NOTIFY_WECOM: Dict[str, Any] = {
     },
 }
 
-ALL = [SQL_QUERY, NOTIFY_WECOM]
+HTTP_REQUEST: Dict[str, Any] = {
+    "type": "http.request",
+    "typeVersion": "1.0.0",
+    "name": "HTTP 调用",
+    "category": "处理",
+    "icon": "↗",
+    "description": "由节点服务发起真实 HTTP 请求",
+    "input": {
+        "type": "object",
+        "required": ["method", "url"],
+        "properties": {
+            "method": {
+                "type": "string",
+                "title": "方法",
+                "default": "GET",
+                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                "x-ui": {"widget": "select"},
+            },
+            "url": {
+                "type": "string",
+                "title": "URL",
+                "x-ui": {"placeholder": "https://svc.internal/api/..."},
+            },
+            "headers": {
+                "type": "object",
+                "title": "请求头",
+                "additionalProperties": True,
+                "x-ui": {"widget": "kv"},
+            },
+            "body": {
+                "type": "string",
+                "title": "请求体",
+                "x-ui": {"widget": "code", "language": "json", "rows": 6},
+                "x-show": {"method": ["POST", "PUT", "PATCH"]},
+            },
+            "timeoutMs": {
+                "type": "integer",
+                "title": "超时(ms)",
+                "default": 30000,
+                "minimum": 1,
+                "maximum": 120000,
+            },
+        },
+    },
+    "output": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "integer", "title": "状态码"},
+            # JSON 响应是对象/数组，非 JSON 响应是字符串，因此不限定 type。
+            "body": {"title": "响应体"},
+            "headers": {"type": "object", "title": "响应头"},
+            "url": {"type": "string", "title": "最终 URL"},
+        },
+    },
+    "runtime": {
+        "kind": "http",
+        "execute": "POST /nodes/http.request/execute",
+    },
+    "policy": {"idempotent": False},
+}
+
+ALL = [SQL_QUERY, NOTIFY_WECOM, HTTP_REQUEST]

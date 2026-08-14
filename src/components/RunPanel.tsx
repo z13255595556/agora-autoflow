@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useFlow } from '../store'
 import type { StepStatus } from '../types'
+import Icon from './Icon'
 
 const STATUS_ICON: Record<StepStatus, string> = {
   waiting: '·',
@@ -46,7 +47,7 @@ export default function RunPanel() {
       <div className="runpanel__left">
         <div className="runpanel__title">
           手动运行
-          <button className="runpanel__close" onClick={() => setRunPanelOpen(false)} title="收起">▾</button>
+          <button className="runpanel__close" onClick={() => setRunPanelOpen(false)} title="收起运行面板"><Icon name="close" size={13} /></button>
         </div>
         <div className="runpanel__form">
           {flowInputs.map((f) => (
@@ -68,7 +69,7 @@ export default function RunPanel() {
             title={missingRequired.length ? `先填必填项：${missingRequired.map((f) => f.title || f.key).join('、')}` : ''}
             onClick={doRun}
           >
-            {running ? '运行中…' : '▶ 运行'}
+            {running ? '运行中…' : <><Icon name="play" size={12} /> 运行</>}
           </button>
         </div>
 

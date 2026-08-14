@@ -18,7 +18,7 @@ os.environ.update(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from sql_service import datalego, main, robot, wecom  # noqa: E402
+from sql_service import datalego, http_request, main, robot, wecom  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -38,11 +38,13 @@ CANCELLED = []
 
 
 class FakeResp:
-    def __init__(self, payload, status=200):
+    def __init__(self, payload, status=200, url="https://upstream.example/result"):
         self._payload = payload
         self.status_code = status
         self.headers = {}
         self.text = json.dumps(payload)
+        self.content = self.text.encode("utf-8")
+        self.url = url
 
     @property
     def ok(self):
@@ -110,6 +112,23 @@ def fake_wecom_post(url, **kw):
 
 wecom.requests = types.SimpleNamespace(post=fake_wecom_post, RequestException=Exception)
 
+# 通用 HTTP 节点也只打假上游，同时记下完整请求供断言。
+HTTP_REQUESTED = []
+
+
+def fake_http_request(method, url, **kw):
+    HTTP_REQUESTED.append((method, url, kw))
+    response = FakeResp({"token": "007-token"}, url=url)
+    response.headers = {"Content-Type": "application/json", "Set-Cookie": "sid=secret"}
+    return response
+
+
+http_request.requests = types.SimpleNamespace(
+    request=fake_http_request,
+    Timeout=TimeoutError,
+    RequestException=Exception,
+)
+
 client = TestClient(main.app)
 
 # ---------------------------------------------------------------- 注册表
@@ -119,9 +138,10 @@ ok("health 没有缺凭证", r["missingCredentials"], [])
 
 nodes = client.get("/registry/nodes").json()["nodes"]
 by_type = {n["type"]: n for n in nodes}
-ok("注册表上报两个节点", sorted(by_type), ["notify.wecom", "sql.query"])
+ok("注册表上报三个节点", sorted(by_type), ["http.request", "notify.wecom", "sql.query"])
 ok("SQL 是异步节点", by_type["sql.query"]["runtime"]["kind"], "http-async")
 ok("企微是同步节点", by_type["notify.wecom"]["runtime"]["kind"], "http")
+ok("HTTP 调用是同步真实节点", by_type["http.request"]["runtime"]["kind"], "http")
 truthy("输出结构标了动态探测", by_type["sql.query"]["output"].get("x-dynamic") == "probe")
 truthy("SQL 字段声明了自有占位符语法",
        by_type["sql.query"]["input"]["properties"]["sql"].get("x-placeholders") == {"valuesFrom": "params"})
@@ -147,6 +167,32 @@ ok("非法 webhook → 400",
    client.post("/nodes/notify.wecom/execute", json={"params": {
        "webhook": "https://evil.com/send?key=x", "msgtype": "text", "content": "hi"}}).status_code, 400)
 ok("非法 webhook 一个请求都不发", len(WECOM_POSTED), _before)
+
+# HTTP 节点的执行端点。保证请求参数真实传给上游，响应也不被 mock 改写。
+r = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "POST",
+    "url": "https://athena.example/generate-007",
+    "headers": {"Content-Type": "application/json", "Authorization": "Bearer test"},
+    "body": '{"uid":"123"}',
+    "timeoutMs": 30000,
+}})
+ok("HTTP 节点执行成功", r.status_code, 200)
+ok("HTTP 节点返回真实 body", r.json()["output"]["body"], {"token": "007-token"})
+ok("HTTP 节点返回状态码", r.json()["output"]["status"], 200)
+ok("响应不持久化 Set-Cookie", "set-cookie" in r.json()["output"]["headers"], False)
+method, url, request_kw = HTTP_REQUESTED[-1]
+ok("请求方法透传", method, "POST")
+ok("请求 URL 透传", url, "https://athena.example/generate-007")
+ok("请求头透传", request_kw["headers"]["Authorization"], "Bearer test")
+ok("请求体按 UTF-8 原样发送", request_kw["data"], b'{"uid":"123"}')
+ok("超时转成秒", request_kw["timeout"], 30.0)
+
+_before = len(HTTP_REQUESTED)
+bad_http = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "GET", "url": "file:///etc/passwd",
+}})
+ok("非 HTTP URL → 400", bad_http.status_code, 400)
+ok("非法 URL 不发请求", len(HTTP_REQUESTED), _before)
 
 opts = client.get("/options/sql.engines").json()["options"]
 ok("引擎选项", [o["value"] for o in opts], ["hive", "doris", "clickhouse"])

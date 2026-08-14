@@ -5,6 +5,7 @@ import { extractRefs, type VarEntry } from '../lib/vars'
 import { isFieldVisible } from '../lib/display'
 import { extractSqlPlaceholders } from '../lib/placeholders'
 import { useFlow } from '../store'
+import DatePreview from './DatePreview'
 import MessagePreview from './MessagePreview'
 import TablePicker from './TablePicker'
 import VarPicker from './VarPicker'
@@ -40,11 +41,11 @@ export default function SchemaForm({ schema, values, required, vars, onChange, p
       const s = el.selectionStart ?? cur.length
       const e = el.selectionEnd ?? s
       onChange(key, cur.slice(0, s) + snippet + cur.slice(e))
-      requestAnimationFrame(() => {
+      setTimeout(() => {
         el.focus()
         const pos = s + snippet.length
         el.setSelectionRange(pos, pos)
-      })
+      }, 0)
     }
     setPicking(null)
   }
@@ -84,7 +85,7 @@ export default function SchemaForm({ schema, values, required, vars, onChange, p
               {sub.title ?? key}
               {required.includes(key) && <span className="req">*</span>}
               {isText && (
-                <button className="field__var" onClick={() => setPicking(key)} title="插入上游变量">
+                <button className="field__var" onClick={() => setPicking(key)} title="插入变量 / 日期函数">
                   {'{ }'}
                 </button>
               )}
@@ -101,7 +102,7 @@ export default function SchemaForm({ schema, values, required, vars, onChange, p
                 <option value="">— 请选择 —</option>
                 {(ui.optionsFrom ? cachedOptions(ui.optionsFrom) : (sub.enum ?? [])).map((o) => (
                   <option key={o} value={o}>
-                    {o}
+                    {ui.labels?.[o] ?? o}
                   </option>
                 ))}
               </select>
@@ -138,15 +139,7 @@ export default function SchemaForm({ schema, values, required, vars, onChange, p
             )}
 
             {/* 单行 */}
-            {sub.type === 'string' && !ui.widget && (
-              <input
-                ref={(el) => { refs.current[key] = el }}
-                value={String(value ?? '')}
-                placeholder={ui.placeholder}
-                onChange={(e) => onChange(key, e.target.value)}
-              />
-            )}
-            {sub.type === 'string' && ui.widget === 'text' && (
+            {sub.type === 'string' && (!ui.widget || ui.widget === 'text') && (
               <input
                 ref={(el) => { refs.current[key] = el }}
                 value={String(value ?? '')}
@@ -219,6 +212,10 @@ export default function SchemaForm({ schema, values, required, vars, onChange, p
           </div>
         )
       })}
+
+      {/* 整个表单的实时预览。挂在 schema 上而不是某个字段上 —— 它算的是所有
+          字段合起来的结果，位置也该在最后 */}
+      {schema['x-ui']?.preview === 'date' && <DatePreview values={values} nodeId={nodeId} />}
     </div>
   )
 }

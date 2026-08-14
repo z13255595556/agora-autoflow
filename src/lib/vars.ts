@@ -3,7 +3,7 @@ import type { JsonSchema } from '../types'
 import { NODE_TYPE_MAP } from '../registry'
 import type { FNode } from '../store'
 import { isFieldVisible } from './display'
-import { DATE_PRESETS } from './datefn'
+import { dateNodeError, datePresets } from './datefn'
 import { FILTERS, probedColumns, probedContainer } from './output'
 import { extractSqlPlaceholders } from './placeholders'
 import { scheduleErrors } from './schedule'
@@ -75,7 +75,7 @@ export function availableVars(
 
   // 日期函数走的也是"插入一段 {{ }}"这条路，所以直接借变量选择器展示，
   // 不另做一个 UI。定时触发没人填表单，日期只能这么来。
-  for (const p of DATE_PRESETS) {
+  for (const p of datePresets()) {
     out.push({ path: p.expr, label: p.label, type: 'string', group: '日期函数' })
   }
 
@@ -101,6 +101,32 @@ export function availableVars(
     //
     // 列名不属于变量路径这个命名空间，它是 | table(列…) 的参数，
     // 由 upstreamColumns 供给选列器。
+  }
+  return out
+}
+
+/**
+ * 全流程的变量清单，给顶部「变量」面板用。
+ *
+ * 和 availableVars 的区别：那个按「当前节点能不能引用」过滤（只列上游），
+ * 这个是**通讯录**，把画布上每个节点的输出都列出来供查阅和复制。
+ * 所以每条带上 nodeId，面板据此提示"只有它的下游能引用"。
+ */
+export function allVars(
+  nodes: FNode[],
+  edges: Edge[],
+  flowInputKeys: Array<{ key: string; title: string; type: string }>,
+): VarEntry[] {
+  const out = availableVars(null, nodes, edges, flowInputKeys)
+  for (const n of nodes) {
+    const t = NODE_TYPE_MAP.get(n.data.typeId)
+    if (!t) continue
+    flatten(`$.nodes.${n.id}.output`, t.output, `${n.data.label} (${n.id})`, out)
+  }
+  // 循环体存在时 $.loop.* 才有意义，和 availableVars 一个判断
+  if (nodes.some((n) => n.data.typeId === 'flow.foreach')) {
+    out.push({ path: '$.loop.item', label: '当前项', type: 'any', group: '循环上下文' })
+    out.push({ path: '$.loop.index', label: '当前序号', type: 'integer', group: '循环上下文' })
   }
   return out
 }
@@ -176,6 +202,12 @@ export function validateNode(
   // 通用的 required 表达不了，单独查一道
   if (node.data.typeId === 'trigger.schedule') {
     errors.push(...scheduleErrors(node.data.params))
+  }
+
+  // 日期节点的偏移/格式串写错了在这里就拦下 —— 运行期再抛就成了逃出引擎的异常
+  if (node.data.typeId === 'date.compute') {
+    const err = dateNodeError(node.data.params)
+    if (err) errors.push(err)
   }
 
   for (const key of t.input.required ?? []) {

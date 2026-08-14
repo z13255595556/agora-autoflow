@@ -4,7 +4,7 @@ import { NODE_TYPE_MAP } from '../registry'
 import type { FNode } from '../store'
 import { validateNode } from './vars'
 import { cancelNode, executeNode, isOnline, pollNode, submitNode } from './client'
-import { dateFn, formatDate, toDate } from './datefn'
+import { dateFn, dateNodeOutput, formatDate, toDate } from './datefn'
 import { FILTERS, ROW_KEYS } from './output'
 import { extractSqlPlaceholders } from './placeholders'
 
@@ -370,6 +370,11 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
       )
       return { rows, rowCount: rows.length, truncated: false }
     }
+    case 'date.compute': {
+      // 基准和 {{ date() }} 完全一致：本次运行的开始时刻。两种写法混用也不会差一天
+      const base = new Date(ctx.run.startedAt)
+      return dateNodeOutput(resolved, Number.isNaN(base.getTime()) ? new Date() : base)
+    }
     case 'flow.if':
       return { matched: truthy(resolved.condition) }
     case 'flow.merge':
@@ -421,6 +426,26 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
  * 成为僵尸记录；而 running 被 finally 清掉，所以界面看着一切正常。
  * 用户只知道"跑了一下没反应"。
  */
+/**
+ * mock 一个节点的输出，抛错就带回来而不是抛出去。
+ *
+ * 和 tryResolveParams 同一个道理：mockOutput 里任何一处抛异常都会逃出
+ * executeFlow，留下永远 running 的僵尸运行记录，而界面看着一切正常。
+ */
+function tryMockOutput(
+  node: FNode,
+  ctx: Ctx,
+  input: Record<string, unknown>,
+  seq: ReturnType<typeof makeSeq>,
+  edges: Edge[],
+): { output: unknown; error?: string } {
+  try {
+    return { output: mockOutput(node, ctx, input, seq, edges) }
+  } catch (err) {
+    return { output: null, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 function tryResolveParams(node: FNode, ctx: Ctx): { input: Record<string, unknown>; error?: string } {
   try {
     return { input: resolveParams(node.data.params, ctx, NODE_TYPE_MAP.get(node.data.typeId)?.input) }
@@ -652,7 +677,13 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
           return step
         }
       } else {
-        output = mockOutput(node, localCtx, input, seq, edges)
+        const mocked = tryMockOutput(node, localCtx, input, seq, edges)
+        if (mocked.error) {
+          const step: StepRun = { nodeId: node.id, status: 'error', startedAt, durationMs: Date.now() - startedAt, input, output: null, error: mocked.error, iteration, live }
+          record(step)
+          return step
+        }
+        output = mocked.output
       }
     }
     ctx.nodes[node.id] = { output }
@@ -914,7 +945,13 @@ export async function executeSingleNode(opts: {
       return step
     }
   } else {
-    output = mockOutput(node, ctx, input, seq, edges)
+    const mocked = tryMockOutput(node, ctx, input, seq, edges)
+    if (mocked.error) {
+      const step: StepRun = { nodeId: node.id, status: 'error', startedAt, durationMs: Date.now() - startedAt, input, output: null, error: mocked.error, live }
+      onStep(step)
+      return step
+    }
+    output = mocked.output
   }
 
   const step: StepRun = { nodeId: node.id, status: 'success', startedAt, durationMs: Date.now() - startedAt, input, output, pinned: pinnedHere, live }

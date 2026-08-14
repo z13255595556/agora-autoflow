@@ -2,7 +2,9 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { useFlow, type FNode } from '../store'
 import { validateNode } from '../lib/vars'
-import { describeSchedule } from '../lib/schedule'
+import { nodeSummary } from '../lib/summary'
+import Icon from './Icon'
+import { anchorOf, useCanvasCtx } from './canvasCtx'
 
 export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const t = NODE_TYPE_MAP.get(data.typeId)
@@ -13,6 +15,12 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const activeRunId = useFlow((s) => s.activeRunId)
   const isPinned = useFlow((s) => Object.prototype.hasOwnProperty.call(s.pinData, id))
   const isDirty = useFlow((s) => Boolean(s.dirtyNodes[id]))
+  const openNdv = useFlow((s) => s.openNdv)
+  const deleteNode = useFlow((s) => s.deleteNode)
+  const duplicateNode = useFlow((s) => s.duplicateNode)
+  const testStep = useFlow((s) => s.testStep)
+  const running = useFlow((s) => s.running)
+  const { openPicker } = useCanvasCtx()
 
   if (!t) {
     return <div className="node node--unknown">未知节点 {data.typeId}</div>
@@ -30,12 +38,63 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const steps = run?.steps[id]
   const last = steps?.at(-1)
 
+  /** 出口的 `+`：接一个新节点，位置和连线都自动搞定 */
+  const plus = (port: string) => (e: React.MouseEvent) => {
+    e.stopPropagation()
+    openPicker({ anchor: anchorOf(e.currentTarget), target: { kind: 'after', nodeId: id, port } })
+  }
+
   return (
     <div
       className={`node${selected ? ' node--selected' : ''}${last ? ` node--run-${last.status}` : ''}`}
       style={{ '--accent': color } as React.CSSProperties}
     >
       {hasInput && <Handle type="target" position={Position.Left} className="handle handle--in" />}
+
+      {/* 悬停工具条（Dify 同款）：常用动作直接落在节点上，不用先选中再去右栏找 */}
+      <div className="node__tools" onPointerDown={(e) => e.stopPropagation()}>
+        <button
+          className="node__tool"
+          title="只跑这一个节点（上游用最近一次运行的数据）"
+          disabled={running}
+          onClick={(e) => {
+            e.stopPropagation()
+            void testStep(id)
+          }}
+        >
+          <Icon name="play" size={13} />
+        </button>
+        <button
+          className="node__tool"
+          title="详情：输入 / 参数 / 输出"
+          onClick={(e) => {
+            e.stopPropagation()
+            openNdv(id)
+          }}
+        >
+          <Icon name="expand" size={13} />
+        </button>
+        <button
+          className="node__tool"
+          title="复制一份"
+          onClick={(e) => {
+            e.stopPropagation()
+            duplicateNode(id)
+          }}
+        >
+          <Icon name="copy" size={13} />
+        </button>
+        <button
+          className="node__tool node__tool--danger"
+          title="删除"
+          onClick={(e) => {
+            e.stopPropagation()
+            deleteNode(id)
+          }}
+        >
+          <Icon name="trash" size={13} />
+        </button>
+      </div>
 
       {(last || isPinned) && (
         <div className="node__runbadges">
@@ -65,36 +124,46 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
       <div className="node__head">
         <span className="node__icon">{t.icon}</span>
         <div className="node__titles">
-          <div className="node__name">{data.label}</div>
-          <div className="node__type">
+          <div className="node__name">
+            {data.label}
             <span className="node__nid">{id}</span>
-            {/* 定时触发把排程直接写在节点上 —— "我到底设成几点了"不该要点进去才知道 */}
-            {data.typeId === 'trigger.schedule' ? describeSchedule(data.params) : t.type}
           </div>
+          {/* 副标题写"配成了什么"而不是类型名 —— 类型名图标已经说了 */}
+          <div className="node__summary">{nodeSummary(t, data.params)}</div>
         </div>
-        {errors.length > 0 && (
-          <span className="node__badge" title={errors.join('\n')}>
-            {errors.length}
-          </span>
-        )}
       </div>
 
+      {errors.length > 0 && (
+        <div className="node__errline" title={errors.join('\n')}>
+          <i>!</i>
+          {errors.length === 1 ? errors[0] : `${errors.length} 处待补`}
+        </div>
+      )}
+
       {ports.length === 1 && ports[0].id === 'out' && (
-        <Handle type="source" position={Position.Right} id="out" className="handle handle--out" />
+        <>
+          <Handle type="source" position={Position.Right} id="out" className="handle handle--out" />
+          <button className="node__plus" title="接一个节点" onClick={plus('out')}>
+            <Icon name="plus" size={13} />
+          </button>
+        </>
       )}
 
       {ports.length > 1 && (
         <div className="node__ports">
           {ports.map((p) => (
             <div className="node__port" key={p.id}>
-              <span>{p.label}</span>
+              <span className="node__portlabel">{p.label}</span>
               <Handle type="source" position={Position.Right} id={p.id} className="handle handle--port" />
+              <button className="node__plus node__plus--port" title={`在「${p.label}」出口接一个节点`} onClick={plus(p.id)}>
+                <Icon name="plus" size={13} />
+              </button>
             </div>
           ))}
         </div>
       )}
 
-      {ports.length === 0 && <div className="node__terminal">终点</div>}
+      {ports.length === 0 && <div className="node__terminal">流程终点</div>}
     </div>
   )
 }

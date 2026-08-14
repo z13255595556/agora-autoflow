@@ -15,6 +15,7 @@ import { executeFlow, executeSingleNode } from './lib/engine'
 import { isFieldVisible } from './lib/display'
 import { learnColumns, toProbedFields } from './lib/output'
 import { extractSqlPlaceholders } from './lib/placeholders'
+import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout'
 import * as api from './lib/client'
 
 export type FNode = Node<FlowNodeData>
@@ -25,6 +26,24 @@ function defaultParams(t: NodeType): Record<string, unknown> {
     if (schema.default !== undefined) out[key] = schema.default
   }
   return out
+}
+
+/** 造一个画布节点。加节点现在有四个入口（拖、`+` 手柄、连线插入、复制），共用这里 */
+function makeNode(typeId: string, position: { x: number; y: number }, seq: number): FNode | null {
+  const t = NODE_TYPE_MAP.get(typeId)
+  if (!t) return null
+  return {
+    id: `n${seq}`,
+    type: 'flowNode',
+    position,
+    data: {
+      typeId: t.type,
+      typeVersion: t.typeVersion,
+      label: t.name,
+      params: defaultParams(t),
+      onError: 'fail',
+    },
+  }
 }
 
 /**
@@ -78,6 +97,15 @@ interface FlowState {
   registryVersion: number
   /** 后端节点服务的状态。null = 还没探 / 探不到，整站退回 mock */
   backend: api.Health | null
+  /**
+   * 刚加出来的节点。画布看到它就把视野挪过去（落在屏幕外或被配置面板压住时），
+   * 然后清空。
+   *
+   * 走 store 而不是让加节点的组件自己调 setCenter：选择器加完就卸载了，
+   * 而且它挂在 <ReactFlow> 外面，那儿拿到的视口 API 动不了画布。
+   */
+  revealId: string | null
+  consumeReveal: () => string | null
   /** 中止当前运行用 */
   abort: AbortController | null
 
@@ -85,7 +113,14 @@ interface FlowState {
   onEdgesChange: (c: EdgeChange[]) => void
   onConnect: (c: Connection) => void
 
-  addNode: (typeId: string, position: { x: number; y: number }) => void
+  addNode: (typeId: string, position: { x: number; y: number }) => string | null
+  /** 从某个节点的出口继续加一个节点：自动落位 + 自动连线（Dify 的 `+` 手柄） */
+  addNodeAfter: (typeId: string, sourceId: string, port?: string) => string | null
+  /** 往一条已有连线中间插一个节点：断开原线，串成 源 → 新 → 目标 */
+  insertNodeOnEdge: (typeId: string, edgeId: string) => string | null
+  duplicateNode: (id: string) => string | null
+  /** 按拓扑分层重排全部节点 */
+  autoLayout: () => void
   select: (id: string | null) => void
   updateNodeParam: (id: string, key: string, value: unknown) => void
   renameNode: (id: string, label: string) => void
@@ -119,7 +154,7 @@ interface FlowState {
 const seedTrigger = (): FNode => ({
   id: 'n1',
   type: 'flowNode',
-  position: { x: 40, y: 200 },
+  position: { x: 60, y: 200 },
   data: {
     typeId: 'trigger.manual',
     typeVersion: '1.0.0',
@@ -151,6 +186,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   runGen: 0,
   registryVersion: 0,
   backend: null,
+  revealId: null,
   abort: null,
   probing: null,
   probeError: null,
@@ -177,26 +213,99 @@ export const useFlow = create<FlowState>((set, get) => ({
     })
   },
   onEdgesChange: (changes) => set({ edges: applyEdgeChanges(changes, get().edges) }),
-  onConnect: (conn) =>
-    set({ edges: addEdge({ ...conn, type: 'smoothstep', animated: false }, get().edges) }),
+  onConnect: (conn) => set({ edges: addEdge({ ...conn, type: 'flowEdge', animated: false }, get().edges) }),
 
   addNode: (typeId, position) => {
-    const t = NODE_TYPE_MAP.get(typeId)
-    if (!t) return
+    const node = makeNode(typeId, position, get().seq + 1)
+    if (!node) return null
+    set({ nodes: [...get().nodes, node], seq: get().seq + 1, selectedId: node.id, revealId: node.id })
+    return node.id
+  },
+
+  addNodeAfter: (typeId, sourceId, port = 'out') => {
+    const source = get().nodes.find((n) => n.id === sourceId)
+    if (!source) return null
+    const node = makeNode(typeId, freeSpotRightOf(get().nodes, source), get().seq + 1)
+    if (!node) return null
+    set({
+      nodes: [...get().nodes, node],
+      seq: get().seq + 1,
+      selectedId: node.id,
+      revealId: node.id,
+      edges: addEdge(
+        { source: sourceId, sourceHandle: port, target: node.id, targetHandle: null, type: 'flowEdge' },
+        get().edges,
+      ),
+    })
+    return node.id
+  },
+
+  insertNodeOnEdge: (typeId, edgeId) => {
+    const edge = get().edges.find((e) => e.id === edgeId)
+    if (!edge) return null
+    const source = get().nodes.find((n) => n.id === edge.source)
+    const target = get().nodes.find((n) => n.id === edge.target)
+    if (!source || !target) return null
+
+    const node = makeNode(typeId, freeSpotRightOf(get().nodes, source), get().seq + 1)
+    if (!node) return null
+
+    // 目标（连同它的全部下游）整体右移，给插进来的节点腾出一档位置。
+    // 不移的话新节点会直接压在目标身上 —— 插入是常用操作，不能每次都要手动收拾
+    const shift = NODE_W + 96
+    const gap = target.position.x - source.position.x
+    const moving = gap < shift * 2 ? descendants(target.id, get().edges) : new Set<string>()
+
+    set({
+      seq: get().seq + 1,
+      selectedId: node.id,
+      revealId: node.id,
+      nodes: [
+        ...get().nodes.map((n) =>
+          moving.has(n.id) ? { ...n, position: { x: n.position.x + shift, y: n.position.y } } : n,
+        ),
+        node,
+      ],
+      edges: [
+        ...get().edges.filter((e) => e.id !== edgeId),
+        { id: `e_${node.id}_in`, source: edge.source, sourceHandle: edge.sourceHandle, target: node.id, type: 'flowEdge' },
+        { id: `e_${node.id}_out`, source: node.id, sourceHandle: 'out', target: edge.target, type: 'flowEdge' },
+      ],
+    })
+    return node.id
+  },
+
+  duplicateNode: (id) => {
+    const src = get().nodes.find((n) => n.id === id)
+    if (!src) return null
     const seq = get().seq + 1
-    const node: FNode = {
+    // 参数深拷一份：kv / 占位符参数是嵌套对象，浅拷会让两个节点共用同一个 bag，
+    // 改一个另一个跟着变
+    const copy: FNode = {
+      ...src,
       id: `n${seq}`,
-      type: 'flowNode',
-      position,
+      position: { x: src.position.x + 40, y: src.position.y + 40 },
+      selected: false,
       data: {
-        typeId: t.type,
-        typeVersion: t.typeVersion,
-        label: t.name,
-        params: defaultParams(t),
-        onError: 'fail',
+        ...src.data,
+        label: `${src.data.label} 副本`,
+        params: structuredClone(src.data.params),
       },
     }
-    set({ nodes: [...get().nodes, node], seq, selectedId: node.id })
+    // 连线刻意不复制：副本接在哪儿由用户决定，自动接上去多半是错的
+    set({ nodes: [...get().nodes, copy], seq, selectedId: copy.id, revealId: copy.id })
+    return copy.id
+  },
+
+  autoLayout: () => {
+    const pos = layeredLayout(get().nodes, get().edges)
+    set({ nodes: get().nodes.map((n) => (pos[n.id] ? { ...n, position: pos[n.id] } : n)) })
+  },
+
+  consumeReveal: () => {
+    const id = get().revealId
+    if (id) set({ revealId: null })
+    return id
   },
 
   select: (id) => set({ selectedId: id }),
@@ -526,7 +635,7 @@ export const useFlow = create<FlowState>((set, get) => ({
       source: e.from,
       target: e.to,
       sourceHandle: e.port ?? 'out',
-      type: 'smoothstep',
+      type: 'flowEdge',
     }))
     const maxSeq = nodes.reduce((m, n) => Math.max(m, Number(n.id.replace(/\D/g, '')) || 0), 0)
     set({

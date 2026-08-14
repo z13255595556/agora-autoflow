@@ -29,7 +29,19 @@ export default function VarPicker({ vars, onPick, onClose }: Props) {
       <div className="varpicker__mask" onClick={onClose} />
       <div className="varpicker">
         <div className="varpicker__search">
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索变量…" />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索变量 / 日期函数…"
+            // Esc 关掉。`/` 唤起时这里是误触的唯一出口，没有它只能去点遮罩
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                onClose()
+              }
+            }}
+          />
         </div>
         <div className="varpicker__body">
           {groups.map(([group, items]) => (

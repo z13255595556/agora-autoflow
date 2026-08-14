@@ -6,7 +6,15 @@ import { probedColumns } from '../lib/output'
 import { previewFromRun } from '../lib/engine'
 import type { FlowInputField } from '../types'
 import SchemaForm from './SchemaForm'
+import Icon from './Icon'
 
+/**
+ * 选中节点时浮在画布右侧的配置面板。
+ *
+ * 以前是常驻的一整栏，没选节点时显示流程设置 —— 于是画布永远少 348px，
+ * 而那一栏八成时间在显示一段"点击画布上的节点来配置它"的提示。现在改成
+ * 浮层：选中才出现，没选中画布就是整块的；流程设置移到顶栏的「更多」里。
+ */
 export default function Inspector() {
   const selectedId = useFlow((s) => s.selectedId)
   const nodes = useFlow((s) => s.nodes)
@@ -21,9 +29,10 @@ export default function Inspector() {
     [selectedId, nodes, edges, flowInputs],
   )
 
+  if (!node || !t) return null
   return (
-    <aside className="panel panel--right">
-      {node && t ? <NodeInspector key={node.id} vars={vars} /> : <FlowInspector />}
+    <aside className="dock">
+      <NodeInspector key={node.id} vars={vars} />
     </aside>
   )
 }
@@ -39,6 +48,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   const deleteNode = useFlow((s) => s.deleteNode)
   const probeNode = useFlow((s) => s.probeNode)
   const openNdv = useFlow((s) => s.openNdv)
+  const select = useFlow((s) => s.select)
   const runs = useFlow((s) => s.runs)
   const activeRunId = useFlow((s) => s.activeRunId)
   const backend = useFlow((s) => s.backend)
@@ -61,18 +71,23 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
 
   return (
     <>
-      <div className="panel__head">
+      <div className="dock__head">
         <span className="ins__icon" style={{ background: color }}>{t.icon}</span>
         <input
           className="ins__name"
           value={node.data.label}
           onChange={(e) => renameNode(node.id, e.target.value)}
+          title="点击重命名这个节点"
         />
-        <button className="ins__del" onClick={() => openNdv(node.id)} title="打开详情视图（输入/参数/输出），双击画布节点同效">
-          详情
+        <button className="iconbtn" onClick={() => openNdv(node.id)} title="详情视图：输入 / 参数 / 输出（双击画布节点同效）">
+          <Icon name="expand" />
         </button>
-        <button className="ins__del" onClick={() => deleteNode(node.id)} title="删除节点">
-          删除
+        <button className="iconbtn iconbtn--danger" onClick={() => deleteNode(node.id)} title="删除节点">
+          <Icon name="trash" />
+        </button>
+        <i className="dock__sep" />
+        <button className="iconbtn" onClick={() => select(null)} title="收起面板">
+          <Icon name="close" />
         </button>
       </div>
 
@@ -82,7 +97,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
         <span className="ins__nid">引用名 {node.id}</span>
       </div>
 
-      <div className="panel__body">
+      <div className="dock__body">
         {errors.length > 0 && (
           <div className="errors">
             {errors.map((e, i) => (
@@ -169,7 +184,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   )
 }
 
-function FlowInspector() {
+export function FlowInspector({ onClose }: { onClose: () => void }) {
   const flowName = useFlow((s) => s.flowName)
   const setFlowName = useFlow((s) => s.setFlowName)
   const flowInputs = useFlow((s) => s.flowInputs)
@@ -180,10 +195,14 @@ function FlowInspector() {
 
   return (
     <>
-      <div className="panel__head">
-        <span className="panel__title">流程设置</span>
+      <div className="dock__head">
+        <span className="dock__title">流程设置</span>
+        <i className="dock__sep" />
+        <button className="iconbtn" onClick={onClose} title="收起面板">
+          <Icon name="close" />
+        </button>
       </div>
-      <div className="panel__body">
+      <div className="dock__body">
         <div className="field">
           <label className="field__label">流程名称</label>
           <input value={flowName} onChange={(e) => setFlowName(e.target.value)} />
@@ -256,8 +275,8 @@ function FlowInspector() {
         </div>
 
         <div className="tip">
-          点击画布上的节点来配置它。<br />
-          从左侧拖节点进画布，拖动节点右侧圆点连线。
+          加节点：点节点右侧的 <b>+</b>，或画布左上角的「添加节点」。<br />
+          连线中间的 <b>+</b> 可以往两个节点之间插一步。
         </div>
       </div>
     </>

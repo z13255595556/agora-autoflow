@@ -1,4 +1,5 @@
 import type { NodeType } from './types'
+import { DATE_FORMATS, DATE_MODES, DATE_MODE_LABELS, dateFormatLabels } from './lib/datefn'
 
 /**
  * 节点注册表（空壳期写死在前端）。
@@ -42,7 +43,10 @@ export const NODE_TYPES: NodeType[] = [
           default: 'daily',
           enum: ['daily', 'hourly', 'interval', 'cron'],
           description: '大多数报表选「每天」就够了',
-          'x-ui': { widget: 'select' },
+          'x-ui': {
+            widget: 'select',
+            labels: { daily: '每天', hourly: '每小时', interval: '按间隔', cron: 'Cron 表达式' },
+          },
         },
         at: {
           type: 'string',
@@ -246,6 +250,88 @@ export const NODE_TYPES: NodeType[] = [
   },
 
   // ---------------------------------------------------------------- 处理
+  //
+  // 纯前端节点：算日期不需要任何服务，所以没有 runtime，后端上线后也一样跑
+  // mock 分支（见 engine.mockOutput）。
+  {
+    type: 'date.compute',
+    typeVersion: '1.0.0',
+    name: '日期计算',
+    category: '处理',
+    icon: '📅',
+    description: '选出昨天 / 本月 1 号这类日期，一次给出 yyyyMMdd、时间戳等各种格式，下游直接引用',
+    input: {
+      type: 'object',
+      required: ['mode', 'format'],
+      'x-ui': { preview: 'date' },
+      properties: {
+        mode: {
+          type: 'string',
+          title: '要哪个时间',
+          default: 'yesterday',
+          enum: DATE_MODES,
+          description: '基准是本次运行的开始时刻，一条流程里所有日期节点同源，不会跨零点算差一天',
+          'x-ui': { widget: 'select', labels: DATE_MODE_LABELS },
+        },
+        days: {
+          type: 'integer',
+          title: '几天前',
+          default: 7,
+          minimum: 1,
+          maximum: 3650,
+          'x-show': { mode: ['daysAgo'] },
+        },
+        hours: {
+          type: 'integer',
+          title: '几小时前',
+          default: 1,
+          minimum: 1,
+          maximum: 8760,
+          'x-show': { mode: ['hoursAgo'] },
+        },
+        expr: {
+          type: 'string',
+          title: '自定义偏移',
+          default: 'now-1d/d',
+          description:
+            'Grafana / Kibana 同款写法：now-1d 昨天此刻，now-1d/d 昨天零点，now/w 本周一，now-1M/M 上月 1 号。单位 s/m/h/d/w/M/y（m 是分钟，M 是月）',
+          'x-show': { mode: ['custom'] },
+          'x-ui': { widget: 'text', placeholder: 'now-1d/d' },
+        },
+        format: {
+          type: 'string',
+          title: '输出格式',
+          default: 'compact',
+          enum: DATE_FORMATS,
+          description: '这个格式出现在 value 里。其它常用格式一并输出，不用为此多摆一个节点',
+          'x-ui': { widget: 'select', labels: dateFormatLabels() },
+        },
+        customFormat: {
+          type: 'string',
+          title: '自定义格式',
+          description: "token：yyyy MM dd HH mm ss SSS，其余字符原样输出；要输出会撞 token 的字母用单引号括起来",
+          'x-show': { format: ['custom'] },
+          'x-ui': { widget: 'text', placeholder: 'yyyy年MM月dd日' },
+        },
+      },
+    },
+    output: {
+      type: 'object',
+      properties: {
+        value: { type: 'string', title: '结果（按所选格式）' },
+        compact: { type: 'string', title: '紧凑 20260812' },
+        date: { type: 'string', title: '日期 2026-08-12' },
+        datetime: { type: 'string', title: '日期时间 2026-08-12 00:00:00' },
+        time: { type: 'string', title: '时间 00:00:00' },
+        month: { type: 'string', title: '月份 202608' },
+        iso: { type: 'string', title: 'ISO 串（UTC）' },
+        unix: { type: 'integer', title: '时间戳（秒）' },
+        weekday: { type: 'string', title: '星期几' },
+        expr: { type: 'string', title: '等价偏移表达式' },
+      },
+    },
+    policy: { idempotent: true },
+  },
   {
     type: 'transform.map',
     typeVersion: '1.0.0',
@@ -297,8 +383,9 @@ export const NODE_TYPES: NodeType[] = [
       type: 'object',
       properties: {
         status: { type: 'integer', title: '状态码' },
-        body: { type: 'object', title: '响应体' },
+        body: { title: '响应体' },
         headers: { type: 'object', title: '响应头' },
+        url: { type: 'string', title: '最终 URL' },
       },
     },
     policy: { idempotent: false },

@@ -188,18 +188,149 @@ export function toDate(value: unknown): Date | null {
  *
  * 挑选标准：Hive 分区几乎都是 yyyyMMdd，所以紧凑格式排前面；
  * 消息正文里人读的是 yyyy-MM-dd，紧随其后。
+ *
+ * 标签里的样例值当场算，不写死 —— 写死的话过一天就在骗人（"昨天 20260812"
+ * 到了明天还是这个数），而这个样例正是用户判断"选哪条"的唯一依据。
  */
-export const DATE_PRESETS: Array<{ label: string; expr: string }> = [
-  { label: '昨天 20260812', expr: "date('now-1d', 'yyyyMMdd')" },
-  { label: '今天 20260813', expr: "date('now', 'yyyyMMdd')" },
-  { label: '昨天 2026-08-12', expr: "date('now-1d', 'yyyy-MM-dd')" },
-  { label: '今天 2026-08-13', expr: "date('now', 'yyyy-MM-dd')" },
-  { label: '7 天前 20260806', expr: "date('now-7d', 'yyyyMMdd')" },
-  { label: '本月 202608', expr: "date('now', 'yyyyMM')" },
-  { label: '此刻 2026-08-13 14:30:00', expr: "date('now', 'yyyy-MM-dd HH:mm:ss')" },
-  { label: '1 小时前 2026-08-13 13:00', expr: "date('now-1h/h', 'yyyy-MM-dd HH:mm')" },
-  { label: '昨天零点 时间戳(秒)', expr: "date('now-1d/d', 'unix')" },
-]
+export function datePresets(now: Date = new Date()): Array<{ label: string; expr: string }> {
+  const at = (offset: string, fmt: string) => formatDate(resolveMoment(offset, now), fmt)
+  return [
+    { label: `昨天 ${at('now-1d', 'yyyyMMdd')}`, expr: "date('now-1d', 'yyyyMMdd')" },
+    { label: `今天 ${at('now', 'yyyyMMdd')}`, expr: "date('now', 'yyyyMMdd')" },
+    { label: `昨天 ${at('now-1d', 'yyyy-MM-dd')}`, expr: "date('now-1d', 'yyyy-MM-dd')" },
+    { label: `今天 ${at('now', 'yyyy-MM-dd')}`, expr: "date('now', 'yyyy-MM-dd')" },
+    { label: `7 天前 ${at('now-7d', 'yyyyMMdd')}`, expr: "date('now-7d', 'yyyyMMdd')" },
+    { label: `本月 ${at('now', 'yyyyMM')}`, expr: "date('now', 'yyyyMM')" },
+    { label: `此刻 ${at('now', 'yyyy-MM-dd HH:mm:ss')}`, expr: "date('now', 'yyyy-MM-dd HH:mm:ss')" },
+    { label: `1 小时前整点 ${at('now-1h/h', 'yyyy-MM-dd HH:mm')}`, expr: "date('now-1h/h', 'yyyy-MM-dd HH:mm')" },
+    { label: `昨天零点 时间戳(秒) ${at('now-1d/d', 'unix')}`, expr: "date('now-1d/d', 'unix')" },
+  ]
+}
+
+// ---------------------------------------------------------------- 日期计算节点
+//
+// 表达式 date('now-1d','yyyyMMdd') 能干的事，这个节点全都能干，区别只在于
+// 它是选出来的而不是敲出来的：偏移和格式各是一个下拉，选完当场看到结果。
+// 表达式那条路留着 —— 想在一句话里嵌日期还是写 {{ date(…) }} 最短。
+
+/** 每个模式对应的偏移表达式。取整语义写死在模式里，不再单开一个开关。 */
+const MODE_EXPR: Record<string, (n: number) => string> = {
+  now: () => 'now',
+  today: () => 'now/d',
+  yesterday: () => 'now-1d/d',
+  dayBefore: () => 'now-2d/d',
+  daysAgo: (n) => `now-${n}d/d`,
+  hourStart: () => 'now/h',
+  hoursAgo: (n) => `now-${n}h/h`,
+  weekStart: () => 'now/w',
+  lastWeekStart: () => 'now-1w/w',
+  monthStart: () => 'now/M',
+  lastMonthStart: () => 'now-1M/M',
+  custom: () => 'now',
+}
+
+export const DATE_MODES = Object.keys(MODE_EXPR)
+
+/** 下拉里显示的中文名。enum 值本身保持英文 —— 它会被存进流程定义。 */
+export const DATE_MODE_LABELS: Record<string, string> = {
+  now: '此刻（含时分秒）',
+  today: '今天 零点',
+  yesterday: '昨天 零点',
+  dayBefore: '前天 零点',
+  daysAgo: 'N 天前 零点',
+  hourStart: '当前整点',
+  hoursAgo: 'N 小时前 整点',
+  weekStart: '本周一 零点',
+  lastWeekStart: '上周一 零点',
+  monthStart: '本月 1 号 零点',
+  lastMonthStart: '上月 1 号 零点',
+  custom: '自定义偏移…',
+}
+
+/** 输出格式下拉的取值。custom 之外都是 FORMAT_PRESETS / 特殊格式的键。 */
+export const DATE_FORMATS = ['compact', 'date', 'datetime', 'time', 'month', 'cn', 'slash', 'iso', 'unix', 'custom']
+
+/** 格式下拉的标签带当场算出来的样例：选之前就知道长什么样 */
+export function dateFormatLabels(now: Date = new Date()): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const f of DATE_FORMATS) {
+    out[f] = f === 'custom' ? '自定义格式…' : `${f} · ${formatDate(now, f)}`
+  }
+  return out
+}
+
+/** 节点参数。和 registry 里 date.compute 的 input schema 一一对应。 */
+export interface DateNodeParams {
+  mode?: string
+  days?: number
+  hours?: number
+  expr?: string
+  format?: string
+  customFormat?: string
+}
+
+const num = (v: unknown, fallback: number) => {
+  const n = Math.floor(Number(v))
+  return Number.isFinite(n) && n >= 1 ? n : fallback
+}
+
+/** 参数 → 等价的偏移表达式。预览里会把它显示出来，方便迁移到 {{ date() }} 写法 */
+export function dateNodeExpr(p: DateNodeParams): string {
+  const mode = p.mode ?? 'yesterday'
+  if (mode === 'custom') return String(p.expr ?? 'now').trim() || 'now'
+  const build = MODE_EXPR[mode]
+  if (!build) throw new DateError(`没有「${mode}」这个模式，可选：${DATE_MODES.join(' / ')}`)
+  return build(mode === 'hoursAgo' ? num(p.hours, 1) : num(p.days, 1))
+}
+
+function dateNodeFormat(p: DateNodeParams): string {
+  const f = p.format ?? 'compact'
+  if (f !== 'custom') return f
+  const custom = String(p.customFormat ?? '').trim()
+  if (!custom) throw new DateError('选了自定义格式但没填格式串，比如 yyyy年MM月dd日')
+  return custom
+}
+
+const WEEKDAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/**
+ * 节点的输出。
+ *
+ * 除了用户选的那个格式（value），常用格式全都一并给出来 —— 同一个日期，SQL
+ * 分区要 20260812、消息标题要 2026-08-12、接口要时间戳，让用户为此摆三个
+ * 节点是没道理的。下游按需引用 $.nodes.n3.output.compact 就行。
+ */
+export function dateNodeOutput(p: DateNodeParams, base: Date): Record<string, unknown> {
+  const expr = dateNodeExpr(p)
+  const d = resolveMoment(expr, base)
+  return {
+    value: formatDate(d, dateNodeFormat(p)),
+    compact: formatDate(d, 'compact'),
+    date: formatDate(d, 'date'),
+    datetime: formatDate(d, 'datetime'),
+    time: formatDate(d, 'time'),
+    month: formatDate(d, 'month'),
+    iso: formatDate(d, 'iso'),
+    unix: Number(formatDate(d, 'unix')),
+    weekday: WEEKDAY[d.getDay()],
+    expr,
+  }
+}
+
+/**
+ * 参数有没有问题，有就返回给用户看的一句话。
+ *
+ * 校验必须在 validateNode 里发生：mockOutput 抛出去的异常会一路逃出
+ * executeFlow，把运行记录留成永远 running 的僵尸（见 tryResolveParams 上的注释）。
+ */
+export function dateNodeError(p: DateNodeParams): string | null {
+  try {
+    dateNodeOutput(p, new Date())
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
 
 /** 给用户看的一行说明，UI 里当帮助文案用 */
 export function describeOffset(expr: string): string {

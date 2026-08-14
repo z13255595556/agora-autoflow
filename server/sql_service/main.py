@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from . import datalego, manifest, robot, sqlparams, wecom
+from . import datalego, http_request, manifest, robot, sqlparams, wecom
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -140,6 +140,15 @@ def execute_wecom(body: SubmitBody) -> Dict[str, Any]:
             )
         }
     except wecom.WecomError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/nodes/http.request/execute")
+def execute_http_request(body: SubmitBody) -> Dict[str, Any]:
+    """Execute a generic HTTP request on behalf of the workflow."""
+    try:
+        return {"output": http_request.execute(body.params)}
+    except http_request.HttpRequestError as exc:
         raise HTTPException(400, str(exc))
 
 

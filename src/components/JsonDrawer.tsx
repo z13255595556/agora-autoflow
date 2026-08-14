@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useFlow } from '../store'
 import type { FlowDefinition } from '../types'
+import Icon from './Icon'
 
 export default function JsonDrawer({ onClose }: { onClose: () => void }) {
   const toDefinition = useFlow((s) => s.toDefinition)
@@ -24,31 +25,30 @@ export default function JsonDrawer({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="drawer">
-      <div className="drawer__head">
-        <div className="drawer__tabs">
+    <aside className="dock dock--wide">
+      <div className="dock__head">
+        <div className="tabs">
           <button className={tab === 'export' ? 'on' : ''} onClick={() => setTab('export')}>导出</button>
           <button className={tab === 'import' ? 'on' : ''} onClick={() => setTab('import')}>导入</button>
         </div>
-        <div className="drawer__actions">
-          {tab === 'export' && (
-            <button className="btn" onClick={() => navigator.clipboard?.writeText(json)}>复制</button>
-          )}
-          {tab === 'import' && <button className="btn btn--primary" onClick={doImport}>载入</button>}
-          <button className="btn" onClick={onClose}>关闭</button>
-        </div>
+        <i className="dock__sep" />
+        {tab === 'export' && (
+          <button className="btn btn--sm" onClick={() => navigator.clipboard?.writeText(json)}>复制</button>
+        )}
+        {tab === 'import' && <button className="btn btn--sm btn--primary" onClick={doImport}>载入</button>}
+        <button className="iconbtn" onClick={onClose} title="收起面板"><Icon name="close" /></button>
       </div>
 
       {tab === 'export' ? (
         <>
-          <div className="drawer__note">
+          <div className="dock__note">
             逻辑（nodes / edges）与布局（layout）分开存，流程才能 diff、能 code review、能用 API 生成。
           </div>
           <pre className="drawer__code mono">{json}</pre>
         </>
       ) : (
         <>
-          <div className="drawer__note">粘贴一份流程定义 JSON 覆盖当前画布。</div>
+          <div className="dock__note">粘贴一份流程定义 JSON 覆盖当前画布。</div>
           {err && <div className="errors">{err}</div>}
           <textarea
             className="drawer__input mono"
@@ -59,6 +59,6 @@ export default function JsonDrawer({ onClose }: { onClose: () => void }) {
           />
         </>
       )}
-    </div>
+    </aside>
   )
 }

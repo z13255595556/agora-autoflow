@@ -1,4 +1,4 @@
-# Workflow Studio（空壳前端）
+# AutoFlow Studio
 
 内部工作流编排平台的前端外壳。SQL / Kibana / Grafana 等现有服务以「节点」形式注册进来，
 用户在画布上拖拉拽自由组合。当前无后端，所有数据在前端内存里。
@@ -100,14 +100,22 @@ python3 test_sqlparams.py          # 33 用例：注入、扫描器、只读、L
 
 ## 已经能用的
 
-- 左侧节点面板按分类分组，**拖拽或点击**都能加到画布
-- 画布连线、移动、框选、删除（`Delete` / `Backspace`）
+- **首页 = 流程列表**：卡片网格，带搜索、创建副本、导出 / 导入 JSON、删除；
+  卡片上标出触发方式和用到的节点种类，一眼认出"这条是发企微的"
+- **加节点有三个入口**（都弹同一个搜索式选择器）：
+  节点右侧的 `+`（自动落位 + 自动连线）、连线中间的 `+`（插进两个节点之间，
+  下游自动右移腾位）、画布左上角的「添加节点」。选择器里也能把节点拖到画布上自选落点
+- **节点卡片上写着它配成了什么** —— 几点跑、查哪个引擎、发去哪、缺哪个必填项，
+  不用逐个点开看
+- **节点悬停工具条**：试运行 / 详情 / 复制 / 删除，不用先选中再去右栏找
+- 画布连线、移动、框选、删除（`Delete` / `Backspace`）、**自动整理**（拓扑分层重排）
 - 多出口节点：`条件分支` 真/假两口，`循环遍历` 每一项/完成两口
-- 右侧 Inspector 按节点的 **input JSON Schema 自动渲染表单**
+- **配置面板浮在画布上**（Dify 那种），收起时画布是整块的；
+  按节点的 **input JSON Schema 自动渲染表单**
   （select / 代码框 / 键值对 / 数字 / 开关，由 `x-ui.widget` 决定）
 - **变量选择器**：`{ }` 按钮列出当前节点可引用的全部变量，按来源分组，点击插入光标处
 - **静态校验**：必填项、引用了不存在或非上游的变量，实时反映在
-  字段下方 chip → Inspector 错误区 → 工具栏计数 → 节点角标
+  字段下方 chip → Inspector 错误区 → 顶栏计数 → 节点卡片上的提示条
 - **试运行探测**：SQL 这类输出结构运行时才确定的节点，探测一次把真实列缓存到节点实例，下游即可提示
 - 流程定义 JSON 的导出 / 导入，逻辑与布局分离
 
@@ -145,15 +153,21 @@ python3 test_sqlparams.py          # 33 用例：注入、扫描器、只读、L
 | `src/store.ts` | zustand 状态 + 序列化 + 运行/pin/dirty 状态 |
 | `src/lib/vars.ts` | 上游节点遍历、可用变量计算、静态校验 |
 | `src/lib/display.ts` | `x-show`/`x-hide` 条件显示求值（n8n displayParameter 语义） |
+| `src/lib/summary.ts` | 节点卡片上那行"配成了什么"的摘要 |
+| `src/lib/layout.ts` | 自动整理（拓扑分层 + 重心法排序）、`+` 加节点的落位、插入时的下游平移 |
 | `src/lib/engine.ts` | **mock 执行引擎**：拓扑执行、分支/循环、表达式解析、单节点试运行。后端接上后整个文件换成订阅 run 的 SSE/WS 流，UI 不用改 |
 | `src/components/SchemaForm.tsx` | JSON Schema → 表单渲染器（含条件显示、表达式预览） |
+| `src/components/NodePicker.tsx` | 加节点的搜索式选择器（三个入口共用，支持点选和拖放） |
+| `src/components/FlowEdge.tsx` | 连线：悬停冒出「插入节点 / 删除」，运行后挂条数标签 |
+| `src/components/Icon.tsx` | 界面线条图标（节点自己的图标来自注册表，不在这里） |
 | `src/components/VarPicker.tsx` | 变量选择器 |
 | `src/components/NodeDetailView.tsx` | NDV：输入/参数/输出三栏 + pin + 试运行 |
 | `src/components/RunPanel.tsx` | 底部运行面板：触发表单、历史、分步时间线 |
 
 ## 接后端时要改的地方
 
-SQL 节点已经走完这条路了（`src/lib/client.ts` + `server/`），其余节点还是 mock。
+SQL、HTTP 调用和企微通知节点已经走完这条路了（`src/lib/client.ts` + `server/`），
+没有在后端 manifest 中声明 `runtime` 的节点仍走 mock。
 照着 SQL 节点接下一个时：
 
 1. ~~`src/registry.ts` → `GET /registry/nodes`~~ **已完成**：后端上报的 manifest
@@ -173,6 +187,13 @@ SQL 节点已经走完这条路了（`src/lib/client.ts` + `server/`），其余
 
 定时/webhook 触发配置、子流程、版本发布与回滚、权限、
 NDV 的 Schema 视图（n8n 有 Table/JSON/Schema 三种）、拖字段生成表达式。
+
+## HTTP 调用节点（真实请求）
+
+请求由后端节点服务发起，不受浏览器 CORS 限制。JSON 响应会解析后放在
+`output.body`，非 JSON 响应保留为文本；HTTP 4xx/5xx 的状态码和响应体也会原样返回，
+便于下游节点自行分支。单次响应体上限 5 MiB，超时最长 120 秒，响应中的 `Set-Cookie`
+不会写入运行记录。
 
 ## 企微通知节点（真实发送）
 

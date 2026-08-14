@@ -1,8 +1,35 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFlow } from '../store'
 import { validateNode } from '../lib/vars'
+import Icon from './Icon'
 
-export default function Toolbar({ onToggleJson, jsonOpen }: { onToggleJson: () => void; jsonOpen: boolean }) {
+export type DockPanel = 'flow' | 'json' | null
+
+/**
+ * 编辑器顶栏。
+ *
+ * 原来是一排八个同样大小的灰按钮，主操作（运行）和「清空」长得一模一样，
+ * 眼睛没有落点。现在按频率分三档：左边是身份（返回 / 流程名 / 保存状态），
+ * 右边只留高频的三个（变量、保存、运行），其余收进「更多」。
+ */
+export default function Toolbar({
+  dock,
+  onDock,
+  onToggleVars,
+  varsOpen,
+  onHome,
+  onSave,
+  dirty,
+}: {
+  dock: DockPanel
+  onDock: (p: DockPanel) => void
+  onToggleVars: () => void
+  varsOpen: boolean
+  onHome: () => void
+  onSave: () => void
+  /** 有改动还没保存。不自动保存，全靠这个按钮 */
+  dirty: boolean
+}) {
   const flowName = useFlow((s) => s.flowName)
   const setFlowName = useFlow((s) => s.setFlowName)
   const nodes = useFlow((s) => s.nodes)
@@ -19,6 +46,17 @@ export default function Toolbar({ onToggleJson, jsonOpen }: { onToggleJson: () =
   const stopRun = useFlow((s) => s.stopRun)
   useFlow((s) => s.registryVersion) // 注册表换了要重算问题数
 
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [menuOpen])
+
   // pinned 节点执行时跳过参数校验（n8n 语义），问题计数也不算它
   const problems = useMemo(
     () =>
@@ -29,50 +67,112 @@ export default function Toolbar({ onToggleJson, jsonOpen }: { onToggleJson: () =
   )
 
   return (
-    <header className="toolbar">
-      <div className="toolbar__brand">
-        <span className="toolbar__logo">◆</span>
-        Workflow Studio
-        <span className="toolbar__tag">空壳前端</span>
+    <header className="topbar">
+      <button className="topbar__back" onClick={onHome} title="返回流程列表">
+        <Icon name="back" />
+      </button>
+
+      <div className="topbar__id">
+        <input
+          className="topbar__name"
+          value={flowName}
+          onChange={(e) => setFlowName(e.target.value)}
+          title="点击重命名"
+        />
+        <div className="topbar__meta">
+          <span>
+            {nodes.length} 节点 · {edges.length} 连线
+          </span>
+          <span className={`savestate${dirty ? ' savestate--dirty' : ''}`}>{dirty ? '未保存' : '已保存'}</span>
+        </div>
       </div>
 
-      <input className="toolbar__name" value={flowName} onChange={(e) => setFlowName(e.target.value)} />
+      <div className="topbar__right">
+        <span
+          className={`conn conn--${backend ? (backend.ok ? 'ok' : 'warn') : 'off'}`}
+          title={
+            !backend
+              ? '节点服务未连接，所有节点走本地 mock。启动 server 后刷新即可'
+              : backend.ok
+                ? `节点服务已连接 · ${backend.endpoint}`
+                : `节点服务在，但缺凭证：${backend.missingCredentials.join('、')}`
+          }
+        >
+          <i />
+          {!backend ? 'mock' : backend.ok ? '已连接' : '缺凭证'}
+        </span>
 
-      <div className="toolbar__stats">
-        {nodes.length} 节点 · {edges.length} 连线
-      </div>
-
-      <span
-        className={`conn conn--${backend ? (backend.ok ? 'ok' : 'warn') : 'off'}`}
-        title={
-          !backend
-            ? '节点服务未连接，所有节点走本地 mock。启动 server 后刷新即可'
-            : backend.ok
-              ? `节点服务已连接 · ${backend.endpoint}`
-              : `节点服务在，但缺凭证：${backend.missingCredentials.join('、')}`
-        }
-      >
-        <i />
-        {!backend ? 'mock' : backend.ok ? '已连接' : '缺凭证'}
-      </span>
-
-      <div className="toolbar__actions">
         <button
-          className={problems.length ? 'btn btn--warn' : 'btn btn--ok'}
+          className={`chip${problems.length ? ' chip--warn' : ' chip--ok'}`}
           onClick={() => problems[0] && select(problems[0].id)}
           title={problems.map((p) => `${p.name}: ${p.e}`).join('\n') || '静态校验通过'}
         >
-          {problems.length ? `${problems.length} 处问题` : '校验通过'}
+          <i />
+          {problems.length ? `${problems.length} 处待补` : '校验通过'}
         </button>
-        <button className={`btn${jsonOpen ? ' btn--active' : ''}`} onClick={onToggleJson}>
-          流程 JSON
+
+        <i className="topbar__sep" />
+
+        <button
+          className={`btn btn--icon${varsOpen ? ' btn--active' : ''}`}
+          onClick={onToggleVars}
+          title="所有能引用的变量和日期函数，点一条复制"
+        >
+          <Icon name="vars" size={14} /> 变量
         </button>
-        <button className="btn" onClick={() => { if (confirm('清空画布？')) clear() }}>
-          清空
+
+        <div className="menu" ref={menuRef}>
+          <button className="btn btn--icon" onClick={() => setMenuOpen((v) => !v)} title="更多">
+            <Icon name="more" size={14} />
+          </button>
+          {menuOpen && (
+            <div className="menu__pop">
+              <button
+                className="menu__item"
+                onClick={() => {
+                  onDock(dock === 'flow' ? null : 'flow')
+                  setMenuOpen(false)
+                }}
+              >
+                流程设置<em>入参 / 名称</em>
+              </button>
+              {/* 「整理」不放这儿 —— 画布左下角的控制条里那个还会顺手把视野跟过去，
+                  这里放一个不跟视野的同名项，只会让人以为两个功能不一样 */}
+              <button
+                className="menu__item"
+                onClick={() => {
+                  onDock(dock === 'json' ? null : 'json')
+                  setMenuOpen(false)
+                }}
+              >
+                流程 JSON<em>导入 / 导出</em>
+              </button>
+              <i className="menu__sep" />
+              <button
+                className="menu__item menu__item--danger"
+                onClick={() => {
+                  setMenuOpen(false)
+                  if (confirm('清空画布？画布上的节点、连线和入参都会没掉。')) clear()
+                }}
+              >
+                清空画布
+              </button>
+            </div>
+          )}
+        </div>
+
+        <button
+          className={`btn${dirty ? ' btn--dirty' : ''}`}
+          onClick={onSave}
+          disabled={!dirty}
+          title={dirty ? '保存到流程库（⌘S / Ctrl+S）' : '没有未保存的改动'}
+        >
+          保存
         </button>
+
         {running ? (
-          <button className="btn btn--warn" onClick={stopRun} title="中止运行，并取消平台上还在跑的任务">
-            ■ 停止
+          <button className="btn btn--stop" onClick={stopRun} title="中止运行，并取消平台上还在跑的任务">
+            <Icon name="stop" size={12} /> 停止
           </button>
         ) : (
           <button
@@ -80,7 +180,7 @@ export default function Toolbar({ onToggleJson, jsonOpen }: { onToggleJson: () =
             onClick={() => setRunPanelOpen(!runPanelOpen)}
             title={backend?.ok ? '打开运行面板（SQL 节点走真实执行）' : '打开运行面板（mock 执行）'}
           >
-            ▶ 运行
+            <Icon name="play" size={12} /> 运行
           </button>
         )}
       </div>

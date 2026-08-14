@@ -11,6 +11,16 @@ export interface UiHint {
   language?: string
   /** 动态下拉：运行时向 GET /options/{key} 拉取候选项 */
   optionsFrom?: string
+  /**
+   * 下拉选项的显示名（enum 值 → 中文）。
+   * enum 值本身要进流程定义，得保持稳定的英文标识；显示名只是皮。
+   */
+  labels?: Record<string, string>
+  /**
+   * 挂在整个 input schema 上的实时预览面板。
+   * - 'date' —— 按当前参数当场算出日期，连同各种格式和引用路径一起显示
+   */
+  preview?: 'date'
   placeholder?: string
   rows?: number
   /**
