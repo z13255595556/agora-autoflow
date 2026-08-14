@@ -1,4 +1,4 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { useFlow, type FNode } from '../store'
 import { validateNode } from '../lib/vars'
@@ -18,12 +18,27 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const openNdv = useFlow((s) => s.openNdv)
   const deleteNode = useFlow((s) => s.deleteNode)
   const duplicateNode = useFlow((s) => s.duplicateNode)
+  const toggleNodeSelection = useFlow((s) => s.toggleNodeSelection)
   const testStep = useFlow((s) => s.testStep)
+  const updateNodeParam = useFlow((s) => s.updateNodeParam)
   const running = useFlow((s) => s.running)
   const { openPicker } = useCanvasCtx()
 
   if (!t) {
     return <div className="node node--unknown">未知节点 {data.typeId}</div>
+  }
+
+  if (t.visualOnly) {
+    return (
+      <CanvasNoteView
+        id={id}
+        data={data}
+        selected={selected}
+        onChange={(key, value) => updateNodeParam(id, key, value)}
+        onDuplicate={() => duplicateNode(id)}
+        onDelete={() => deleteNode(id)}
+      />
+    )
   }
 
   const self = nodes.find((n) => n.id === id)
@@ -32,6 +47,11 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const color = CATEGORY_COLOR[t.category] ?? '#64748b'
   const ports = portsOf(t)
   const hasInput = t.hasInput !== false
+  const connectedPorts = new Set(
+    edges
+      .filter((edge) => edge.source === id)
+      .map((edge) => edge.sourceHandle ?? 'out'),
+  )
 
   // 运行状态角标（n8n 画布上的 ✓/✗/spinner）
   const run = runs.find((r) => r.id === activeRunId) ?? runs[0]
@@ -48,10 +68,18 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
     <div
       className={`node${selected ? ' node--selected' : ''}${last ? ` node--run-${last.status}` : ''}`}
       style={{ '--accent': color } as React.CSSProperties}
+      onPointerDown={(event) => {
+        if ((!event.metaKey && !event.ctrlKey) || (event.target as Element).closest('button')) return
+        event.stopPropagation()
+        toggleNodeSelection(id)
+      }}
+      onClick={(event) => {
+        if (event.metaKey || event.ctrlKey) event.stopPropagation()
+      }}
     >
       {hasInput && <Handle type="target" position={Position.Left} className="handle handle--in" />}
 
-      {/* 悬停工具条（Dify 同款）：常用动作直接落在节点上，不用先选中再去右栏找 */}
+      {/* 悬停工具条：常用动作直接落在节点上，不用先选中再去右栏找 */}
       <div className="node__tools" onPointerDown={(e) => e.stopPropagation()}>
         <button
           className="node__tool"
@@ -74,26 +102,30 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
         >
           <Icon name="expand" size={13} />
         </button>
-        <button
-          className="node__tool"
-          title="复制一份"
-          onClick={(e) => {
-            e.stopPropagation()
-            duplicateNode(id)
-          }}
-        >
-          <Icon name="copy" size={13} />
-        </button>
-        <button
-          className="node__tool node__tool--danger"
-          title="删除"
-          onClick={(e) => {
-            e.stopPropagation()
-            deleteNode(id)
-          }}
-        >
-          <Icon name="trash" size={13} />
-        </button>
+        {t.hasInput !== false && (
+          <button
+            className="node__tool"
+            title="复制一份（⌘/Ctrl+D）"
+            onClick={(e) => {
+              e.stopPropagation()
+              duplicateNode(id)
+            }}
+          >
+            <Icon name="copy" size={13} />
+          </button>
+        )}
+        {t.hasInput !== false && (
+          <button
+            className="node__tool node__tool--danger"
+            title="删除"
+            onClick={(e) => {
+              e.stopPropagation()
+              deleteNode(id)
+            }}
+          >
+            <Icon name="trash" size={13} />
+          </button>
+        )}
       </div>
 
       {(last || isPinned) && (
@@ -143,9 +175,11 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
       {ports.length === 1 && ports[0].id === 'out' && (
         <>
           <Handle type="source" position={Position.Right} id="out" className="handle handle--out" />
-          <button className="node__plus" title="接一个节点" onClick={plus('out')}>
-            <Icon name="plus" size={13} />
-          </button>
+          {!connectedPorts.has('out') && (
+            <button className="node__plus" title="接一个节点" onClick={plus('out')}>
+              <Icon name="plus" size={13} />
+            </button>
+          )}
         </>
       )}
 
@@ -155,15 +189,86 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
             <div className="node__port" key={p.id}>
               <span className="node__portlabel">{p.label}</span>
               <Handle type="source" position={Position.Right} id={p.id} className="handle handle--port" />
-              <button className="node__plus node__plus--port" title={`在「${p.label}」出口接一个节点`} onClick={plus(p.id)}>
-                <Icon name="plus" size={13} />
-              </button>
+              {!connectedPorts.has(p.id) && (
+                <button className="node__plus node__plus--port" title={`在「${p.label}」出口接一个节点`} onClick={plus(p.id)}>
+                  <Icon name="plus" size={13} />
+                </button>
+              )}
             </div>
           ))}
         </div>
       )}
 
       {ports.length === 0 && <div className="node__terminal">流程终点</div>}
+    </div>
+  )
+}
+
+const NOTE_THEMES = ['yellow', 'blue', 'green', 'pink', 'gray'] as const
+
+function CanvasNoteView({
+  id,
+  data,
+  selected,
+  onChange,
+  onDuplicate,
+  onDelete,
+}: {
+  id: string
+  data: FNode['data']
+  selected: boolean
+  onChange: (key: string, value: unknown) => void
+  onDuplicate: () => void
+  onDelete: () => void
+}) {
+  const theme = NOTE_THEMES.includes(data.params.theme as typeof NOTE_THEMES[number])
+    ? data.params.theme as typeof NOTE_THEMES[number]
+    : 'yellow'
+  const text = typeof data.params.text === 'string' ? data.params.text : ''
+
+  return (
+    <div className={`canvasnote canvasnote--${theme}${selected ? ' canvasnote--selected' : ''}`}>
+      <NodeResizer
+        isVisible={selected}
+        minWidth={220}
+        minHeight={110}
+        lineClassName="canvasnote__resize-line"
+        handleClassName="canvasnote__resize-handle"
+      />
+      <i className="canvasnote__stripe" />
+      {selected && (
+        <div className="canvasnote__toolbar nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
+          <div className="canvasnote__swatches" aria-label="便签颜色">
+            {NOTE_THEMES.map((item) => (
+              <button
+                key={item}
+                className={`canvasnote__swatch canvasnote__swatch--${item}${item === theme ? ' is-active' : ''}`}
+                onClick={() => onChange('theme', item)}
+                title={`${item === 'yellow' ? '黄色' : item === 'blue' ? '蓝色' : item === 'green' ? '绿色' : item === 'pink' ? '粉色' : '灰色'}便签`}
+                aria-label={`${item === 'yellow' ? '黄色' : item === 'blue' ? '蓝色' : item === 'green' ? '绿色' : item === 'pink' ? '粉色' : '灰色'}便签`}
+                aria-pressed={item === theme}
+              />
+            ))}
+          </div>
+          <i />
+          <button title="创建副本" aria-label="创建副本" onClick={onDuplicate}><Icon name="copy" size={13} /></button>
+          <button className="is-danger" title="删除便签" aria-label="删除便签" onClick={onDelete}><Icon name="trash" size={13} /></button>
+        </div>
+      )}
+      <textarea
+        className="canvasnote__editor nodrag nowheel"
+        value={text}
+        readOnly={!selected}
+        placeholder="写点说明…"
+        aria-label={`便签 ${id}`}
+        onPointerDown={(event) => {
+          if (selected) event.stopPropagation()
+        }}
+        onClick={(event) => {
+          if (selected) event.stopPropagation()
+        }}
+        onChange={(event) => onChange('text', event.target.value)}
+      />
     </div>
   )
 }

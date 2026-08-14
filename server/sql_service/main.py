@@ -148,6 +148,8 @@ def execute_http_request(body: SubmitBody) -> Dict[str, Any]:
     """Execute a generic HTTP request on behalf of the workflow."""
     try:
         return {"output": http_request.execute(body.params)}
+    except http_request.HttpStatusError as exc:
+        raise HTTPException(502, str(exc))
     except http_request.HttpRequestError as exc:
         raise HTTPException(400, str(exc))
 

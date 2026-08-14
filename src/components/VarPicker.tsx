@@ -1,67 +1,68 @@
-import { useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { VarEntry } from '../lib/vars'
+import { filterSlashVars } from '../lib/slash'
 
 interface Props {
   vars: VarEntry[]
+  query: string
+  activeIndex: number
+  style: CSSProperties
   onPick: (path: string) => void
-  onClose: () => void
+  onActiveIndex: (index: number) => void
 }
 
 /**
- * 变量选择器：按来源节点分组列出可引用的字段。
- * 这是编辑器的生死线 —— 没有它用户只能盲敲上游字段名，跑一次错一次。
+ * Slash variable picker. Search happens in the source text after `/`, so the
+ * popup itself deliberately has no second search box and never steals focus.
  */
-export default function VarPicker({ vars, onPick, onClose }: Props) {
-  const [q, setQ] = useState('')
-
+export default function VarPicker({ vars, query, activeIndex, style, onPick, onActiveIndex }: Props) {
+  const activeRef = useRef<HTMLButtonElement>(null)
+  const filtered = useMemo(() => filterSlashVars(vars, query), [vars, query])
   const groups = useMemo(() => {
-    const kw = q.trim().toLowerCase()
-    const hit = vars.filter(
-      (v) => !kw || v.path.toLowerCase().includes(kw) || v.label.toLowerCase().includes(kw),
-    )
-    const map = new Map<string, VarEntry[]>()
-    for (const v of hit) map.set(v.group, [...(map.get(v.group) ?? []), v])
+    const map = new Map<string, Array<{ item: VarEntry; index: number }>>()
+    filtered.forEach((item, index) => {
+      map.set(item.group, [...(map.get(item.group) ?? []), { item, index }])
+    })
     return [...map.entries()]
-  }, [vars, q])
+  }, [filtered])
+
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex])
+
+  if (filtered.length === 0) return null
 
   return (
-    <>
-      <div className="varpicker__mask" onClick={onClose} />
-      <div className="varpicker">
-        <div className="varpicker__search">
-          <input
-            autoFocus
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="搜索变量 / 日期函数…"
-            // Esc 关掉。`/` 唤起时这里是误触的唯一出口，没有它只能去点遮罩
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault()
-                onClose()
-              }
-            }}
-          />
-        </div>
-        <div className="varpicker__body">
-          {groups.map(([group, items]) => (
-            <div key={group} className="varpicker__group">
-              <div className="varpicker__gtitle">{group}</div>
-              {items.map((v) => (
-                <button key={v.path} className="varpicker__item" onClick={() => onPick(v.path)}>
-                  <span className="varpicker__label">{v.label}</span>
-                  <code className="varpicker__path">{v.path}</code>
-                  <span className="varpicker__type">
-                    {v.type}
-                    {v.large && <em title="大字段，节点间走 $ref 引用传递"> ·大</em>}
-                  </span>
-                </button>
-              ))}
-            </div>
-          ))}
-          {groups.length === 0 && <div className="empty">没有可引用的变量。先把上游节点连过来。</div>}
-        </div>
+    <div className="varpicker" style={style} role="listbox" aria-label="可用变量">
+      <div className="varpicker__body">
+        {groups.map(([group, items]) => (
+          <div key={group} className="varpicker__group">
+            <div className="varpicker__gtitle">{group}</div>
+            {items.map(({ item, index }) => (
+              <button
+                key={item.path}
+                ref={index === activeIndex ? activeRef : undefined}
+                className={`varpicker__item${index === activeIndex ? ' is-active' : ''}`}
+                role="option"
+                aria-selected={index === activeIndex}
+                onMouseEnter={() => onActiveIndex(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  onPick(item.path)
+                }}
+              >
+                <span className="varpicker__label">{item.label}</span>
+                <code className="varpicker__path">{item.path}</code>
+                <span className="varpicker__type">
+                  {item.type}
+                  {item.large && <em title="大字段，节点间走 $ref 引用传递"> ·大</em>}
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
       </div>
-    </>
+    </div>
   )
 }

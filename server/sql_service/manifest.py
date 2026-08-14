@@ -206,7 +206,7 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "type": "string",
                 "title": "方法",
                 "default": "GET",
-                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
                 "x-ui": {"widget": "select"},
             },
             "url": {
@@ -214,35 +214,96 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "title": "URL",
                 "x-ui": {"placeholder": "https://svc.internal/api/..."},
             },
+            "query": {
+                "type": "object", "title": "查询参数", "additionalProperties": True,
+                "x-ui": {"widget": "kv"},
+            },
+            "authType": {
+                "type": "string", "title": "认证", "default": "none",
+                "enum": ["none", "bearer", "basic", "header"],
+                "x-ui": {"widget": "select", "labels": {
+                    "none": "无", "bearer": "Bearer Token", "basic": "Basic Auth", "header": "自定义请求头",
+                }},
+            },
+            "bearerToken": {"type": "string", "title": "Token", "x-ui": {"secret": True}, "x-show": {"authType": ["bearer"]}},
+            "basicUsername": {"type": "string", "title": "用户名", "x-show": {"authType": ["basic"]}},
+            "basicPassword": {"type": "string", "title": "密码", "x-ui": {"secret": True}, "x-show": {"authType": ["basic"]}},
+            "authHeaderName": {"type": "string", "title": "认证请求头名", "x-show": {"authType": ["header"]}},
+            "authHeaderValue": {"type": "string", "title": "认证请求头值", "x-ui": {"secret": True}, "x-show": {"authType": ["header"]}},
             "headers": {
                 "type": "object",
                 "title": "请求头",
                 "additionalProperties": True,
-                "x-ui": {"widget": "kv"},
+                "x-ui": {"widget": "kv", "sensitiveKeys": True},
+            },
+            "bodyType": {
+                "type": "string", "title": "请求体类型", "default": "none",
+                "enum": ["none", "json", "raw", "form-urlencoded"],
+                "x-ui": {"widget": "select", "labels": {
+                    "none": "无", "json": "JSON", "raw": "纯文本", "form-urlencoded": "表单 URL 编码",
+                }},
             },
             "body": {
                 "type": "string",
                 "title": "请求体",
                 "x-ui": {"widget": "code", "language": "json", "rows": 6},
-                "x-show": {"method": ["POST", "PUT", "PATCH"]},
+                "x-show": {"bodyType": ["json", "raw"]},
+            },
+            "formBody": {
+                "type": "object", "title": "表单字段", "additionalProperties": True,
+                "x-ui": {"widget": "kv"},
+                "x-show": {"bodyType": ["form-urlencoded"]},
             },
             "timeoutMs": {
                 "type": "integer",
-                "title": "超时(ms)",
+                "title": "默认超时(ms)",
                 "default": 30000,
                 "minimum": 1,
                 "maximum": 120000,
+                "description": "连接和读取未单独设置时使用",
+            },
+            "connectTimeoutMs": {
+                "type": "integer", "title": "连接超时(ms)", "minimum": 1, "maximum": 120000,
+            },
+            "readTimeoutMs": {
+                "type": "integer", "title": "读取超时(ms)", "minimum": 1, "maximum": 120000,
+            },
+            "allowHttpErrors": {
+                "type": "boolean",
+                "title": "接受错误状态码",
+                "default": False,
+                "description": "打开后，4xx / 5xx 仍作为正常输出交给下游处理",
+                "x-ui": {"widget": "switch"},
+            },
+            "verifySsl": {
+                "type": "boolean", "title": "校验 SSL 证书", "default": True,
+                "description": "仅在调用自签名证书服务时关闭", "x-ui": {"widget": "switch"},
+            },
+            "retryEnabled": {
+                "type": "boolean", "title": "失败后重试", "default": False,
+                "description": "仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启",
+                "x-ui": {"widget": "switch"},
+            },
+            "maxRetries": {
+                "type": "integer", "title": "最多重试次数", "default": 2, "minimum": 1, "maximum": 5,
+                "x-show": {"retryEnabled": [True]},
+            },
+            "retryIntervalMs": {
+                "type": "integer", "title": "重试间隔(ms)", "default": 500, "minimum": 0, "maximum": 10000,
+                "x-show": {"retryEnabled": [True]},
             },
         },
     },
     "output": {
         "type": "object",
+        "x-dynamic": "run",
         "properties": {
             "status": {"type": "integer", "title": "状态码"},
             # JSON 响应是对象/数组，非 JSON 响应是字符串，因此不限定 type。
             "body": {"title": "响应体"},
             "headers": {"type": "object", "title": "响应头"},
             "url": {"type": "string", "title": "最终 URL"},
+            "attempts": {"type": "integer", "title": "请求尝试次数"},
         },
     },
     "runtime": {

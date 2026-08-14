@@ -34,6 +34,10 @@ export interface UiHint {
    * - 'message' —— 下方实时渲染消息成品 + 字节数
    */
   inserters?: Array<'table' | 'message'>
+  /** KV 编辑器中按敏感键名遮罩 value，适用于 HTTP headers。 */
+  sensitiveKeys?: boolean
+  /** 单值凭证输入，默认用密码态显示且禁止浏览器自动填充。 */
+  secret?: boolean
 }
 
 /**
@@ -62,7 +66,7 @@ export interface JsonSchema {
   /** 结果可能很大：引擎转存对象存储，节点间只传 $ref */
   'x-large'?: boolean
   /** 输出结构运行时才知道（如 SQL 列），靠试运行探测后缓存到节点实例 */
-  'x-dynamic'?: 'probe'
+  'x-dynamic'?: 'probe' | 'run'
   /** 满足条件才显示（同级参数名 → 候选值列表） */
   'x-show'?: ShowCondition
   /** 满足条件就隐藏，优先级高于 x-show */
@@ -119,6 +123,8 @@ export interface NodeType {
   ports?: NodePort[]
   /** 缺省 true；触发器节点为 false */
   hasInput?: boolean
+  /** 只用于画布表达，不参与连线、校验或执行，如便签。 */
+  visualOnly?: boolean
   runtime?: NodeRuntime
   policy?: {
     idempotent?: boolean
@@ -162,9 +168,11 @@ export interface FlowDefinition {
     name: string
     params: Record<string, unknown>
     onError: 'fail' | 'continue'
+    /** 运行中学习到的输出字段结构；不包含真实响应值。 */
+    probedOutput?: Record<string, JsonSchema>
   }>
   edges: Array<{ from: string; to: string; port?: string }>
-  layout: Record<string, { x: number; y: number }>
+  layout: Record<string, { x: number; y: number; width?: number; height?: number }>
   /**
    * 固定输出（对齐 n8n pinData）：nodeId → 固定的输出数据。
    * 只在手动/调试运行时替代真实执行；生产触发（cron/webhook）忽略。

@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react'
 import { CATEGORY_COLOR, CATEGORY_ORDER, NODE_TYPES, portsOf } from '../registry'
 import { useFlow } from '../store'
 import type { NodeType } from '../types'
+import { recentNodeTypes, rememberNodeType } from '../lib/nodeUsage'
 import type { PickTarget } from './canvasCtx'
 
 /**
@@ -44,9 +45,11 @@ export default function NodePicker({
   onClose: () => void
 }) {
   const [q, setQ] = useState('')
+  const [recent] = useState(recentNodeTypes)
   const registryVersion = useFlow((s) => s.registryVersion)
   const addNode = useFlow((s) => s.addNode)
   const addNodeAfter = useFlow((s) => s.addNodeAfter)
+  const addNodeConnectedAt = useFlow((s) => s.addNodeConnectedAt)
   const insertNodeOnEdge = useFlow((s) => s.insertNodeOnEdge)
   const { screenToFlowPosition, getZoom } = useReactFlow()
 
@@ -56,6 +59,7 @@ export default function NodePicker({
   const pos = useRef({ x: 0, y: 0 })
   const size = useRef({ w: NODE_W, h: NODE_H })
   const ghostRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef(new Map<string, HTMLDivElement>())
   const [ghost, setGhost] = useState<NodeType | null>(null)
 
   // 打开就聚焦搜索框：这个面板基本只有一种用法 —— 打字找节点
@@ -83,7 +87,7 @@ export default function NodePicker({
     const kw = q.trim().toLowerCase()
     const hit = NODE_TYPES.filter((t) => {
       // 接在别的节点后面时，没有输入口的触发器排掉 —— 选了也连不上
-      if (target.kind !== 'free' && t.hasInput === false) return false
+      if (target.kind !== 'free' && (t.hasInput === false || t.visualOnly)) return false
       return (
         !kw ||
         t.name.toLowerCase().includes(kw) ||
@@ -91,19 +95,38 @@ export default function NodePicker({
         (t.description ?? '').toLowerCase().includes(kw)
       )
     })
-    return CATEGORY_ORDER.map((c) => ({ category: c, items: hit.filter((t) => t.category === c) })).filter(
-      (g) => g.items.length > 0,
-    )
-  }, [q, target.kind, registryVersion])
+    const recentItems = !kw
+      ? recent.map((type) => hit.find((item) => item.type === type)).filter((item): item is NodeType => !!item)
+      : []
+    const recentIds = new Set(recentItems.map((item) => item.type))
+    const categories = CATEGORY_ORDER.map((c) => ({
+      category: c,
+      items: hit.filter((t) => t.category === c && !recentIds.has(t.type)),
+    })).filter((g) => g.items.length > 0)
+    return recentItems.length ? [{ category: '最近使用', items: recentItems }, ...categories] : categories
+  }, [q, target.kind, registryVersion, recent])
 
   const flat = useMemo(() => grouped.flatMap((g) => g.items), [grouped])
   const [cursor, setCursor] = useState(0)
   useEffect(() => setCursor(0), [q])
+  useEffect(() => {
+    const active = flat[cursor]
+    if (active) itemRefs.current.get(active.type)?.scrollIntoView({ block: 'nearest' })
+  }, [cursor, flat])
 
   /** 按选择器的来源决定加到哪、要不要连线 */
   const commit = useCallback(
     (t: NodeType, dropAt?: { x: number; y: number }) => {
-      if (dropAt) {
+      rememberNodeType(t.type)
+      if (target.kind === 'connection') {
+        const p = screenToFlowPosition(dropAt ?? target.dropAt)
+        addNodeConnectedAt(
+          t.type,
+          target.nodeId,
+          target.port,
+          { x: p.x - size.current.w / 2, y: p.y - size.current.h / 2 },
+        )
+      } else if (dropAt) {
         const p = screenToFlowPosition(dropAt)
         addNode(t.type, { x: p.x - size.current.w / 2, y: p.y - size.current.h / 2 })
       } else if (target.kind === 'after') {
@@ -116,11 +139,13 @@ export default function NodePicker({
         const p = screenToFlowPosition(
           rect ? { x: rect.left + rect.width * 0.38, y: rect.top + rect.height / 2 } : { x: anchor.x, y: anchor.y },
         )
-        addNode(t.type, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 })
+        const width = t.visualOnly ? 280 : NODE_W
+        const height = t.visualOnly ? 160 : NODE_H
+        addNode(t.type, { x: p.x - width / 2, y: p.y - height / 2 })
       }
       onClose()
     },
-    [addNode, addNodeAfter, insertNodeOnEdge, target, anchor, screenToFlowPosition, onClose],
+    [addNode, addNodeAfter, addNodeConnectedAt, insertNodeOnEdge, target, anchor, screenToFlowPosition, onClose],
   )
 
   // ------------------------------------------------------------ 拖拽落点
@@ -247,6 +272,12 @@ export default function NodePicker({
               } else if (e.key === 'ArrowUp') {
                 e.preventDefault()
                 setCursor((c) => Math.max(c - 1, 0))
+              } else if (e.key === 'Home') {
+                e.preventDefault()
+                setCursor(0)
+              } else if (e.key === 'End') {
+                e.preventDefault()
+                setCursor(Math.max(0, flat.length - 1))
               } else if (e.key === 'Enter' && flat[cursor]) {
                 e.preventDefault()
                 commit(flat[cursor])
@@ -254,14 +285,20 @@ export default function NodePicker({
             }}
           />
         </div>
-        <div className="picker__body">
+        <div className="picker__body" role="listbox" aria-label="节点类型">
           {grouped.map((g) => (
             <section className="picker__group" key={g.category}>
               <div className="picker__cat">{g.category}</div>
               {g.items.map((t) => (
                 <div
                   key={t.type}
+                  ref={(element) => {
+                    if (element) itemRefs.current.set(t.type, element)
+                    else itemRefs.current.delete(t.type)
+                  }}
                   className={`picker__item${flat[cursor]?.type === t.type ? ' is-cursor' : ''}`}
+                  role="option"
+                  aria-selected={flat[cursor]?.type === t.type}
                   onPointerDown={(e) => onPointerDown(e, t)}
                   onPointerMove={onPointerMove}
                   onPointerUp={(e) => {
@@ -306,6 +343,14 @@ export default function NodePicker({
  * ReactFlow 的节点上下文里，这里用同样样式的圆点顶上。
  */
 function NodePreview({ type }: { type: NodeType }) {
+  if (type.visualOnly) {
+    return (
+      <div className="canvasnote canvasnote--yellow canvasnote--preview">
+        <i className="canvasnote__stripe" />
+        <div>写点说明…</div>
+      </div>
+    )
+  }
   const ports = portsOf(type)
   return (
     <div className="node" style={{ '--accent': CATEGORY_COLOR[type.category] ?? '#64748b' } as React.CSSProperties}>

@@ -89,6 +89,45 @@ export function toProbedFields(learned: LearnedColumns): Record<string, JsonSche
   return out
 }
 
+const jsonType = (value: unknown): JsonSchema['type'] => {
+  if (Array.isArray(value)) return 'array'
+  if (isRecord(value)) return 'object'
+  if (typeof value === 'boolean') return 'boolean'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'number'
+  return 'string'
+}
+
+/**
+ * 从 HTTP 响应体学习可直接引用的对象字段。只保存路径与类型，不保存响应值。
+ * 点路径无法表达的 key（含点、空格等）不生成变量，避免选择后运行失败。
+ */
+export function toResponseFields(output: unknown): Record<string, JsonSchema> | null {
+  if (!isRecord(output) || !isRecord(output.body)) return null
+  const fields: Record<string, JsonSchema> = {}
+  let count = 0
+  const walk = (value: Record<string, unknown>, prefix: string, depth: number) => {
+    if (depth > 3 || count >= 80) return
+    for (const [key, child] of Object.entries(value)) {
+      if (count >= 80) break
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
+      const path = `${prefix}.${key}`
+      const type = jsonType(child)
+      fields[path] = { type, title: key }
+      count += 1
+      if (type === 'object' && isRecord(child)) walk(child, path, depth + 1)
+    }
+  }
+  walk(output.body, 'body', 0)
+  return count ? fields : null
+}
+
+/** HTTP 等对象型动态输出里已学习到的字段；SQL 的 rows[].x 不属于变量路径。 */
+export function probedObjectFields(probed: Record<string, JsonSchema> | undefined): Array<{ path: string; schema: JsonSchema }> {
+  return Object.entries(probed ?? {})
+    .filter(([path]) => !path.includes('[].'))
+    .map(([path, schema]) => ({ path, schema }))
+}
+
 /** 从 probedOutput 反解出列名，供选列器和预览用 */
 export function probedColumns(probed: Record<string, JsonSchema> | undefined): Array<{ name: string; type?: string }> {
   const out: Array<{ name: string; type?: string }> = []

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFlow } from '../store'
 import { validateNode } from '../lib/vars'
+import { graphProblems } from '../lib/graph'
+import { NODE_TYPE_MAP } from '../registry'
+import { focusValidationField } from '../lib/validationFocus'
 import Icon from './Icon'
 
 export type DockPanel = 'flow' | 'json' | null
@@ -10,25 +13,23 @@ export type DockPanel = 'flow' | 'json' | null
  *
  * 原来是一排八个同样大小的灰按钮，主操作（运行）和「清空」长得一模一样，
  * 眼睛没有落点。现在按频率分三档：左边是身份（返回 / 流程名 / 保存状态），
- * 右边只留高频的三个（变量、保存、运行），其余收进「更多」。
+ * 右边只留高频操作（保存、运行），其余收进「更多」。
  */
 export default function Toolbar({
   dock,
   onDock,
-  onToggleVars,
-  varsOpen,
   onHome,
   onSave,
   dirty,
+  saveError,
 }: {
   dock: DockPanel
   onDock: (p: DockPanel) => void
-  onToggleVars: () => void
-  varsOpen: boolean
   onHome: () => void
   onSave: () => void
-  /** 有改动还没保存。不自动保存，全靠这个按钮 */
+  /** 有持久化改动正在等待防抖自动保存。 */
   dirty: boolean
+  saveError: string | null
 }) {
   const flowName = useFlow((s) => s.flowName)
   const setFlowName = useFlow((s) => s.setFlowName)
@@ -36,7 +37,11 @@ export default function Toolbar({
   const edges = useFlow((s) => s.edges)
   const flowInputs = useFlow((s) => s.flowInputs)
   const clear = useFlow((s) => s.clear)
-  const select = useFlow((s) => s.select)
+  const focusNode = useFlow((s) => s.focusNode)
+  const canUndo = useFlow((s) => s.historyPast.length > 0)
+  const canRedo = useFlow((s) => s.historyFuture.length > 0)
+  const undo = useFlow((s) => s.undo)
+  const redo = useFlow((s) => s.redo)
 
   const running = useFlow((s) => s.running)
   const runPanelOpen = useFlow((s) => s.runPanelOpen)
@@ -47,7 +52,9 @@ export default function Toolbar({
   useFlow((s) => s.registryVersion) // 注册表换了要重算问题数
 
   const [menuOpen, setMenuOpen] = useState(false)
+  const [problemsOpen, setProblemsOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const problemsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menuOpen) return
     const close = (e: MouseEvent) => {
@@ -59,12 +66,38 @@ export default function Toolbar({
 
   // pinned 节点执行时跳过参数校验（n8n 语义），问题计数也不算它
   const problems = useMemo(
-    () =>
-      nodes
+    () => [
+      ...graphProblems(nodes, edges).map((problem) => ({
+        id: problem.nodeId,
+        name: '流程结构',
+        e: problem.message,
+      })),
+      ...nodes
         .filter((n) => !Object.prototype.hasOwnProperty.call(pinData, n.id))
         .flatMap((n) => validateNode(n, nodes, edges, flowInputs).map((e) => ({ id: n.id, name: n.data.label, e }))),
+    ],
     [nodes, edges, flowInputs, pinData],
   )
+
+  useEffect(() => {
+    if (!problemsOpen) return
+    const close = (event: MouseEvent) => {
+      if (!problemsRef.current?.contains(event.target as Node)) setProblemsOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProblemsOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    window.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', escape)
+    }
+  }, [problemsOpen])
+
+  useEffect(() => {
+    if (problems.length === 0) setProblemsOpen(false)
+  }, [problems.length])
 
   return (
     <header className="topbar">
@@ -83,7 +116,9 @@ export default function Toolbar({
           <span>
             {nodes.length} 节点 · {edges.length} 连线
           </span>
-          <span className={`savestate${dirty ? ' savestate--dirty' : ''}`}>{dirty ? '未保存' : '已保存'}</span>
+          <span className={`savestate${saveError ? ' savestate--error' : dirty ? ' savestate--dirty' : ''}`}>
+            {saveError ? '保存失败' : dirty ? '保存中…' : '已保存'}
+          </span>
         </div>
       </div>
 
@@ -102,27 +137,89 @@ export default function Toolbar({
           {!backend ? 'mock' : backend.ok ? '已连接' : '缺凭证'}
         </span>
 
-        <button
-          className={`chip${problems.length ? ' chip--warn' : ' chip--ok'}`}
-          onClick={() => problems[0] && select(problems[0].id)}
-          title={problems.map((p) => `${p.name}: ${p.e}`).join('\n') || '静态校验通过'}
-        >
-          <i />
-          {problems.length ? `${problems.length} 处待补` : '校验通过'}
-        </button>
+        <div className="problemmenu" ref={problemsRef}>
+          <button
+            className={`chip${problems.length ? ' chip--warn' : ' chip--ok'}${problemsOpen ? ' is-open' : ''}`}
+            onClick={() => {
+              if (!problems.length) return
+              setMenuOpen(false)
+              setProblemsOpen((open) => !open)
+            }}
+            title={problems.length ? '查看全部校验问题' : '静态校验通过'}
+            aria-expanded={problemsOpen}
+            aria-haspopup={problems.length ? 'menu' : undefined}
+          >
+            <i />
+            {problems.length ? `${problems.length} 处待补` : '校验通过'}
+          </button>
+          {problemsOpen && (
+            <div className="problemmenu__pop" role="menu" aria-label="校验问题">
+              <div className="problemmenu__head">
+                <b>校验问题</b>
+                <span>{problems.length}</span>
+              </div>
+              <div className="problemmenu__list">
+                {problems.map((problem, index) => (
+                  <button
+                    key={`${problem.id ?? 'flow'}:${problem.e}:${index}`}
+                    className="problemitem"
+                    role="menuitem"
+                    disabled={!problem.id}
+                    onClick={() => {
+                      if (!problem.id) return
+                      setProblemsOpen(false)
+                      onDock(null)
+                      focusNode(problem.id)
+                      const node = nodes.find((item) => item.id === problem.id)
+                      const schema = node ? NODE_TYPE_MAP.get(node.data.typeId)?.input : undefined
+                      if (schema) window.setTimeout(() => focusValidationField(problem.e, schema), 120)
+                    }}
+                  >
+                    <i>!</i>
+                    <span>
+                      <b>{problem.name}</b>
+                      {problem.id && <code>{problem.id}</code>}
+                      <em>{problem.e}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
         <i className="topbar__sep" />
 
-        <button
-          className={`btn btn--icon${varsOpen ? ' btn--active' : ''}`}
-          onClick={onToggleVars}
-          title="所有能引用的变量和日期函数，点一条复制"
-        >
-          <Icon name="vars" size={14} /> 变量
-        </button>
+        <div className="historytools" aria-label="编辑历史">
+          <button
+            className="historytools__btn"
+            onClick={undo}
+            disabled={running || !canUndo}
+            title="撤销（⌘/Ctrl+Z）"
+            aria-label="撤销"
+          >
+            <Icon name="undo" size={14} />
+          </button>
+          <button
+            className="historytools__btn"
+            onClick={redo}
+            disabled={running || !canRedo}
+            title="重做（⌘/Ctrl+Shift+Z）"
+            aria-label="重做"
+          >
+            <Icon name="redo" size={14} />
+          </button>
+        </div>
 
         <div className="menu" ref={menuRef}>
-          <button className="btn btn--icon" onClick={() => setMenuOpen((v) => !v)} title="更多">
+          <button
+            className="btn btn--icon"
+            onClick={() => {
+              setProblemsOpen(false)
+              setMenuOpen((v) => !v)
+            }}
+            title="更多"
+          >
             <Icon name="more" size={14} />
           </button>
           {menuOpen && (
@@ -162,10 +259,10 @@ export default function Toolbar({
         </div>
 
         <button
-          className={`btn${dirty ? ' btn--dirty' : ''}`}
+          className={`btn${saveError ? ' btn--error' : dirty ? ' btn--dirty' : ''}`}
           onClick={onSave}
           disabled={!dirty}
-          title={dirty ? '保存到流程库（⌘S / Ctrl+S）' : '没有未保存的改动'}
+          title={saveError ?? (dirty ? '立即保存（⌘S / Ctrl+S）' : '所有改动已自动保存')}
         >
           保存
         </button>

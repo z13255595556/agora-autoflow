@@ -7,6 +7,7 @@ import { cancelNode, executeNode, isOnline, pollNode, submitNode } from './clien
 import { dateFn, dateNodeOutput, formatDate, toDate } from './datefn'
 import { FILTERS, ROW_KEYS } from './output'
 import { extractSqlPlaceholders } from './placeholders'
+import { redactNodeInput } from './secrets'
 
 /**
  * 前端 mock 执行引擎。
@@ -384,8 +385,24 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
           .filter((e) => e.target === node.id)
           .flatMap((e) => (e.source in ctx.nodes ? [ctx.nodes[e.source].output] : [])),
       }
+    case 'flow.end':
+      return { result: resolved.result ?? null }
     case 'transform.map':
       return { value: resolved.expression ?? null }
+    case 'transform.template':
+      return { text: String(resolved.template ?? '') }
+    case 'variable.assign':
+      return { values: resolved.values ?? {} }
+    case 'list.operation': {
+      const items = Array.isArray(resolved.items) ? resolved.items : []
+      const operation = String(resolved.operation ?? 'slice')
+      if (operation === 'first') return { result: items[0] ?? null, count: items.length ? 1 : 0 }
+      if (operation === 'last') return { result: items.at(-1) ?? null, count: items.length ? 1 : 0 }
+      const start = Math.max(0, Number(resolved.start ?? 0) || 0)
+      const count = Math.max(1, Number(resolved.count ?? 10) || 10)
+      const result = items.slice(start, start + count)
+      return { result, count: result.length }
+    }
     case 'http.request':
       return { status: 200, body: { ok: true, url: resolved.url }, headers: { 'content-type': 'application/json' } }
     case 'notify.wecom': {
@@ -415,7 +432,23 @@ export function itemCount(output: unknown): number {
 
 // ---------------------------------------------------------------- 图执行
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms)
+  if (signal.aborted) return Promise.reject(new Aborted())
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new Aborted())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
 
 /**
  * 解析参数，模板炸了就把错误带回来，不要抛出去。
@@ -502,7 +535,7 @@ async function runLiveNode(
   try {
     for (;;) {
       if (signal?.aborted) throw new Aborted()
-      await sleep(interval)
+      await abortableSleep(interval, signal)
       if (signal?.aborted) throw new Aborted()
 
       let result
@@ -526,7 +559,11 @@ async function runLiveNode(
     }
   } catch (err) {
     if (err instanceof Aborted || signal?.aborted) {
-      void cancelNode(t.type, handle)
+      try {
+        await cancelNode(t.type, handle)
+      } catch {
+        // 中止的主结果不能被取消接口的网络错误覆盖。
+      }
     }
     throw err
   }
@@ -581,7 +618,10 @@ function topoSort(nodes: FNode[], edges: Edge[]): FNode[] {
 }
 
 export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
-  const { nodes, edges, trigger, pinData, flowInputs, onStep, onRunUpdate } = opts
+  const { trigger, pinData, flowInputs, onStep, onRunUpdate } = opts
+  const nodes = opts.nodes.filter((node) => !NODE_TYPE_MAP.get(node.data.typeId)?.visualOnly)
+  const runnableIds = new Set(nodes.map((node) => node.id))
+  const edges = opts.edges.filter((edge) => runnableIds.has(edge.source) && runnableIds.has(edge.target))
   const delay = opts.stepDelayMs ?? 240
   const seq = makeSeq(42)
 
@@ -608,12 +648,14 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
   let failed = false
 
   const record = (step: StepRun) => {
-    const list = run.steps[step.nodeId] ?? []
-    const idx = list.findIndex((s) => s.iteration === step.iteration)
-    if (idx >= 0) list[idx] = step
-    else list.push(step)
+    const typeId = nodes.find((node) => node.id === step.nodeId)?.data.typeId ?? ''
+    const recorded = { ...step, input: redactNodeInput(typeId, step.input) }
+    const list = run.steps[recorded.nodeId] ?? []
+    const idx = list.findIndex((s) => s.iteration === recorded.iteration)
+    if (idx >= 0) list[idx] = recorded
+    else list.push(recorded)
     run.steps[step.nodeId] = list
-    onStep(step)
+    onStep(recorded)
     onRunUpdate({ ...run, steps: { ...run.steps } })
   }
 
@@ -888,8 +930,9 @@ export async function executeSingleNode(opts: {
   pinData: Record<string, unknown>
   baseRun: FlowRun | null
   onStep: (step: StepRun) => void
+  signal?: AbortSignal
 }): Promise<StepRun> {
-  const { node, nodes, edges, flowInputs, trigger, pinData, baseRun, onStep } = opts
+  const { node, nodes, edges, flowInputs, trigger, pinData, baseRun, onStep, signal } = opts
   const seq = makeSeq(7)
   const ctx: Ctx = {
     trigger,
@@ -909,6 +952,11 @@ export async function executeSingleNode(opts: {
   const startedAt = Date.now()
   onStep({ nodeId: node.id, status: 'running', startedAt, durationMs: 0, input: {}, output: null })
   await sleep(200)
+  if (signal?.aborted) {
+    const step: StepRun = { nodeId: node.id, status: 'error', startedAt, durationMs: Date.now() - startedAt, input: {}, output: null, error: '已中止' }
+    onStep(step)
+    return step
+  }
 
   const pinnedHere = Object.prototype.hasOwnProperty.call(pinData, node.id)
   const live = !pinnedHere && isLive(node)
@@ -935,6 +983,7 @@ export async function executeSingleNode(opts: {
     try {
       output = await runLiveNode(node, input, (progress, handle) =>
         onStep({ nodeId: node.id, status: 'running', startedAt, durationMs: Date.now() - startedAt, input, output: null, progress, handle, live }),
+        signal,
       )
     } catch (err) {
       const step: StepRun = {

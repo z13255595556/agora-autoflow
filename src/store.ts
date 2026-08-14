@@ -13,12 +13,71 @@ import type { FlowDefinition, FlowInputField, FlowNodeData, FlowRun, JsonSchema,
 import { applyBackendNodes, NODE_TYPE_MAP, portsOf, setOptions } from './registry'
 import { executeFlow, executeSingleNode } from './lib/engine'
 import { isFieldVisible } from './lib/display'
-import { learnColumns, toProbedFields } from './lib/output'
+import { learnColumns, toProbedFields, toResponseFields } from './lib/output'
+import { redactNodeInput } from './lib/secrets'
 import { extractSqlPlaceholders } from './lib/placeholders'
 import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout'
+import { connectionProblem, graphProblems } from './lib/graph'
 import * as api from './lib/client'
 
 export type FNode = Node<FlowNodeData>
+
+interface HistorySnapshot {
+  flowName: string
+  flowInputs: FlowInputField[]
+  nodes: FNode[]
+  edges: Edge[]
+  seq: number
+  pinData: Record<string, unknown>
+  dirtyNodes: Record<string, true>
+}
+
+interface FlowClipboard {
+  nodes: FNode[]
+  edges: Edge[]
+  pasteCount: number
+}
+
+const HISTORY_LIMIT = 50
+const HISTORY_GROUP_MS = 800
+const NODE_H = 76
+const RUN_PANEL_HEIGHT_KEY = 'autoflow.run-panel-height'
+const DEFAULT_RUN_PANEL_HEIGHT = 258
+
+function initialRunPanelHeight(): number {
+  if (typeof localStorage === 'undefined') return DEFAULT_RUN_PANEL_HEIGHT
+  const value = Number(localStorage.getItem(RUN_PANEL_HEIGHT_KEY))
+  return Number.isFinite(value) ? Math.min(560, Math.max(180, value)) : DEFAULT_RUN_PANEL_HEIGHT
+}
+
+function historySnapshot(state: FlowState): HistorySnapshot {
+  return {
+    flowName: state.flowName,
+    flowInputs: state.flowInputs,
+    // 选择态是临时 UI，不应该随着撤销一起跳回旧节点。
+    nodes: state.nodes.map((node) => (node.selected ? { ...node, selected: false } : node)),
+    edges: state.edges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)),
+    seq: state.seq,
+    pinData: state.pinData,
+    dirtyNodes: state.dirtyNodes,
+  }
+}
+
+/**
+ * 生成一次历史提交。连续输入同一字段会合并成一步，结构性操作则每次单独记录。
+ */
+function historyCommit(state: FlowState, groupKey?: string) {
+  const now = Date.now()
+  const grouped =
+    !!groupKey && state.historyGroup?.key === groupKey && now - state.historyGroup.at < HISTORY_GROUP_MS
+  return {
+    historyPast: grouped
+      ? state.historyPast
+      : [...state.historyPast, historySnapshot(state)].slice(-HISTORY_LIMIT),
+    historyFuture: [],
+    historyGroup: groupKey ? { key: groupKey, at: now } : null,
+  }
+}
 
 function defaultParams(t: NodeType): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -26,6 +85,25 @@ function defaultParams(t: NodeType): Record<string, unknown> {
     if (schema.default !== undefined) out[key] = schema.default
   }
   return out
+}
+
+function isNodeCopyable(node: FNode): boolean {
+  // 触发器是流程入口，复制后会产生多个入口语义。
+  return NODE_TYPE_MAP.get(node.data.typeId)?.hasInput !== false
+}
+
+function isEntryNode(node: FNode): boolean {
+  const type = NODE_TYPE_MAP.get(node.data.typeId)
+  return type?.hasInput === false && !type.visualOnly
+}
+
+function copiedLabel(label: string, reserved: Set<string>): string {
+  const base = `${label} 副本`
+  let candidate = base
+  let index = 2
+  while (reserved.has(candidate)) candidate = `${base} ${index++}`
+  reserved.add(candidate)
+  return candidate
 }
 
 /** 造一个画布节点。加节点现在有四个入口（拖、`+` 手柄、连线插入、复制），共用这里 */
@@ -36,6 +114,8 @@ function makeNode(typeId: string, position: { x: number; y: number }, seq: numbe
     id: `n${seq}`,
     type: 'flowNode',
     position,
+    selected: true,
+    ...(t.visualOnly ? { style: { width: 280, height: 160 } } : {}),
     data: {
       typeId: t.type,
       typeVersion: t.typeVersion,
@@ -56,16 +136,17 @@ function makeNode(typeId: string, position: { x: number; y: number }, seq: numbe
  * 返回 null 表示不需要更新，调用方就别 set —— 每一步都新建节点对象会让
  * 整个画布跟着重渲。
  */
-function withLearnedColumns(nodes: FNode[], step: StepRun): FNode[] | null {
+function withLearnedOutput(nodes: FNode[], step: StepRun): FNode[] | null {
   if (step.status !== 'success') return null
   const node = nodes.find((n) => n.id === step.nodeId)
   if (!node) return null
   const learned = learnColumns(step.output)
-  if (!learned) return null
-  const fields = toProbedFields(learned)
+  const fields = node.data.typeId === 'http.request'
+    ? toResponseFields(step.output)
+    : learned ? toProbedFields(learned) : null
+  if (!fields) return null
   const prev = node.data.probedOutput ?? {}
-  const unchanged =
-    Object.keys(fields).length === Object.keys(prev).length && Object.keys(fields).every((k) => k in prev)
+  const unchanged = JSON.stringify(fields) === JSON.stringify(prev)
   if (unchanged) return null
   return nodes.map((n) => (n.id === step.nodeId ? { ...n, data: { ...n.data, probedOutput: fields } } : n))
 }
@@ -79,6 +160,14 @@ interface FlowState {
   selectedId: string | null
   seq: number
 
+  /** 画布编辑历史；运行结果和面板开关不进入历史。 */
+  historyPast: HistorySnapshot[]
+  historyFuture: HistorySnapshot[]
+  historyGroup: { key: string; at: number } | null
+  historyDragStart: HistorySnapshot | null
+  /** 节点剪贴板：只保存节点与选区内连线，不进入流程 DSL。 */
+  clipboard: FlowClipboard | null
+
   /** nodeId → 固定输出（n8n pinData）。手动运行时替代真实执行 */
   pinData: Record<string, unknown>
   /** 运行历史，最新在前 */
@@ -89,6 +178,7 @@ interface FlowState {
   /** 双击节点打开的详情视图（n8n NDV） */
   ndvNodeId: string | null
   runPanelOpen: boolean
+  runPanelHeight: number
   /** 参数改过但还没重跑的节点（n8n dirty/PARAMETERS_UPDATED：输出可能已过期） */
   dirtyNodes: Record<string, true>
   /** 运行代际：clear/load 时 +1，让还在跑的旧引擎回调作废 */
@@ -112,16 +202,39 @@ interface FlowState {
   onNodesChange: (c: NodeChange<FNode>[]) => void
   onEdgesChange: (c: EdgeChange[]) => void
   onConnect: (c: Connection) => void
+  undo: () => void
+  redo: () => void
+  copyNodes: (id?: string) => number
+  pasteNodes: (at?: { x: number; y: number }) => string[]
+  /** 删除一组节点；入口节点自动排除，整组操作只生成一条历史记录。 */
+  deleteNodes: (ids: string[]) => number
+  /** 对齐或均匀分布一组节点。 */
+  arrangeNodes: (
+    ids: string[],
+    action: 'left' | 'center-x' | 'right' | 'top' | 'center-y' | 'bottom' | 'distribute-x' | 'distribute-y',
+  ) => boolean
 
   addNode: (typeId: string, position: { x: number; y: number }) => string | null
-  /** 从某个节点的出口继续加一个节点：自动落位 + 自动连线（Dify 的 `+` 手柄） */
+  /** 从某个节点的出口继续加一个节点：自动落位 + 自动连线。 */
   addNodeAfter: (typeId: string, sourceId: string, port?: string) => string | null
+  /** 在指定位置新增节点并从某个出口连入，新增和连线共用一次撤销记录。 */
+  addNodeConnectedAt: (
+    typeId: string,
+    sourceId: string,
+    port: string,
+    position: { x: number; y: number },
+  ) => string | null
   /** 往一条已有连线中间插一个节点：断开原线，串成 源 → 新 → 目标 */
   insertNodeOnEdge: (typeId: string, edgeId: string) => string | null
-  duplicateNode: (id: string) => string | null
+  duplicateNode: (id?: string) => string | null
   /** 按拓扑分层重排全部节点 */
   autoLayout: () => void
   select: (id: string | null) => void
+  /** 关闭节点面板并清空 React Flow 的临时选择态。 */
+  clearSelection: () => void
+  /** 程序化定位到单个节点，同时同步 React Flow 的 selected 标记。 */
+  focusNode: (id: string) => void
+  toggleNodeSelection: (id: string) => void
   updateNodeParam: (id: string, key: string, value: unknown) => void
   renameNode: (id: string, label: string) => void
   setNodeOnError: (id: string, v: 'fail' | 'continue') => void
@@ -140,6 +253,7 @@ interface FlowState {
   unpinNode: (id: string) => void
   openNdv: (id: string | null) => void
   setRunPanelOpen: (open: boolean) => void
+  setRunPanelHeight: (height: number) => void
   setActiveRun: (id: string | null) => void
   loadRegistry: () => Promise<void>
   startRun: (trigger: Record<string, unknown>) => Promise<void>
@@ -175,6 +289,11 @@ export const useFlow = create<FlowState>((set, get) => ({
   edges: [],
   selectedId: null,
   seq: 1,
+  historyPast: [],
+  historyFuture: [],
+  historyGroup: null,
+  historyDragStart: null,
+  clipboard: null,
 
   pinData: {},
   runs: [],
@@ -182,6 +301,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   running: false,
   ndvNodeId: null,
   runPanelOpen: false,
+  runPanelHeight: initialRunPanelHeight(),
   dirtyNodes: {},
   runGen: 0,
   registryVersion: 0,
@@ -192,33 +312,306 @@ export const useFlow = create<FlowState>((set, get) => ({
   probeError: null,
 
   onNodesChange: (changes) => {
+    const state = get()
+    // 入口节点是流程唯一根节点，React Flow 的 Delete 快捷键也不能移除它。
+    const safeChanges = changes.filter((change) => {
+      if (change.type !== 'remove') return true
+      const node = state.nodes.find((item) => item.id === change.id)
+      return !node || !isEntryNode(node)
+    })
+    if (safeChanges.length === 0) return
     // 键盘 Delete 删除走的是这里而不是 deleteNode —— 同样要清理关联状态
-    const removed = changes.filter((c) => c.type === 'remove').map((c) => c.id)
+    const removed = safeChanges.filter((c) => c.type === 'remove').map((c) => c.id)
     if (removed.length === 0) {
-      set({ nodes: applyNodeChanges(changes, get().nodes) })
+      const hasGeometry = changes.some((c) => c.type === 'position' || c.type === 'dimensions')
+      const gestureActive = changes.some((c) =>
+        (c.type === 'position' && c.dragging === true) || (c.type === 'dimensions' && c.resizing === true),
+      )
+      const gestureEnded = changes.some((c) =>
+        (c.type === 'position' && c.dragging === false) || (c.type === 'dimensions' && c.resizing === false),
+      )
+      const dragStart = hasGeometry && gestureActive && !state.historyDragStart ? historySnapshot(state) : state.historyDragStart
+      const commitDrag = hasGeometry && gestureEnded
+      set({
+        nodes: applyNodeChanges(safeChanges, state.nodes),
+        ...(dragStart && commitDrag
+          ? {
+              historyPast: [...state.historyPast, dragStart].slice(-HISTORY_LIMIT),
+              historyFuture: [],
+              historyGroup: null,
+              historyDragStart: null,
+            }
+          : dragStart !== state.historyDragStart
+            ? { historyDragStart: dragStart, historyFuture: [], historyGroup: null }
+            : {}),
+      })
       return
     }
-    const pinData = { ...get().pinData }
-    const dirtyNodes = { ...get().dirtyNodes }
+    const pinData = { ...state.pinData }
+    const dirtyNodes = { ...state.dirtyNodes }
     for (const id of removed) {
       delete pinData[id]
       delete dirtyNodes[id]
     }
     set({
-      nodes: applyNodeChanges(changes, get().nodes),
+      ...historyCommit(state),
+      nodes: applyNodeChanges(safeChanges, state.nodes),
       pinData,
       dirtyNodes,
-      ndvNodeId: removed.includes(get().ndvNodeId ?? '') ? null : get().ndvNodeId,
-      selectedId: removed.includes(get().selectedId ?? '') ? null : get().selectedId,
+      ndvNodeId: removed.includes(state.ndvNodeId ?? '') ? null : state.ndvNodeId,
+      selectedId: removed.includes(state.selectedId ?? '') ? null : state.selectedId,
     })
   },
-  onEdgesChange: (changes) => set({ edges: applyEdgeChanges(changes, get().edges) }),
-  onConnect: (conn) => set({ edges: addEdge({ ...conn, type: 'flowEdge', animated: false }, get().edges) }),
+  onEdgesChange: (changes) => {
+    const state = get()
+    const changesGraph = changes.some((change) => change.type === 'remove' || change.type === 'add' || change.type === 'replace')
+    set({
+      ...(changesGraph ? historyCommit(state) : {}),
+      edges: applyEdgeChanges(changes, state.edges),
+    })
+  },
+  onConnect: (conn) => {
+    const state = get()
+    if (connectionProblem(conn, state.edges)) return
+    set({
+      ...historyCommit(state),
+      edges: addEdge({ ...conn, type: 'flowEdge', animated: false }, state.edges),
+    })
+  },
+
+  undo: () => {
+    const state = get()
+    if (state.running || state.historyPast.length === 0) return
+    const previous = state.historyPast.at(-1)!
+    set({
+      ...previous,
+      selectedId: null,
+      ndvNodeId: null,
+      revealId: null,
+      historyPast: state.historyPast.slice(0, -1),
+      historyFuture: [historySnapshot(state), ...state.historyFuture].slice(0, HISTORY_LIMIT),
+      historyGroup: null,
+      historyDragStart: null,
+    })
+  },
+
+  redo: () => {
+    const state = get()
+    if (state.running || state.historyFuture.length === 0) return
+    const next = state.historyFuture[0]
+    set({
+      ...next,
+      selectedId: null,
+      ndvNodeId: null,
+      revealId: null,
+      historyPast: [...state.historyPast, historySnapshot(state)].slice(-HISTORY_LIMIT),
+      historyFuture: state.historyFuture.slice(1),
+      historyGroup: null,
+      historyDragStart: null,
+    })
+  },
+
+  copyNodes: (id) => {
+    const state = get()
+    const selected = id
+      ? state.nodes.filter((node) => node.id === id)
+      : state.nodes.filter((node) => node.selected || node.id === state.selectedId)
+    const nodes = selected.filter(isNodeCopyable)
+    if (nodes.length === 0) return 0
+    const ids = new Set(nodes.map((node) => node.id))
+    set({
+      clipboard: {
+        nodes: nodes.map((node) => ({
+          ...node,
+          selected: false,
+          data: { ...node.data, params: structuredClone(node.data.params) },
+        })),
+        edges: state.edges
+          .filter((edge) => ids.has(edge.source) && ids.has(edge.target))
+          .map((edge) => ({ ...edge, selected: false })),
+        pasteCount: 0,
+      },
+    })
+    return nodes.length
+  },
+
+  pasteNodes: (at) => {
+    const state = get()
+    const clipboard = state.clipboard
+    if (!clipboard?.nodes.length) return []
+
+    const pasteNumber = clipboard.pasteCount + 1
+    const minX = Math.min(...clipboard.nodes.map((node) => node.position.x))
+    const maxX = Math.max(...clipboard.nodes.map((node) => node.position.x))
+    const minY = Math.min(...clipboard.nodes.map((node) => node.position.y))
+    const maxY = Math.max(...clipboard.nodes.map((node) => node.position.y))
+    const offset = at
+      ? { x: at.x - (minX + maxX) / 2 + 20 * (pasteNumber - 1), y: at.y - (minY + maxY) / 2 + 20 * (pasteNumber - 1) }
+      : { x: 40 * pasteNumber, y: 40 * pasteNumber }
+    const idMap = new Map<string, string>()
+    clipboard.nodes.forEach((node, index) => idMap.set(node.id, `n${state.seq + index + 1}`))
+    const reservedLabels = new Set(state.nodes.map((node) => node.data.label))
+    const pastedNodes = clipboard.nodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id)!,
+      position: { x: node.position.x + offset.x, y: node.position.y + offset.y },
+      selected: true,
+      data: {
+        ...node.data,
+        label: copiedLabel(node.data.label, reservedLabels),
+        params: structuredClone(node.data.params),
+      },
+    }))
+    const pastedEdges = clipboard.edges.map((edge, index) => ({
+      ...edge,
+      id: `e_paste_${state.seq + 1}_${index}`,
+      source: idMap.get(edge.source)!,
+      target: idMap.get(edge.target)!,
+      selected: false,
+    }))
+    const pastedIds = pastedNodes.map((node) => node.id)
+
+    set({
+      ...historyCommit(state),
+      nodes: [...state.nodes.map((node) => (node.selected ? { ...node, selected: false } : node)), ...pastedNodes],
+      edges: [...state.edges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)), ...pastedEdges],
+      seq: state.seq + pastedNodes.length,
+      selectedId: pastedIds.length === 1 ? pastedIds[0] : null,
+      revealId: pastedIds.at(-1) ?? null,
+      clipboard: { ...clipboard, pasteCount: clipboard.pasteCount + 1 },
+    })
+    return pastedIds
+  },
+
+  deleteNodes: (ids) => {
+    const state = get()
+    const requested = new Set(ids)
+    const removable = new Set(
+      state.nodes
+        .filter((node) => requested.has(node.id) && !isEntryNode(node))
+        .map((node) => node.id),
+    )
+    if (removable.size === 0) return 0
+
+    const pinData = { ...state.pinData }
+    const dirtyNodes = { ...state.dirtyNodes }
+    for (const id of removable) {
+      delete pinData[id]
+      delete dirtyNodes[id]
+    }
+    set({
+      ...historyCommit(state),
+      nodes: state.nodes.filter((node) => !removable.has(node.id)),
+      edges: state.edges.filter((edge) => !removable.has(edge.source) && !removable.has(edge.target)),
+      selectedId: state.selectedId && removable.has(state.selectedId) ? null : state.selectedId,
+      ndvNodeId: state.ndvNodeId && removable.has(state.ndvNodeId) ? null : state.ndvNodeId,
+      pinData,
+      dirtyNodes,
+    })
+    return removable.size
+  },
+
+  arrangeNodes: (ids, action) => {
+    const state = get()
+    const wanted = new Set(ids)
+    const selected = state.nodes.filter((node) => wanted.has(node.id))
+    if (selected.length < 2) return false
+
+    const widthOf = (node: FNode) => node.measured?.width ?? node.width ?? NODE_W
+    const heightOf = (node: FNode) => node.measured?.height ?? node.height ?? NODE_H
+    const minX = Math.min(...selected.map((node) => node.position.x))
+    const maxX = Math.max(...selected.map((node) => node.position.x + widthOf(node)))
+    const minY = Math.min(...selected.map((node) => node.position.y))
+    const maxY = Math.max(...selected.map((node) => node.position.y + heightOf(node)))
+    const positions = new Map(selected.map((node) => [node.id, { ...node.position }]))
+
+    if (action === 'distribute-x' || action === 'distribute-y') {
+      if (selected.length < 3) return false
+      const horizontal = action === 'distribute-x'
+      const ordered = [...selected].sort((a, b) =>
+        horizontal ? a.position.x - b.position.x : a.position.y - b.position.y,
+      )
+      const total = horizontal ? maxX - minX : maxY - minY
+      const occupied = ordered.reduce(
+        (sum, node) => sum + (horizontal ? widthOf(node) : heightOf(node)),
+        0,
+      )
+      const gap = (total - occupied) / (ordered.length - 1)
+      if (gap <= 0) return false
+      let cursor = horizontal ? minX : minY
+      for (const node of ordered) {
+        const position = positions.get(node.id)!
+        if (horizontal) {
+          position.x = cursor
+          cursor += widthOf(node) + gap
+        } else {
+          position.y = cursor
+          cursor += heightOf(node) + gap
+        }
+      }
+    } else {
+      for (const node of selected) {
+        const position = positions.get(node.id)!
+        if (action === 'left') position.x = minX
+        else if (action === 'center-x') position.x = minX + (maxX - minX - widthOf(node)) / 2
+        else if (action === 'right') position.x = maxX - widthOf(node)
+        else if (action === 'top') position.y = minY
+        else if (action === 'center-y') position.y = minY + (maxY - minY - heightOf(node)) / 2
+        else if (action === 'bottom') position.y = maxY - heightOf(node)
+      }
+    }
+
+    const changed = selected.some((node) => {
+      const next = positions.get(node.id)!
+      return Math.abs(next.x - node.position.x) > 0.01 || Math.abs(next.y - node.position.y) > 0.01
+    })
+    if (!changed) return false
+
+    set({
+      ...historyCommit(state),
+      nodes: state.nodes.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node),
+    })
+    return true
+  },
 
   addNode: (typeId, position) => {
+    const state = get()
+    const type = NODE_TYPE_MAP.get(typeId)
+    if (type?.hasInput === false) {
+      const current = state.nodes.find(isEntryNode)
+      if (current) {
+        set({
+          ...historyCommit(state),
+          nodes: state.nodes.map((node) =>
+            node.id === current.id
+              ? {
+                  ...node,
+                  selected: true,
+                  data: {
+                    typeId: type.type,
+                    typeVersion: type.typeVersion,
+                    label: type.name,
+                    params: defaultParams(type),
+                    onError: 'fail',
+                  },
+                }
+              : node.selected ? { ...node, selected: false } : node,
+          ),
+          selectedId: current.id,
+          revealId: current.id,
+        })
+        return current.id
+      }
+    }
     const node = makeNode(typeId, position, get().seq + 1)
     if (!node) return null
-    set({ nodes: [...get().nodes, node], seq: get().seq + 1, selectedId: node.id, revealId: node.id })
+    set({
+      ...historyCommit(get()),
+      nodes: [...get().nodes.map((item) => item.selected ? { ...item, selected: false } : item), node],
+      seq: get().seq + 1,
+      selectedId: node.id,
+      revealId: node.id,
+    })
     return node.id
   },
 
@@ -228,7 +621,8 @@ export const useFlow = create<FlowState>((set, get) => ({
     const node = makeNode(typeId, freeSpotRightOf(get().nodes, source), get().seq + 1)
     if (!node) return null
     set({
-      nodes: [...get().nodes, node],
+      ...historyCommit(get()),
+      nodes: [...get().nodes.map((item) => item.selected ? { ...item, selected: false } : item), node],
       seq: get().seq + 1,
       selectedId: node.id,
       revealId: node.id,
@@ -236,6 +630,26 @@ export const useFlow = create<FlowState>((set, get) => ({
         { source: sourceId, sourceHandle: port, target: node.id, targetHandle: null, type: 'flowEdge' },
         get().edges,
       ),
+    })
+    return node.id
+  },
+
+  addNodeConnectedAt: (typeId, sourceId, port, position) => {
+    const state = get()
+    if (!state.nodes.some((node) => node.id === sourceId)) return null
+    const node = makeNode(typeId, position, state.seq + 1)
+    if (!node) return null
+
+    set({
+      ...historyCommit(state),
+      nodes: [...state.nodes.map((item) => item.selected ? { ...item, selected: false } : item), node],
+      edges: addEdge(
+        { source: sourceId, sourceHandle: port, target: node.id, targetHandle: null, type: 'flowEdge' },
+        state.edges,
+      ),
+      seq: state.seq + 1,
+      selectedId: node.id,
+      revealId: node.id,
     })
     return node.id
   },
@@ -257,12 +671,15 @@ export const useFlow = create<FlowState>((set, get) => ({
     const moving = gap < shift * 2 ? descendants(target.id, get().edges) : new Set<string>()
 
     set({
+      ...historyCommit(get()),
       seq: get().seq + 1,
       selectedId: node.id,
       revealId: node.id,
       nodes: [
         ...get().nodes.map((n) =>
-          moving.has(n.id) ? { ...n, position: { x: n.position.x + shift, y: n.position.y } } : n,
+          moving.has(n.id)
+            ? { ...n, selected: false, position: { x: n.position.x + shift, y: n.position.y } }
+            : n.selected ? { ...n, selected: false } : n,
         ),
         node,
       ],
@@ -276,30 +693,14 @@ export const useFlow = create<FlowState>((set, get) => ({
   },
 
   duplicateNode: (id) => {
-    const src = get().nodes.find((n) => n.id === id)
-    if (!src) return null
-    const seq = get().seq + 1
-    // 参数深拷一份：kv / 占位符参数是嵌套对象，浅拷会让两个节点共用同一个 bag，
-    // 改一个另一个跟着变
-    const copy: FNode = {
-      ...src,
-      id: `n${seq}`,
-      position: { x: src.position.x + 40, y: src.position.y + 40 },
-      selected: false,
-      data: {
-        ...src.data,
-        label: `${src.data.label} 副本`,
-        params: structuredClone(src.data.params),
-      },
-    }
-    // 连线刻意不复制：副本接在哪儿由用户决定，自动接上去多半是错的
-    set({ nodes: [...get().nodes, copy], seq, selectedId: copy.id, revealId: copy.id })
-    return copy.id
+    if (get().copyNodes(id) === 0) return null
+    return get().pasteNodes()[0] ?? null
   },
 
   autoLayout: () => {
-    const pos = layeredLayout(get().nodes, get().edges)
-    set({ nodes: get().nodes.map((n) => (pos[n.id] ? { ...n, position: pos[n.id] } : n)) })
+    const runnable = get().nodes.filter((node) => !NODE_TYPE_MAP.get(node.data.typeId)?.visualOnly)
+    const pos = layeredLayout(runnable, get().edges)
+    set({ ...historyCommit(get()), nodes: get().nodes.map((n) => (pos[n.id] ? { ...n, position: pos[n.id] } : n)) })
   },
 
   consumeReveal: () => {
@@ -309,6 +710,28 @@ export const useFlow = create<FlowState>((set, get) => ({
   },
 
   select: (id) => set({ selectedId: id }),
+  clearSelection: () => {
+    const state = get()
+    set({
+      selectedId: null,
+      nodes: state.nodes.map((node) => (node.selected ? { ...node, selected: false } : node)),
+      edges: state.edges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)),
+    })
+  },
+  focusNode: (id) =>
+    set({
+      selectedId: id,
+      nodes: get().nodes.map((node) => ({ ...node, selected: node.id === id })),
+      edges: get().edges.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)),
+    }),
+
+  toggleNodeSelection: (id) => {
+    const nodes = get().nodes.map((node) =>
+      node.id === id ? { ...node, selected: !node.selected } : node,
+    )
+    const selected = nodes.filter((node) => node.selected)
+    set({ nodes, selectedId: selected.length === 1 ? selected[0].id : null })
+  },
 
   updateNodeParam: (id, key, value) => {
     // 该节点有运行结果时，改参数 → 标 dirty（输出已过期，重跑前给黄色提示）
@@ -318,6 +741,7 @@ export const useFlow = create<FlowState>((set, get) => ({
     const ph = t?.input.properties?.[key]?.['x-placeholders']
 
     set({
+      ...historyCommit(get(), `param:${id}:${key}`),
       nodes: get().nodes.map((n) => {
         if (n.id !== id) return n
         const params: Record<string, unknown> = { ...n.data.params, [key]: value }
@@ -339,20 +763,19 @@ export const useFlow = create<FlowState>((set, get) => ({
   },
 
   renameNode: (id, label) =>
-    set({ nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n)) }),
+    set({
+      ...historyCommit(get(), `node-name:${id}`),
+      nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, label } } : n)),
+    }),
 
   setNodeOnError: (id, onError) =>
-    set({ nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, onError } } : n)) }),
+    set({
+      ...historyCommit(get()),
+      nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, onError } } : n)),
+    }),
 
   deleteNode: (id) => {
-    const { [id]: _removed, ...restPin } = get().pinData
-    set({
-      nodes: get().nodes.filter((n) => n.id !== id),
-      edges: get().edges.filter((e) => e.source !== id && e.target !== id),
-      selectedId: get().selectedId === id ? null : get().selectedId,
-      ndvNodeId: get().ndvNodeId === id ? null : get().ndvNodeId,
-      pinData: restPin,
-    })
+    get().deleteNodes([id])
   },
 
   /**
@@ -434,20 +857,26 @@ export const useFlow = create<FlowState>((set, get) => ({
     const node = get().nodes.find((n) => n.id === id)
     const t = node && NODE_TYPE_MAP.get(node.data.typeId)
     if (!t || portsOf(t).length !== 1) return
-    set({ pinData: { ...get().pinData, [id]: data } })
+    set({ ...historyCommit(get()), pinData: { ...get().pinData, [id]: data } })
   },
 
   unpinNode: (id) => {
+    if (!Object.prototype.hasOwnProperty.call(get().pinData, id)) return
     const { [id]: _removed, ...rest } = get().pinData
-    set({ pinData: rest })
+    set({ ...historyCommit(get()), pinData: rest })
   },
 
   openNdv: (ndvNodeId) => set({ ndvNodeId }),
   setRunPanelOpen: (runPanelOpen) => set({ runPanelOpen }),
+  setRunPanelHeight: (runPanelHeight) => set({ runPanelHeight: Math.min(560, Math.max(180, runPanelHeight)) }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
 
   startRun: async (trigger) => {
     if (get().running) return
+    if (graphProblems(get().nodes, get().edges).length > 0) {
+      set({ runPanelOpen: true })
+      return
+    }
     const gen = get().runGen
     const abort = new AbortController()
     set({ running: true, runPanelOpen: true, abort })
@@ -473,7 +902,7 @@ export const useFlow = create<FlowState>((set, get) => ({
         onStep: (step) => {
           if (get().runGen !== gen) return
           if (step.status !== 'success' && step.status !== 'error') return
-          const learned = withLearnedColumns(get().nodes, step)
+          const learned = withLearnedOutput(get().nodes, step)
           if (learned) set({ nodes: learned })
           if (!get().dirtyNodes[step.nodeId]) return
           const { [step.nodeId]: _cleared, ...rest } = get().dirtyNodes
@@ -508,11 +937,13 @@ export const useFlow = create<FlowState>((set, get) => ({
     if (!node || get().running) return
     const baseRun = get().runs.find((r) => r.id === get().activeRunId) ?? get().runs[0] ?? null
     const gen = get().runGen
+    const abort = new AbortController()
     const { [id]: _dirty, ...restDirty } = get().dirtyNodes
-    set({ running: true, dirtyNodes: restDirty })
+    set({ running: true, dirtyNodes: restDirty, abort })
     const mergeStep = (step: StepRun) => {
       if (get().runGen !== gen) return
-      const learned = withLearnedColumns(get().nodes, step)
+      step = { ...step, input: redactNodeInput(node.data.typeId, step.input) }
+      const learned = withLearnedOutput(get().nodes, step)
       if (learned) set({ nodes: learned })
       const runs = get().runs
       // 没有任何运行时，造一个只含这一步的运行记录
@@ -550,23 +981,28 @@ export const useFlow = create<FlowState>((set, get) => ({
         pinData: get().pinData,
         baseRun,
         onStep: mergeStep,
+        signal: abort.signal,
       })
     } finally {
-      if (get().runGen === gen) set({ running: false })
+      if (get().runGen === gen) set({ running: false, abort: null })
     }
   },
 
-  setFlowName: (flowName) => set({ flowName }),
+  setFlowName: (flowName) => set({ ...historyCommit(get(), 'flow-name'), flowName }),
 
   addFlowInput: () =>
     set({
+      ...historyCommit(get()),
       flowInputs: [...get().flowInputs, { key: `field${get().flowInputs.length + 1}`, title: '', type: 'string', required: false }],
     }),
 
   updateFlowInput: (i, patch) =>
-    set({ flowInputs: get().flowInputs.map((f, idx) => (idx === i ? { ...f, ...patch } : f)) }),
+    set({
+      ...historyCommit(get(), `flow-input:${i}:${Object.keys(patch).join(',')}`),
+      flowInputs: get().flowInputs.map((f, idx) => (idx === i ? { ...f, ...patch } : f)),
+    }),
 
-  removeFlowInput: (i) => set({ flowInputs: get().flowInputs.filter((_, idx) => idx !== i) }),
+  removeFlowInput: (i) => set({ ...historyCommit(get()), flowInputs: get().flowInputs.filter((_, idx) => idx !== i) }),
 
   toDefinition: () => {
     const { flowId, flowName, flowInputs, nodes, edges, pinData } = get()
@@ -604,6 +1040,7 @@ export const useFlow = create<FlowState>((set, get) => ({
         name: n.data.label,
         params: exportParams(n),
         onError: n.data.onError,
+        ...(n.data.probedOutput && Object.keys(n.data.probedOutput).length ? { probedOutput: n.data.probedOutput } : {}),
       })),
       edges: edges.map((e) => ({
         from: e.source,
@@ -611,25 +1048,41 @@ export const useFlow = create<FlowState>((set, get) => ({
         ...(e.sourceHandle && e.sourceHandle !== 'out' ? { port: e.sourceHandle } : {}),
       })),
       // 布局单独一块，和逻辑完全解耦 —— 这样流程能 diff、能 code review
-      layout: Object.fromEntries(nodes.map((n) => [n.id, { x: Math.round(n.position.x), y: Math.round(n.position.y) }])),
+      layout: Object.fromEntries(nodes.map((n) => {
+        const type = NODE_TYPE_MAP.get(n.data.typeId)
+        const base = { x: Math.round(n.position.x), y: Math.round(n.position.y) }
+        if (!type?.visualOnly) return [n.id, base]
+        return [n.id, {
+          ...base,
+          width: Math.round(n.measured?.width ?? n.width ?? (Number(n.style?.width) || 280)),
+          height: Math.round(n.measured?.height ?? n.height ?? (Number(n.style?.height) || 160)),
+        }]
+      })),
       // pinned 数据随流程持久化（n8n 同款做法），生产触发时引擎忽略
       ...(Object.keys(pinData).length ? { pinData } : {}),
     }
   },
 
   loadDefinition: (def) => {
-    const nodes: FNode[] = def.nodes.map((n) => ({
-      id: n.id,
-      type: 'flowNode',
-      position: def.layout[n.id] ?? { x: 0, y: 0 },
-      data: {
-        typeId: n.type,
-        typeVersion: n.typeVersion,
-        label: n.name,
-        params: n.params ?? {},
-        onError: n.onError ?? 'fail',
-      },
-    }))
+    get().abort?.abort()
+    const nodes: FNode[] = def.nodes.map((n) => {
+      const layout = def.layout[n.id] ?? { x: 0, y: 0 }
+      const visualOnly = NODE_TYPE_MAP.get(n.type)?.visualOnly
+      return {
+        id: n.id,
+        type: 'flowNode',
+        position: { x: layout.x, y: layout.y },
+        ...(visualOnly ? { style: { width: layout.width ?? 280, height: layout.height ?? 160 } } : {}),
+        data: {
+          typeId: n.type,
+          typeVersion: n.typeVersion,
+          label: n.name,
+          params: n.params ?? {},
+          onError: n.onError ?? 'fail',
+          ...(n.probedOutput ? { probedOutput: n.probedOutput } : {}),
+        },
+      }
+    })
     const edges: Edge[] = def.edges.map((e, i) => ({
       id: `e${i}`,
       source: e.from,
@@ -662,13 +1115,23 @@ export const useFlow = create<FlowState>((set, get) => ({
       runs: [],
       activeRunId: null,
       ndvNodeId: null,
+      runPanelOpen: false,
       dirtyNodes: {},
       running: false,
+      abort: null,
+      revealId: null,
+      probing: null,
+      probeError: null,
       runGen: get().runGen + 1,
+      historyPast: [],
+      historyFuture: [],
+      historyGroup: null,
+      historyDragStart: null,
     })
   },
 
-  clear: () =>
+  clear: () => {
+    get().abort?.abort()
     set({
       nodes: [seedTrigger()],
       edges: [],
@@ -681,8 +1144,18 @@ export const useFlow = create<FlowState>((set, get) => ({
       runs: [],
       activeRunId: null,
       ndvNodeId: null,
+      runPanelOpen: false,
       dirtyNodes: {},
       running: false,
+      abort: null,
+      revealId: null,
+      probing: null,
+      probeError: null,
       runGen: get().runGen + 1,
-    }),
+      historyPast: [],
+      historyFuture: [],
+      historyGroup: null,
+      historyDragStart: null,
+    })
+  },
 }))

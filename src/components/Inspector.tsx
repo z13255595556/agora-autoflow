@@ -1,11 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFlow } from '../store'
 import { CATEGORY_COLOR, NODE_TYPE_MAP } from '../registry'
 import { availableVars, validateNode } from '../lib/vars'
-import { probedColumns } from '../lib/output'
+import { probedColumns, probedObjectFields } from '../lib/output'
 import { previewFromRun } from '../lib/engine'
+import { focusValidationField, validationFieldKey } from '../lib/validationFocus'
 import type { FlowInputField } from '../types'
 import SchemaForm from './SchemaForm'
+import HttpRequestForm from './HttpRequestForm'
 import Icon from './Icon'
 
 /**
@@ -31,7 +33,7 @@ export default function Inspector() {
 
   if (!node || !t) return null
   return (
-    <aside className="dock">
+    <aside className="dock" data-node-id={node.id}>
       <NodeInspector key={node.id} vars={vars} />
     </aside>
   )
@@ -48,12 +50,17 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   const deleteNode = useFlow((s) => s.deleteNode)
   const probeNode = useFlow((s) => s.probeNode)
   const openNdv = useFlow((s) => s.openNdv)
-  const select = useFlow((s) => s.select)
+  const clearSelection = useFlow((s) => s.clearSelection)
   const runs = useFlow((s) => s.runs)
   const activeRunId = useFlow((s) => s.activeRunId)
   const backend = useFlow((s) => s.backend)
   const probing = useFlow((s) => s.probing)
   const probeError = useFlow((s) => s.probeError)
+  const running = useFlow((s) => s.running)
+  const testStep = useFlow((s) => s.testStep)
+  const pinData = useFlow((s) => s.pinData)
+  const unpinNode = useFlow((s) => s.unpinNode)
+  const dirtyNodes = useFlow((s) => s.dirtyNodes)
   useFlow((s) => s.registryVersion) // 注册表换了要重渲染表单
 
   // null = 跟随默认（学到列名就展开）；用户点过之后以用户的为准
@@ -64,10 +71,46 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   const t = NODE_TYPE_MAP.get(node.data.typeId)!
   const errors = validateNode(node, nodes, edges, flowInputs)
   const color = CATEGORY_COLOR[t.category] ?? '#64748b'
-  const probeable = t.output['x-dynamic'] === 'probe'
+  const dynamicMode = t.output['x-dynamic']
+  const probeable = dynamicMode === 'probe'
   const columns = probedColumns(node.data.probedOutput)
-  // 学到了真实列名就默认展开 —— 这一段以前默认折叠，用户根本发现不了
-  const open = showOutput ?? columns.length > 0
+  const responseFields = probedObjectFields(node.data.probedOutput)
+  // 学到了真实结构就默认展开 —— 这一段以前默认折叠，用户根本发现不了
+  const open = showOutput ?? columns.length + responseFields.length > 0
+  const runWithStep = runs.find((run) => (run.steps[node.id]?.length ?? 0) > 0)
+  const lastStep = runWithStep?.steps[node.id]?.at(-1)
+  const isPinned = Object.prototype.hasOwnProperty.call(pinData, node.id)
+  const isDirty = Boolean(dirtyNodes[node.id])
+
+  const runStep = useCallback(() => {
+    if (running || errors.length) return
+    if (isPinned) {
+      if (!confirm('该节点输出已固定。运行本节点会取消固定并真实执行，继续？')) return
+      unpinNode(node.id)
+    }
+    void testStep(node.id)
+  }, [running, errors.length, isPinned, unpinNode, node.id, testStep])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return
+      if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey) || event.shiftKey) return
+      event.preventDefault()
+      runStep()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [runStep])
+
+  const runState = running && lastStep?.status === 'running'
+    ? { tone: 'running', text: '正在执行' }
+    : isDirty && lastStep
+      ? { tone: 'stale', text: '参数已修改，结果已过期' }
+      : lastStep?.status === 'success'
+        ? { tone: 'success', text: `上次成功 · ${lastStep.durationMs}ms` }
+        : lastStep?.status === 'error'
+          ? { tone: 'error', text: '上次执行失败' }
+          : { tone: 'idle', text: '尚未运行' }
 
   return (
     <>
@@ -82,11 +125,13 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
         <button className="iconbtn" onClick={() => openNdv(node.id)} title="详情视图：输入 / 参数 / 输出（双击画布节点同效）">
           <Icon name="expand" />
         </button>
-        <button className="iconbtn iconbtn--danger" onClick={() => deleteNode(node.id)} title="删除节点">
-          <Icon name="trash" />
-        </button>
+        {t.hasInput !== false && (
+          <button className="iconbtn iconbtn--danger" onClick={() => deleteNode(node.id)} title="删除节点">
+            <Icon name="trash" />
+          </button>
+        )}
         <i className="dock__sep" />
-        <button className="iconbtn" onClick={() => select(null)} title="收起面板">
+        <button className="iconbtn" onClick={clearSelection} title="收起面板">
           <Icon name="close" />
         </button>
       </div>
@@ -99,28 +144,47 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
 
       <div className="dock__body">
         {errors.length > 0 && (
-          <div className="errors">
-            {errors.map((e, i) => (
-              <div key={i}>· {e}</div>
+          <div className="errors errors--actions">
+            {errors.map((error, i) => validationFieldKey(error, t.input) ? (
+              <button key={i} onClick={() => focusValidationField(error, t.input)}>
+                <span>!</span>{error}<em>定位</em>
+              </button>
+            ) : (
+              <div key={i}>· {error}</div>
             ))}
           </div>
         )}
 
-        <SchemaForm
-          schema={t.input}
-          values={node.data.params}
-          required={t.input.required ?? []}
-          vars={vars}
-          onChange={(k, v) => updateNodeParam(node.id, k, v)}
-          previewRef={previewFromRun(activeRun)}
-          nodeId={node.id}
-        />
+        {t.type === 'http.request' ? (
+          <HttpRequestForm
+            schema={t.input}
+            values={node.data.params}
+            required={t.input.required ?? []}
+            vars={vars}
+            onChange={(k, v) => updateNodeParam(node.id, k, v)}
+            previewRef={previewFromRun(activeRun)}
+            nodeId={node.id}
+            validationErrors={errors}
+          />
+        ) : (
+          <SchemaForm
+            schema={t.input}
+            values={node.data.params}
+            required={t.input.required ?? []}
+            vars={vars}
+            onChange={(k, v) => updateNodeParam(node.id, k, v)}
+            previewRef={previewFromRun(activeRun)}
+            nodeId={node.id}
+            validationErrors={errors}
+          />
+        )}
 
         <div className="section">
           <button className="section__head" onClick={() => setShowOutput(!open)}>
             <span>{open ? '▾' : '▸'}</span> 输出结构
             {columns.length > 0 && <em>{columns.length} 列</em>}
-            {columns.length === 0 && probeable && <em>动态</em>}
+            {responseFields.length > 0 && <em>{responseFields.length} 字段</em>}
+            {columns.length === 0 && responseFields.length === 0 && dynamicMode && <em>动态</em>}
           </button>
           {open && (
             <div className="section__body">
@@ -136,6 +200,22 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                     ))}
                   </div>
                 </>
+              )}
+              {responseFields.length > 0 && (
+                <>
+                  <div className="probe__ok">已识别 {responseFields.length} 个真实响应字段</div>
+                  <div className="cols">
+                    {responseFields.map(({ path, schema }) => (
+                      <code className="cols__chip" key={path} title={`可在下游引用 output.${path}`}>
+                        {path}
+                        {schema.type && <em>{schema.type}</em>}
+                      </code>
+                    ))}
+                  </div>
+                </>
+              )}
+              {dynamicMode === 'run' && responseFields.length === 0 && (
+                <div className="probe__text">成功运行一次后，这里会列出响应体字段，下游可直接从变量菜单选择。</div>
               )}
               {probeable && columns.length === 0 && (
                 <div className="probe">
@@ -179,6 +259,23 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="insrun">
+        <span className={`insrun__state insrun__state--${runState.tone}`} title={lastStep?.error}>
+          <i />{runState.text}
+        </span>
+        {lastStep && (
+          <button className="btn btn--sm" onClick={() => openNdv(node.id)}>查看结果</button>
+        )}
+        <button
+          className="btn btn--sm btn--primary"
+          disabled={running || errors.length > 0}
+          title={errors[0] ?? '运行本节点（⌘/Ctrl+Enter）'}
+          onClick={runStep}
+        >
+          <Icon name="play" size={13} /> {running ? '执行中' : '运行本节点'}
+        </button>
       </div>
     </>
   )

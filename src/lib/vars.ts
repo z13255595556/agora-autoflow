@@ -4,7 +4,7 @@ import { NODE_TYPE_MAP } from '../registry'
 import type { FNode } from '../store'
 import { isFieldVisible } from './display'
 import { dateNodeError, datePresets } from './datefn'
-import { FILTERS, probedColumns, probedContainer } from './output'
+import { FILTERS, probedColumns, probedContainer, probedObjectFields } from './output'
 import { extractSqlPlaceholders } from './placeholders'
 import { scheduleErrors } from './schedule'
 
@@ -92,6 +92,14 @@ export function availableVars(
     const t = NODE_TYPE_MAP.get(up.data.typeId)
     if (!t) continue
     flatten(`$.nodes.${up.id}.output`, t.output, `${up.data.label} (${up.id})`, out)
+    for (const { path, schema } of probedObjectFields(up.data.probedOutput)) {
+      out.push({
+        path: `$.nodes.${up.id}.output.${path}`,
+        label: schema.title ?? path.split('.').at(-1) ?? path,
+        type: schema.type === 'array' ? `${schema.items?.type ?? 'any'}[]` : (schema.type ?? 'any'),
+        group: `${up.data.label} (${up.id}) · 运行结果`,
+      })
+    }
     // 这里**不要**把探测到的列名也当成变量路径列出来。
     //
     // 曾经列过，形如 $.nodes.n2.output.rows[].vid —— 但 lookupPath 按 . [ ]
@@ -122,6 +130,14 @@ export function allVars(
     const t = NODE_TYPE_MAP.get(n.data.typeId)
     if (!t) continue
     flatten(`$.nodes.${n.id}.output`, t.output, `${n.data.label} (${n.id})`, out)
+    for (const { path, schema } of probedObjectFields(n.data.probedOutput)) {
+      out.push({
+        path: `$.nodes.${n.id}.output.${path}`,
+        label: schema.title ?? path.split('.').at(-1) ?? path,
+        type: schema.type === 'array' ? `${schema.items?.type ?? 'any'}[]` : (schema.type ?? 'any'),
+        group: `${n.data.label} (${n.id}) · 运行结果`,
+      })
+    }
   }
   // 循环体存在时 $.loop.* 才有意义，和 availableVars 一个判断
   if (nodes.some((n) => n.data.typeId === 'flow.foreach')) {
@@ -208,6 +224,26 @@ export function validateNode(
   if (node.data.typeId === 'date.compute') {
     const err = dateNodeError(node.data.params)
     if (err) errors.push(err)
+  }
+
+  if (node.data.typeId === 'http.request') {
+    const authType = String(node.data.params.authType ?? 'none')
+    if (authType === 'bearer' && !String(node.data.params.bearerToken ?? '').trim()) {
+      errors.push('必填项「Token」未填')
+    }
+    if (authType === 'basic' && !String(node.data.params.basicUsername ?? '').trim()) {
+      errors.push('必填项「用户名」未填')
+    }
+    if (authType === 'header' && !String(node.data.params.authHeaderName ?? '').trim()) {
+      errors.push('必填项「认证请求头名」未填')
+    }
+    if (node.data.params.bodyType === 'json') {
+      try {
+        JSON.parse(String(node.data.params.body ?? ''))
+      } catch {
+        errors.push('「body」不是合法 JSON')
+      }
+    }
   }
 
   for (const key of t.input.required ?? []) {

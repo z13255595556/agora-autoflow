@@ -5,12 +5,13 @@ import { formatDate } from '../lib/datefn'
 import { NODE_TYPE_MAP, CATEGORY_COLOR } from '../registry'
 import type { FlowDefinition } from '../types'
 import Icon from './Icon'
+import { normalizeFlowDefinition } from '../lib/flowImport'
 
 /**
  * 首页 = 流程列表。
  *
  * 之前这里是一段说明文字加三张模板卡，保存过的流程排在下面一行一条 ——
- * 主角（我编过的流程）被当成附注，配角（模板）占了首屏。这一版按 Dify 的
+ * 主角（我编过的流程）不应被当成附注、让模板占满首屏。这一版按实际使用频率
  * 应用列表来：流程是卡片网格的主体，新建收进顶部一个按钮，列表有搜索、
  * 有排序、每张卡能直接复制/导出/删除。
  */
@@ -59,10 +60,10 @@ export default function Home({
 
   const importFile = async (file: File) => {
     try {
-      const def = JSON.parse(await file.text()) as FlowDefinition
-      if (!Array.isArray(def.nodes)) throw new Error('这个 JSON 里没有 nodes 数组')
-      // 导入进来的当成新流程，不要覆盖库里同 id 的那条
-      onImport({ ...def, id: newFlowId() })
+      const id = newFlowId()
+      const def = normalizeFlowDefinition(JSON.parse(await file.text()), id)
+      // 首页导入始终是一条新流程，不覆盖库里同 id 的记录。
+      onImport({ ...def, id })
     } catch (e) {
       alert(`导入失败：${e instanceof Error ? e.message : String(e)}`)
     }

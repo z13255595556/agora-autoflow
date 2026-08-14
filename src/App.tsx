@@ -4,26 +4,29 @@ import Toolbar, { type DockPanel } from './components/Toolbar'
 import Canvas from './components/Canvas'
 import Inspector, { FlowInspector } from './components/Inspector'
 import JsonDrawer from './components/JsonDrawer'
-import VarDrawer from './components/VarDrawer'
 import RunPanel from './components/RunPanel'
 import NodeDetailView from './components/NodeDetailView'
 import Home from './components/Home'
-import { saveFlow, type SavedFlow } from './lib/library'
+import { getFlow, saveFlow } from './lib/library'
 import type { Template } from './lib/templates'
 import type { FlowDefinition } from './types'
 import { useFlow } from './store'
+import { NODE_TYPE_MAP } from './registry'
 
 export default function App() {
-  // 首页 / 编辑器。以前打开就直接是编辑器 —— 那其实是"新建流程"页
-  const [view, setView] = useState<'home' | 'editor'>('home')
+  const route = routeFromPath(window.location.pathname)
+  const editorFlowId = route.kind === 'editor' ? route.flowId : null
+  const [editorReady, setEditorReady] = useState(false)
   // 右侧停靠区一次只放一个：流程设置 / 流程 JSON / 选中节点的配置。
   // dock 有值时压过节点配置；dock 为 null 时选中谁就显示谁
   const [dock, setDock] = useState<DockPanel>(null)
-  // 变量表是**再加一栏**，配字段的时候要能一边抄一边看，所以不参与上面的互斥
-  const [varsOpen, setVarsOpen] = useState(false)
   const runPanelOpen = useFlow((s) => s.runPanelOpen)
   const ndvNodeId = useFlow((s) => s.ndvNodeId)
   const selectedId = useFlow((s) => s.selectedId)
+  const selectedVisualOnly = useFlow((s) => {
+    const node = s.nodes.find((item) => item.id === s.selectedId)
+    return Boolean(node && NODE_TYPE_MAP.get(node.data.typeId)?.visualOnly)
+  })
   const loadRegistry = useFlow((s) => s.loadRegistry)
 
   // 探后端 + 拉节点注册表。探不到就整站留在 mock 模式，编辑器照样能用
@@ -31,86 +34,140 @@ export default function App() {
     void loadRegistry()
   }, [loadRegistry])
 
-  // 有没有没存的改动。不自动保存，所以这个状态是用户唯一的提醒
+  // 编辑页是独立 URL。每次整页进入都按路径里的 flowId 重新加载，刷新不会丢流程。
+  useEffect(() => {
+    if (route.kind === 'home') return
+    if (route.kind === 'invalid') {
+      window.location.replace('/')
+      return
+    }
+    const saved = getFlow(route.flowId)
+    if (!saved) {
+      window.location.replace('/')
+      return
+    }
+    useFlow.getState().loadDefinition(saved.def)
+    setDirty(false)
+    setSaveError(null)
+    setDock(null)
+    setEditorReady(true)
+  }, [route.kind, editorFlowId])
+
+  // dirty 表示还有等待自动保存的持久化改动；临时 UI 状态不进入这里。
   const [dirty, setDirty] = useState(false)
-  const markDirty = useCallback(() => setDirty(true), [])
-  useDirtyWatch(view === 'editor', markDirty)
+  const [editRevision, setEditRevision] = useState(0)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const markDirty = useCallback(() => {
+    setDirty(true)
+    setSaveError(null)
+    setEditRevision((revision) => revision + 1)
+  }, [])
+  useDirtyWatch(route.kind === 'editor' && editorReady, markDirty)
 
   const save = useCallback(() => {
-    saveFlow(useFlow.getState().toDefinition())
-    setDirty(false)
+    const saved = saveFlow(useFlow.getState().toDefinition())
+    if (saved) {
+      setDirty(false)
+      setSaveError(null)
+    } else {
+      setSaveError('浏览器本地存储写入失败，请检查存储空间或隐私设置')
+    }
+    return saved
   }, [])
 
-  // ⌘S / Ctrl+S。手会自己按，按了什么都没发生最伤
+  // 每次真实流程改动后重新计时；连续输入只在停下 900ms 后写一次。
   useEffect(() => {
-    if (view !== 'editor') return
+    if (route.kind !== 'editor' || !editorReady || !dirty) return
+    const timer = window.setTimeout(() => { save() }, 900)
+    return () => window.clearTimeout(timer)
+  }, [route.kind, editorReady, dirty, editRevision, save])
+
+  // 保存 + 画布撤销/重做。输入控件保留浏览器自己的文本历史，
+  // 只有焦点不在编辑器里时才接管 ⌘/Ctrl+Z。
+  useEffect(() => {
+    if (route.kind !== 'editor' || !editorReady) return
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      const mod = e.metaKey || e.ctrlKey
+      const key = e.key.toLowerCase()
+      if (mod && key === 's') {
         e.preventDefault()
         save()
+        return
+      }
+      if (!mod || isTextEditingTarget(e.target)) return
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        useFlow.getState().undo()
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault()
+        useFlow.getState().redo()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [view, save])
+  }, [route.kind, editorReady, save])
 
-  // 关标签页/刷新前拦一下。没有自动保存兜底，这是最后一道
+  // 标签页关闭时定时器可能来不及触发；localStorage 是同步写，最后再落一次。
   useEffect(() => {
     if (!dirty) return
-    const onLeave = (e: BeforeUnloadEvent) => e.preventDefault()
+    const onLeave = (event: BeforeUnloadEvent) => {
+      if (!saveFlow(useFlow.getState().toDefinition())) event.preventDefault()
+    }
     window.addEventListener('beforeunload', onLeave)
     return () => window.removeEventListener('beforeunload', onLeave)
   }, [dirty])
 
-  const enter = (def: FlowDefinition, isNew: boolean) => {
-    useFlow.getState().loadDefinition(def)
-    // 模板/导入的是还没落过盘的新流程，一进来就算"未保存"，保存按钮得是亮的；
-    // 从库里打开的则是干净状态
-    setDirty(isNew)
-    setDock(null)
-    setVarsOpen(false)
-    setView('editor')
+  const openFlowPage = (flowId: string) => {
+    window.location.assign(`/workflows/${encodeURIComponent(flowId)}`)
+  }
+
+  const createAndOpen = (def: FlowDefinition) => {
+    if (!saveFlow(def)) {
+      window.alert('浏览器本地存储写入失败，请检查存储空间或隐私设置')
+      return
+    }
+    openFlowPage(def.id)
   }
 
   const goHome = () => {
-    // 回首页会把画布整个卸载，没存的东西就真没了 —— 先问一句
-    if (dirty && !confirm('这条流程有改动还没保存，离开就丢了。确定回首页？')) return
+    // 防抖还没到点时先同步保存；只有真的写失败才留在编辑器。
+    if (dirty && !save()) return
     if (useFlow.getState().running) useFlow.getState().stopRun()
-    setView('home')
+    window.location.assign('/')
   }
 
-  if (view === 'home') {
+  if (route.kind === 'home') {
     return (
       <div className="app">
         <Home
-          onOpenTemplate={(t: Template) => enter(t.build(), true)}
-          onOpenSaved={(f: SavedFlow) => enter(f.def, false)}
-          onImport={(def) => enter(def, true)}
+          onOpenTemplate={(t: Template) => createAndOpen(t.build())}
+          onOpenSaved={(flow) => openFlowPage(flow.id)}
+          onImport={createAndOpen}
         />
       </div>
     )
   }
 
-  // 停靠区里到底有没有东西 —— 变量栏要靠它决定往左让多远
-  const dockOpen = dock !== null || selectedId !== null
+  if (route.kind !== 'editor' || !editorReady) {
+    return <div className="app"><div className="empty">正在打开流程…</div></div>
+  }
 
   return (
     <div className="app">
       <Toolbar
         dock={dock}
         onDock={setDock}
-        varsOpen={varsOpen}
-        onToggleVars={() => setVarsOpen((v) => !v)}
         onHome={goHome}
         onSave={save}
         dirty={dirty}
+        saveError={saveError}
       />
       <ReactFlowProvider>
         <div className="app__main">
-          {/* 画布铺满，配置面板浮在它上面（Dify 同款）—— 面板收起时画布就是整块的，
+          {/* 画布铺满，配置面板浮在它上面 —— 面板收起时画布就是整块的，
               不像固定栏那样永远切掉右边 348px */}
           <div className="app__stage">
-            <Canvas />
+            <Canvas reservedRight={dock || (selectedId && !selectedVisualOnly) ? 424 : 0} />
             {dock === 'json' ? (
               <JsonDrawer onClose={() => setDock(null)} />
             ) : dock === 'flow' ? (
@@ -118,10 +175,8 @@ export default function App() {
                 <FlowInspector onClose={() => setDock(null)} />
               </aside>
             ) : (
-              selectedId && <Inspector />
+              selectedId && !selectedVisualOnly && <Inspector />
             )}
-            {/* 常挂载：收放靠 CSS 过渡，和停靠区一起平移 */}
-            <VarDrawer open={varsOpen} shifted={dockOpen} onClose={() => setVarsOpen(false)} />
           </div>
           {runPanelOpen && <RunPanel />}
         </div>
@@ -132,32 +187,40 @@ export default function App() {
   )
 }
 
+type AppRoute =
+  | { kind: 'home' }
+  | { kind: 'editor'; flowId: string }
+  | { kind: 'invalid' }
+
+function routeFromPath(pathname: string): AppRoute {
+  if (pathname === '/' || pathname === '/index.html') return { kind: 'home' }
+  const match = /^\/workflows\/([^/]+)\/?$/.exec(pathname)
+  if (!match) return { kind: 'invalid' }
+  try {
+    const flowId = decodeURIComponent(match[1])
+    return flowId ? { kind: 'editor', flowId } : { kind: 'invalid' }
+  } catch {
+    return { kind: 'invalid' }
+  }
+}
+
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+}
+
 /**
- * 盯着"流程本身"有没有被改过，改了就置脏。
- *
- * 只认节点/连线/名字/入参/固定数据 —— 选中哪个节点、跑了一次、开关面板都会
- * 触发 store 更新，把这些也算成改动的话，保存按钮会一直亮着，等于没有提醒。
- * 靠引用比较就够：store 里这几个字段每次变更都是新数组/新对象。
+ * 用实际导出的流程定义做持久化指纹。它天然排除了 selected、measured、运行结果、
+ * 探测列等临时状态，比数组引用比较准确；纯选择节点不会触发自动保存。
  */
 function useDirtyWatch(active: boolean, onChange: () => void) {
   useEffect(() => {
     if (!active) return
-    type Snapshot = ReturnType<typeof pick>
-    const pick = (s: ReturnType<typeof useFlow.getState>) => ({
-      nodes: s.nodes,
-      edges: s.edges,
-      flowName: s.flowName,
-      flowInputs: s.flowInputs,
-      pinData: s.pinData,
-    })
-    const same = (a: Snapshot, b: Snapshot) =>
-      a.nodes === b.nodes && a.edges === b.edges && a.flowName === b.flowName &&
-      a.flowInputs === b.flowInputs && a.pinData === b.pinData
-
-    let prev = pick(useFlow.getState())
-    return useFlow.subscribe((s) => {
-      const cur = pick(s)
-      if (same(cur, prev)) return
+    const fingerprint = () => JSON.stringify(useFlow.getState().toDefinition())
+    let prev = fingerprint()
+    return useFlow.subscribe(() => {
+      const cur = fingerprint()
+      if (cur === prev) return
       prev = cur
       onChange()
     })

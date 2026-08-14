@@ -5,6 +5,7 @@ import { availableVars } from '../lib/vars'
 import { extractRows } from '../lib/output'
 import { previewFromRun } from '../lib/engine'
 import SchemaForm from './SchemaForm'
+import HttpRequestForm from './HttpRequestForm'
 
 /**
  * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
@@ -136,15 +137,27 @@ export default function NodeDetailView() {
           <section className="ndv__col ndv__col--params">
             <div className="ndv__coltitle">参数</div>
             <div className="ndv__colbody">
-              <SchemaForm
-                schema={t.input}
-                values={node.data.params}
-                required={t.input.required ?? []}
-                vars={vars}
-                onChange={(k, v) => updateNodeParam(node.id, k, v)}
-                previewRef={previewFromRun(run)}
-                nodeId={node.id}
-              />
+              {t.type === 'http.request' ? (
+                <HttpRequestForm
+                  schema={t.input}
+                  values={node.data.params}
+                  required={t.input.required ?? []}
+                  vars={vars}
+                  onChange={(k, v) => updateNodeParam(node.id, k, v)}
+                  previewRef={previewFromRun(run)}
+                  nodeId={node.id}
+                />
+              ) : (
+                <SchemaForm
+                  schema={t.input}
+                  values={node.data.params}
+                  required={t.input.required ?? []}
+                  vars={vars}
+                  onChange={(k, v) => updateNodeParam(node.id, k, v)}
+                  previewRef={previewFromRun(run)}
+                  nodeId={node.id}
+                />
+              )}
             </div>
           </section>
 

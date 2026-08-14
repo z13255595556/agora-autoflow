@@ -69,6 +69,9 @@ export function nodeSummary(t: NodeType, params: Record<string, unknown>): strin
     case 'flow.merge':
       return str(params, 'mode') === 'any' ? '任一分支到达即继续' : '等全部分支到齐'
 
+    case 'flow.end':
+      return str(params, 'result') ? clip(str(params, 'result')) : '结束当前分支'
+
     case 'http.request': {
       const method = str(params, 'method') || 'GET'
       const url = str(params, 'url')
@@ -77,6 +80,19 @@ export function nodeSummary(t: NodeType, params: Record<string, unknown>): strin
 
     case 'transform.map':
       return str(params, 'expression') ? clip(str(params, 'expression')) : '未写表达式'
+
+    case 'transform.template':
+      return str(params, 'template') ? clip(str(params, 'template')) : '未写模板'
+
+    case 'variable.assign': {
+      const count = Object.keys((params.values as Record<string, unknown>) ?? {}).filter(Boolean).length
+      return count ? `设置 ${count} 个变量` : '还没有变量'
+    }
+
+    case 'list.operation': {
+      const labels: Record<string, string> = { first: '取第一项', last: '取最后一项', slice: '截取区间' }
+      return labels[str(params, 'operation') || 'slice'] ?? '处理列表'
+    }
 
     default: {
       // 认不出来的节点（后端新上报的）：挑第一个必填的文本参数当摘要，

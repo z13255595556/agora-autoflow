@@ -1,10 +1,11 @@
 import type { FlowDefinition } from '../types'
+import { normalizeFlowDefinition } from './flowImport'
 
 /**
  * 本地流程库：首页「最近编辑」的数据源。
  *
  * 存在 localStorage 而不是内存：首页要是刷新一下就空了，它就只是个开屏页，
- * 没有存在的必要。写入只发生在用户点「保存」的时候 —— 编辑器不自动落盘。
+ * 没有存在的必要。编辑器会防抖自动落盘，用户也可以立即保存。
  * 后端有了之后这一层换成 GET/PUT /flows，首页的调用方式不变。
  */
 
@@ -31,30 +32,46 @@ export function listFlows(): SavedFlow[] {
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((f): f is SavedFlow => !!f && typeof f.id === 'string' && !!f.def)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+    return parsed.flatMap((item): SavedFlow[] => {
+      if (!item || typeof item !== 'object') return []
+      const candidate = item as Partial<SavedFlow>
+      if (typeof candidate.id !== 'string' || !candidate.def) return []
+      try {
+        const def = normalizeFlowDefinition(candidate.def, candidate.id)
+        return [{
+          id: candidate.id,
+          name: typeof candidate.name === 'string' ? candidate.name : def.name,
+          updatedAt: typeof candidate.updatedAt === 'number' ? candidate.updatedAt : 0,
+          nodeCount: def.nodes.length,
+          def: { ...def, id: candidate.id },
+        }]
+      } catch {
+        return []
+      }
+    }).sort((a, b) => b.updatedAt - a.updatedAt)
   } catch {
     return []
   }
 }
 
-function write(list: SavedFlow[]): void {
+function write(list: SavedFlow[]): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX)))
+    return true
   } catch {
-    // 配额满 / 隐私模式：存不下就算了，不能因为存草稿失败把编辑器搞崩
+    // 配额满 / 隐私模式：不能让编辑器崩，但也不能向 UI 谎报已经保存。
+    return false
   }
 }
 
-/** 覆盖式保存（按 id）。只有用户点「保存」才会走到这里 */
-export function saveFlow(def: FlowDefinition, at: number = Date.now()): void {
+/** 覆盖式保存（按 id）；返回 false 表示本地存储拒绝了写入。 */
+export function saveFlow(def: FlowDefinition, at: number = Date.now()): boolean {
   const rest = listFlows().filter((f) => f.id !== def.id)
-  write([{ id: def.id, name: def.name, updatedAt: at, nodeCount: def.nodes.length, def }, ...rest])
+  return write([{ id: def.id, name: def.name, updatedAt: at, nodeCount: def.nodes.length, def }, ...rest])
 }
 
 export function deleteFlow(id: string): void {
-  write(listFlows().filter((f) => f.id !== id))
+  void write(listFlows().filter((f) => f.id !== id))
 }
 
 export function getFlow(id: string): SavedFlow | null {

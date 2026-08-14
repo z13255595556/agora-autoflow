@@ -2,6 +2,7 @@ node_modules/
 dist/
 .DS_Store
 *.log
+.playwright-cli/
 
 # 凭证绝不入库
 .env

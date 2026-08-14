@@ -248,6 +248,28 @@ export const NODE_TYPES: NodeType[] = [
     },
     output: { type: 'object', properties: { branches: { type: 'array', title: '各分支输出', items: { type: 'object' } } } },
   },
+  {
+    type: 'flow.end',
+    typeVersion: '1.0.0',
+    name: '结束',
+    category: '控制',
+    icon: '■',
+    description: '结束当前分支，并把指定内容作为流程结果',
+    ports: [],
+    input: {
+      type: 'object',
+      properties: {
+        result: {
+          type: 'string',
+          title: '流程结果',
+          description: '可以输入固定文本，也可以输入 / 引用上游变量',
+          'x-ui': { widget: 'textarea', rows: 5, placeholder: '/ 选择上游输出' },
+        },
+      },
+    },
+    output: { type: 'object', properties: { result: { title: '流程结果' } } },
+    policy: { idempotent: true },
+  },
 
   // ---------------------------------------------------------------- 处理
   //
@@ -353,6 +375,87 @@ export const NODE_TYPES: NodeType[] = [
     output: { type: 'object', properties: { value: { type: 'object', title: '整形结果' } } },
   },
   {
+    type: 'transform.template',
+    typeVersion: '1.0.0',
+    name: '模板转换',
+    category: '处理',
+    icon: 'T',
+    description: '把固定文本和上游变量组合成一段文本',
+    input: {
+      type: 'object',
+      required: ['template'],
+      properties: {
+        template: {
+          type: 'string',
+          title: '模板',
+          description: '输入 / 可直接选择上游变量',
+          'x-ui': { widget: 'textarea', rows: 8, placeholder: '查询到 {{ $.nodes.n2.output.rowCount }} 条数据' },
+        },
+      },
+    },
+    output: { type: 'object', properties: { text: { type: 'string', title: '转换后的文本' } } },
+    policy: { idempotent: true },
+  },
+  {
+    type: 'variable.assign',
+    typeVersion: '1.0.0',
+    name: '变量赋值',
+    category: '处理',
+    icon: '=',
+    description: '集中定义一组供下游使用的变量',
+    input: {
+      type: 'object',
+      properties: {
+        values: {
+          type: 'object',
+          title: '变量',
+          description: '值支持输入 / 引用上游输出',
+          additionalProperties: true,
+          'x-ui': { widget: 'kv' },
+        },
+      },
+    },
+    output: { type: 'object', properties: { values: { type: 'object', title: '变量集合' } } },
+    policy: { idempotent: true },
+  },
+  {
+    type: 'list.operation',
+    typeVersion: '1.0.0',
+    name: '列表处理',
+    category: '处理',
+    icon: '≡',
+    description: '从数组中取第一项、最后一项或指定区间',
+    input: {
+      type: 'object',
+      required: ['items', 'operation'],
+      properties: {
+        items: {
+          type: 'string',
+          title: '输入列表',
+          description: '输入 / 选择一个数组变量',
+          'x-ui': { widget: 'text', placeholder: '/ 选择上游数组' },
+        },
+        operation: {
+          type: 'string',
+          title: '操作',
+          default: 'slice',
+          enum: ['first', 'last', 'slice'],
+          'x-ui': { widget: 'select', labels: { first: '取第一项', last: '取最后一项', slice: '截取区间' } },
+        },
+        start: { type: 'integer', title: '开始位置', default: 0, minimum: 0, 'x-show': { operation: ['slice'] } },
+        count: { type: 'integer', title: '取几项', default: 10, minimum: 1, 'x-show': { operation: ['slice'] } },
+      },
+    },
+    output: {
+      type: 'object',
+      properties: {
+        result: { title: '处理结果' },
+        count: { type: 'integer', title: '结果项数' },
+      },
+    },
+    policy: { idempotent: true },
+  },
+  {
     type: 'http.request',
     typeVersion: '1.0.0',
     name: 'HTTP 调用',
@@ -365,27 +468,77 @@ export const NODE_TYPES: NodeType[] = [
       properties: {
         method: {
           type: 'string', title: '方法', default: 'GET',
-          enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+          enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'],
           'x-ui': { widget: 'select' },
         },
         url: { type: 'string', title: 'URL', 'x-ui': { placeholder: 'https://svc.internal/api/...' } },
-        headers: { type: 'object', title: '请求头', additionalProperties: true, 'x-ui': { widget: 'kv' } },
+        query: { type: 'object', title: '查询参数', additionalProperties: true, 'x-ui': { widget: 'kv' } },
+        authType: {
+          type: 'string', title: '认证', default: 'none',
+          enum: ['none', 'bearer', 'basic', 'header'],
+          'x-ui': { widget: 'select', labels: { none: '无', bearer: 'Bearer Token', basic: 'Basic Auth', header: '自定义请求头' } },
+        },
+        bearerToken: { type: 'string', title: 'Token', 'x-ui': { secret: true }, 'x-show': { authType: ['bearer'] } },
+        basicUsername: { type: 'string', title: '用户名', 'x-show': { authType: ['basic'] } },
+        basicPassword: { type: 'string', title: '密码', 'x-ui': { secret: true }, 'x-show': { authType: ['basic'] } },
+        authHeaderName: { type: 'string', title: '认证请求头名', 'x-show': { authType: ['header'] } },
+        authHeaderValue: { type: 'string', title: '认证请求头值', 'x-ui': { secret: true }, 'x-show': { authType: ['header'] } },
+        headers: { type: 'object', title: '请求头', additionalProperties: true, 'x-ui': { widget: 'kv', sensitiveKeys: true } },
+        bodyType: {
+          type: 'string', title: '请求体类型', default: 'none',
+          enum: ['none', 'json', 'raw', 'form-urlencoded'],
+          'x-ui': { widget: 'select', labels: { none: '无', json: 'JSON', raw: '纯文本', 'form-urlencoded': '表单 URL 编码' } },
+        },
         body: {
           type: 'string', title: '请求体',
           'x-ui': { widget: 'code', language: 'json', rows: 6 },
-          // n8n displayOptions.show 语义：method 是这三个之一才显示
-          'x-show': { method: ['POST', 'PUT', 'PATCH'] },
+          'x-show': { bodyType: ['json', 'raw'] },
         },
-        timeoutMs: { type: 'integer', title: '超时(ms)', default: 30000 },
+        formBody: {
+          type: 'object', title: '表单字段', additionalProperties: true, 'x-ui': { widget: 'kv' },
+          'x-show': { bodyType: ['form-urlencoded'] },
+        },
+        timeoutMs: {
+          type: 'integer', title: '默认超时(ms)', default: 30000, minimum: 1, maximum: 120000,
+          description: '连接和读取未单独设置时使用',
+        },
+        connectTimeoutMs: { type: 'integer', title: '连接超时(ms)', minimum: 1, maximum: 120000 },
+        readTimeoutMs: { type: 'integer', title: '读取超时(ms)', minimum: 1, maximum: 120000 },
+        allowHttpErrors: {
+          type: 'boolean',
+          title: '接受错误状态码',
+          default: false,
+          description: '打开后，4xx / 5xx 仍作为正常输出交给下游处理',
+          'x-ui': { widget: 'switch' },
+        },
+        verifySsl: {
+          type: 'boolean', title: '校验 SSL 证书', default: true,
+          description: '仅在调用自签名证书服务时关闭', 'x-ui': { widget: 'switch' },
+        },
+        retryEnabled: {
+          type: 'boolean', title: '失败后重试', default: false,
+          description: '仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启',
+          'x-ui': { widget: 'switch' },
+        },
+        maxRetries: {
+          type: 'integer', title: '最多重试次数', default: 2, minimum: 1, maximum: 5,
+          'x-show': { retryEnabled: [true] },
+        },
+        retryIntervalMs: {
+          type: 'integer', title: '重试间隔(ms)', default: 500, minimum: 0, maximum: 10000,
+          'x-show': { retryEnabled: [true] },
+        },
       },
     },
     output: {
       type: 'object',
+      'x-dynamic': 'run',
       properties: {
         status: { type: 'integer', title: '状态码' },
         body: { title: '响应体' },
         headers: { type: 'object', title: '响应头' },
         url: { type: 'string', title: '最终 URL' },
+        attempts: { type: 'integer', title: '请求尝试次数' },
       },
     },
     policy: { idempotent: false },
@@ -449,6 +602,37 @@ export const NODE_TYPES: NodeType[] = [
     },
     policy: { idempotent: false },
   },
+
+  // ---------------------------------------------------------------- 画布辅助
+  {
+    type: 'canvas.note',
+    typeVersion: '1.0.0',
+    name: '便签',
+    category: '辅助',
+    icon: 'N',
+    description: '在画布上记录说明、约定和待办，不参与流程执行',
+    visualOnly: true,
+    ports: [],
+    input: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          title: '内容',
+          default: '',
+          'x-ui': { widget: 'textarea', rows: 6, placeholder: '写点说明…' },
+        },
+        theme: {
+          type: 'string',
+          title: '颜色',
+          default: 'yellow',
+          enum: ['yellow', 'blue', 'green', 'pink', 'gray'],
+          'x-ui': { widget: 'select' },
+        },
+      },
+    },
+    output: { type: 'object', properties: {} },
+  },
 ]
 
 /** 动态下拉的假数据。正式版走 GET /options/{key} */
@@ -488,7 +672,7 @@ export function setOptions(key: string, values: string[]) {
   optionCache.set(key, values)
 }
 
-export const CATEGORY_ORDER = ['触发器', '数据查询', '控制', '处理', '输出']
+export const CATEGORY_ORDER = ['触发器', '数据查询', '控制', '处理', '输出', '辅助']
 
 export const CATEGORY_COLOR: Record<string, string> = {
   触发器: '#d97706',
@@ -496,6 +680,7 @@ export const CATEGORY_COLOR: Record<string, string> = {
   控制: '#7c3aed',
   处理: '#0d9488',
   输出: '#e11d48',
+  辅助: '#64748b',
 }
 
 export function portsOf(t: NodeType) {

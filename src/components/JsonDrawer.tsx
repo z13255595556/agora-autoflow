@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useFlow } from '../store'
-import type { FlowDefinition } from '../types'
 import Icon from './Icon'
+import { normalizeFlowDefinition } from '../lib/flowImport'
 
 export default function JsonDrawer({ onClose }: { onClose: () => void }) {
   const toDefinition = useFlow((s) => s.toDefinition)
@@ -14,9 +14,10 @@ export default function JsonDrawer({ onClose }: { onClose: () => void }) {
 
   const doImport = () => {
     try {
-      const parsed = JSON.parse(draft) as FlowDefinition
-      if (!Array.isArray(parsed.nodes)) throw new Error('缺少 nodes 数组')
-      loadDefinition(parsed)
+      const currentId = toDefinition().id
+      const parsed = normalizeFlowDefinition(JSON.parse(draft), currentId)
+      // 这里是覆盖当前画布，不允许导入 JSON 的 id 覆盖流程库里的另一条记录。
+      loadDefinition({ ...parsed, id: currentId })
       setErr('')
       onClose()
     } catch (e) {

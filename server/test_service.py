@@ -57,6 +57,9 @@ class FakeResp:
         if not self.ok:
             raise RuntimeError(f"HTTP {self.status_code}")
 
+    def close(self):
+        pass
+
 
 def fake_post(url, **kw):
     if "oauth" in url:
@@ -114,11 +117,18 @@ wecom.requests = types.SimpleNamespace(post=fake_wecom_post, RequestException=Ex
 
 # 通用 HTTP 节点也只打假上游，同时记下完整请求供断言。
 HTTP_REQUESTED = []
+HTTP_FLAKY_ATTEMPTS = {}
 
 
 def fake_http_request(method, url, **kw):
     HTTP_REQUESTED.append((method, url, kw))
-    response = FakeResp({"token": "007-token"}, url=url)
+    if url.endswith("/flaky"):
+        HTTP_FLAKY_ATTEMPTS[url] = HTTP_FLAKY_ATTEMPTS.get(url, 0) + 1
+        status = 503 if HTTP_FLAKY_ATTEMPTS[url] < 3 else 200
+    else:
+        status = 503 if url.endswith("/error-503") else 200
+    payload = {"error": "temporarily unavailable"} if status == 503 else {"token": "007-token"}
+    response = FakeResp(payload, status=status, url=url)
     response.headers = {"Content-Type": "application/json", "Set-Cookie": "sid=secret"}
     return response
 
@@ -143,6 +153,18 @@ ok("SQL 是异步节点", by_type["sql.query"]["runtime"]["kind"], "http-async")
 ok("企微是同步节点", by_type["notify.wecom"]["runtime"]["kind"], "http")
 ok("HTTP 调用是同步真实节点", by_type["http.request"]["runtime"]["kind"], "http")
 truthy("输出结构标了动态探测", by_type["sql.query"]["output"].get("x-dynamic") == "probe")
+truthy("HTTP 响应结构标了运行时学习", by_type["http.request"]["output"].get("x-dynamic") == "run")
+ok("HTTP 默认拒绝错误状态码",
+   by_type["http.request"]["input"]["properties"]["allowHttpErrors"].get("default"), False)
+ok("HTTP 请求头声明敏感键遮罩",
+   by_type["http.request"]["input"]["properties"]["headers"]["x-ui"].get("sensitiveKeys"), True)
+truthy("HTTP 支持独立查询参数", "query" in by_type["http.request"]["input"]["properties"])
+truthy("HTTP 支持 HEAD", "HEAD" in by_type["http.request"]["input"]["properties"]["method"]["enum"])
+ok("HTTP 默认校验 SSL", by_type["http.request"]["input"]["properties"]["verifySsl"].get("default"), True)
+ok("HTTP 新节点默认没有请求体", by_type["http.request"]["input"]["properties"]["bodyType"].get("default"), "none")
+ok("HTTP 默认不重试非幂等请求", by_type["http.request"]["input"]["properties"]["retryEnabled"].get("default"), False)
+truthy("HTTP 支持连接和读取分离超时",
+       all(k in by_type["http.request"]["input"]["properties"] for k in ("connectTimeoutMs", "readTimeoutMs")))
 truthy("SQL 字段声明了自有占位符语法",
        by_type["sql.query"]["input"]["properties"]["sql"].get("x-placeholders") == {"valuesFrom": "params"})
 # 企微：@成员字段在 markdown_v2 下要隐藏（企微不支持）
@@ -179,6 +201,7 @@ r = client.post("/nodes/http.request/execute", json={"params": {
 ok("HTTP 节点执行成功", r.status_code, 200)
 ok("HTTP 节点返回真实 body", r.json()["output"]["body"], {"token": "007-token"})
 ok("HTTP 节点返回状态码", r.json()["output"]["status"], 200)
+ok("HTTP 节点返回尝试次数", r.json()["output"]["attempts"], 1)
 ok("响应不持久化 Set-Cookie", "set-cookie" in r.json()["output"]["headers"], False)
 method, url, request_kw = HTTP_REQUESTED[-1]
 ok("请求方法透传", method, "POST")
@@ -186,6 +209,75 @@ ok("请求 URL 透传", url, "https://athena.example/generate-007")
 ok("请求头透传", request_kw["headers"]["Authorization"], "Bearer test")
 ok("请求体按 UTF-8 原样发送", request_kw["data"], b'{"uid":"123"}')
 ok("超时转成秒", request_kw["timeout"], 30.0)
+ok("默认校验 SSL", request_kw["verify"], True)
+ok("没有查询参数时传空对象", request_kw["params"], {})
+
+r = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "HEAD",
+    "url": "https://athena.example/resource",
+    "query": {"uid": "123", "scope": "rtc"},
+    "authType": "bearer",
+    "bearerToken": "generated-test-token",
+    "headers": {"authorization": "old-value"},
+    "verifySsl": False,
+}})
+ok("HEAD + Bearer 请求成功", r.status_code, 200)
+method, _, request_kw = HTTP_REQUESTED[-1]
+ok("HEAD 方法透传", method, "HEAD")
+ok("查询参数独立透传", request_kw["params"], {"uid": "123", "scope": "rtc"})
+ok("Bearer 覆盖已有同名请求头", request_kw["headers"], {"Authorization": "Bearer generated-test-token"})
+ok("可关闭 SSL 校验", request_kw["verify"], False)
+
+r = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "POST", "url": "https://athena.example/form",
+    "authType": "basic", "basicUsername": "user", "basicPassword": "pass",
+    "bodyType": "form-urlencoded", "formBody": {"uid": "123", "role": "publisher"},
+}})
+ok("Basic + 表单请求成功", r.status_code, 200)
+_, _, request_kw = HTTP_REQUESTED[-1]
+ok("Basic Auth 编码正确", request_kw["headers"]["Authorization"], "Basic dXNlcjpwYXNz")
+ok("表单 Content-Type 自动补齐", request_kw["headers"]["Content-Type"], "application/x-www-form-urlencoded")
+ok("表单字段交给 HTTP 客户端编码", request_kw["data"], {"uid": "123", "role": "publisher"})
+
+r = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "POST", "url": "https://athena.example/json",
+    "bodyType": "json", "body": '{"uid":"123"}',
+}})
+ok("JSON 请求成功", r.status_code, 200)
+_, _, request_kw = HTTP_REQUESTED[-1]
+ok("JSON Content-Type 自动补齐", request_kw["headers"]["Content-Type"], "application/json")
+ok("JSON 保留用户原始字节", request_kw["data"], b'{"uid":"123"}')
+
+_before = len(HTTP_REQUESTED)
+bad_json = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "POST", "url": "https://athena.example/json", "bodyType": "json", "body": "{bad",
+}})
+ok("非法 JSON 请求体返回 400", bad_json.status_code, 400)
+ok("非法 JSON 不发请求", len(HTTP_REQUESTED), _before)
+
+r = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "GET", "url": "https://athena.example/flaky",
+    "connectTimeoutMs": 1500, "readTimeoutMs": 4500,
+    "retryEnabled": True, "maxRetries": 2, "retryIntervalMs": 0,
+}})
+ok("可重试状态最终成功", r.status_code, 200)
+ok("返回真实尝试次数", r.json()["output"]["attempts"], 3)
+ok("分离超时按 requests 元组传递", HTTP_REQUESTED[-1][2]["timeout"], (1.5, 4.5))
+ok("可重试状态实际请求三次", HTTP_FLAKY_ATTEMPTS["https://athena.example/flaky"], 3)
+
+failed_status = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "GET", "url": "https://athena.example/error-503",
+}})
+ok("上游 5xx 默认让节点失败", failed_status.status_code, 502)
+truthy("5xx 错误包含状态码和响应摘要",
+       "HTTP 503" in failed_status.json()["detail"] and "temporarily unavailable" in failed_status.json()["detail"])
+
+accepted_status = client.post("/nodes/http.request/execute", json={"params": {
+    "method": "GET", "url": "https://athena.example/error-503", "allowHttpErrors": True,
+}})
+ok("允许错误状态码时执行成功", accepted_status.status_code, 200)
+ok("允许后保留真实状态码", accepted_status.json()["output"]["status"], 503)
+ok("允许后保留错误响应体", accepted_status.json()["output"]["body"], {"error": "temporarily unavailable"})
 
 _before = len(HTTP_REQUESTED)
 bad_http = client.post("/nodes/http.request/execute", json={"params": {

@@ -14,6 +14,8 @@ export type PickTarget =
   | { kind: 'free' }
   /** 接在某个节点的某个出口后面 */
   | { kind: 'after'; nodeId: string; port: string }
+  /** 从出口拖到空白画布后，在松手位置创建并连接节点 */
+  | { kind: 'connection'; nodeId: string; port: string; dropAt: { x: number; y: number } }
   /** 插进某条连线中间 */
   | { kind: 'edge'; edgeId: string }
 
