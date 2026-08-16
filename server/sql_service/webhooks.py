@@ -9,6 +9,7 @@
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -370,6 +371,14 @@ def _end_node_ids(definition: Dict[str, Any]) -> set:
     }
 
 
+def _status_url(run_id: str) -> str:
+    """外部相对地址需包含反向代理挂载前缀。"""
+    prefix = "/" + os.getenv("PUBLIC_BASE_PATH", "").strip("/ ")
+    if prefix == "/":
+        prefix = ""
+    return f"{prefix}/api/runs/{run_id}"
+
+
 def wait_for_result(
     run_id: str,
     definition: Dict[str, Any],
@@ -386,7 +395,7 @@ def wait_for_result(
         return 500, {
             "error": "同步响应需要流程中存在「结束」节点",
             "runId": run_id,
-            "statusUrl": f"/api/runs/{run_id}",
+            "statusUrl": _status_url(run_id),
         }
 
     deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -402,7 +411,7 @@ def wait_for_result(
                 return 500, {
                     "error": "流程成功，但没有执行到「结束」节点",
                     "runId": run_id,
-                    "statusUrl": f"/api/runs/{run_id}",
+                    "statusUrl": _status_url(run_id),
                 }
             output = max(ends, key=lambda step: int(step.get("seq") or 0)).get("output")
             return 200, output if isinstance(output, dict) else {"result": output}
@@ -411,13 +420,13 @@ def wait_for_result(
                 "error": run.get("error") or f"流程运行{status}",
                 "runId": run_id,
                 "status": status,
-                "statusUrl": f"/api/runs/{run_id}",
+                "statusUrl": _status_url(run_id),
             }
         if time.monotonic() >= deadline:
             return 202, {
                 "runId": run_id,
                 "status": status,
-                "statusUrl": f"/api/runs/{run_id}",
+                "statusUrl": _status_url(run_id),
                 "timedOut": True,
             }
         time.sleep(max(0.01, poll_seconds))
@@ -502,7 +511,7 @@ def handle(
     immediate = {
         "runId": result["runId"],
         "status": result.get("status", "queued"),
-        "statusUrl": f"/api/runs/{result['runId']}",
+        "statusUrl": _status_url(result["runId"]),
         **({"deduplicated": True} if result.get("deduplicated") else {}),
     }
     if row["response_mode"] == "immediate":

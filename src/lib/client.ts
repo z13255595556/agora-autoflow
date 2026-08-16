@@ -1,5 +1,6 @@
 import type { NodeType } from '../types'
 import { setSchedulerAlive } from './scheduler.ts'
+import { APP_BASE_PREFIX } from './basePath.ts'
 
 /**
  * 节点服务客户端。
@@ -11,7 +12,7 @@ import { setSchedulerAlive } from './scheduler.ts'
 // 8787 被内网的 agora-gateway 占着，避开
 // `?.`：test/ 走 node --test 直接跑源码，那里没有 import.meta.env
 const BASE = (import.meta.env?.VITE_SQL_SERVICE as string | undefined)
-  ?? (import.meta.env?.DEV ? 'http://localhost:8791' : '')
+  ?? (import.meta.env?.DEV ? 'http://localhost:8791' : APP_BASE_PREFIX)
 
 /**
  * 请求超时。
@@ -298,16 +299,13 @@ export function rotateFlowWebhook(flowId: string) {
 /**
  * webhook 完整地址的域名部分。
  *
- * **不能直接用 BASE 拼。** 两种部署形态的答案不一样：
- * - 本机开发：BASE 是绝对地址 `http://localhost:8791`，webhook 也在那个端口
- * - 服务器：BASE 是相对路径 `/api`（nginx 同源转发），`/hooks/` 是另一条
- *   location，域名跟着当前页面走
+ * BASE 既可能是本机开发的绝对地址，也可能是服务器上的挂载前缀。
  *
  * 拼错的后果特别隐蔽：面板上显示得好好的，用户复制给上游，对方打过来 404。
  */
 export function webhookOrigin(): string {
-  if (/^https?:\/\//i.test(BASE)) return new URL(BASE).origin
-  return typeof window === 'undefined' ? '' : window.location.origin
+  if (typeof window === 'undefined') return /^https?:\/\//i.test(BASE) ? BASE.replace(/\/+$/, '') : ''
+  return new URL(BASE || '/', window.location.origin).toString().replace(/\/+$/, '')
 }
 
 

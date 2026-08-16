@@ -13,9 +13,10 @@ import type { FlowDefinition } from './types'
 import { useFlow } from './store'
 import { NODE_TYPE_MAP } from './registry'
 import { ReferencePickerProvider } from './components/ReferencePickerContext'
+import { appHref, stripAppBase } from './lib/basePath'
 
 export default function App() {
-  const route = routeFromPath(window.location.pathname)
+  const route = routeFromPath(stripAppBase(window.location.pathname))
   const editorFlowId = route.kind === 'editor' ? route.flowId : null
   const [editorReady, setEditorReady] = useState(false)
   // 右侧停靠区一次只放一个：流程设置 / 流程 JSON / 选中节点的配置。
@@ -47,7 +48,7 @@ export default function App() {
   useEffect(() => {
     if (route.kind === 'home') return
     if (route.kind === 'invalid') {
-      window.location.replace('/')
+      window.location.replace(appHref())
       return
     }
     // 服务端存储在的话优先读它 —— 但要等 loadRegistry 探完 health 才知道在不在，
@@ -58,7 +59,7 @@ export default function App() {
       const saved = await getFlow(route.flowId)
       if (cancelled) return
       if (!saved) {
-        window.location.replace('/')
+        window.location.replace(appHref())
         return
       }
       useFlow.getState().loadDefinition(saved.def)
@@ -162,7 +163,7 @@ export default function App() {
   }, [dirty, save])
 
   const openFlowPage = (flowId: string) => {
-    window.location.assign(`/workflows/${encodeURIComponent(flowId)}`)
+    window.location.assign(appHref(`/workflows/${encodeURIComponent(flowId)}`))
   }
 
   const createAndOpen = async (def: FlowDefinition) => {
@@ -179,7 +180,7 @@ export default function App() {
     // 防抖还没到点时先保存；只有真的写失败才留在编辑器。
     if (dirty && !(await save())) return
     if (useFlow.getState().running) useFlow.getState().stopRun()
-    window.location.assign('/')
+    window.location.assign(appHref())
   }
 
   if (route.kind === 'home') {
