@@ -329,17 +329,32 @@ ok("probe 强制 LIMIT 1（不受节点 limit 影响）",
    SUBMITTED[-1]["sql"], "SELECT * FROM (\nSELECT * FROM t\n) AS __wf_limited LIMIT 1")
 
 # ---------------------------------------------------------------- 参数错误
+def detail_text(resp):
+    """错误报文。服务端现在返回 {code, retryable, message}，老格式是字符串。
+
+    引擎靠 code 判定重试（不再匹配中文串），人靠 message 看懂发生了什么。
+    """
+    d = resp.json()["detail"]
+    return d["message"] if isinstance(d, dict) else d
+
+
+def detail_code(resp):
+    d = resp.json()["detail"]
+    return d.get("code") if isinstance(d, dict) else None
+
+
 bad = client.post("/nodes/sql.query/submit", json={"params": {
     "sql": "SELECT :a, :b", "params": {"a": 1},
 }})
 ok("缺参数 → 400", bad.status_code, 400)
-truthy("错误里点名了缺哪个", ":b" in bad.json()["detail"])
+truthy("错误里点名了缺哪个", ":b" in detail_text(bad))
+ok("参数错的 code 是 SQL_PARAM_ERROR（引擎据此判定不重试）", detail_code(bad), "SQL_PARAM_ERROR")
 
 bad = client.post("/nodes/sql.query/submit", json={"params": {
     "sql": "DROP TABLE t", "params": {},
 }})
 ok("写操作 → 400", bad.status_code, 400)
-truthy("说清只读限制", "只读" in bad.json()["detail"])
+truthy("说清只读限制", "只读" in detail_text(bad))
 
 bad = client.post("/nodes/sql.query/submit", json={"params": {
     "sql": "SELECT 1", "params": {}, "engine": "mysql",

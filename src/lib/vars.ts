@@ -1,12 +1,13 @@
 import type { Edge } from '@xyflow/react'
 import type { JsonSchema } from '../types'
-import { NODE_TYPE_MAP } from '../registry'
+import { NODE_TYPE_MAP } from '../registry.ts'
 import type { FNode } from '../store'
-import { isFieldVisible } from './display'
-import { dateNodeError, datePresets } from './datefn'
-import { FILTERS, probedColumns, probedContainer, probedObjectFields } from './output'
-import { extractSqlPlaceholders } from './placeholders'
-import { scheduleErrors } from './schedule'
+import { blockRe, isBrokenBlock } from './blocks.ts'
+import { isFieldVisible } from './display.ts'
+import { dateNodeError, datePresets } from './datefn.ts'
+import { FILTERS, probedColumns, probedContainer, probedObjectFields, splitTopLevelPipes } from './output.ts'
+import { extractSqlPlaceholders } from './placeholders.ts'
+import { scheduleErrors } from './schedule.ts'
 
 export interface VarEntry {
   /** 插入到表达式里的引用路径 */
@@ -56,6 +57,32 @@ function flatten(prefix: string, schema: JsonSchema, group: string, out: VarEntr
 }
 
 /**
+ * 已学到的列 → 「取第一行那一格」的变量。
+ *
+ * 列名本身不构成变量路径，但**带下标**之后就构成了：lookupPath 按 . [ ] 切分，
+ * `rows[0].vid` 拆成 rows / 0 / vid，'0' 落在数组上取得到值。缺的从来不是
+ * 能力而是发现途径 —— 用户不知道可以写下标，于是"我只想要那一个值"这件事
+ * 在整个编辑器里没有任何入口。
+ *
+ * 只生成第 0 行。任意行由输出表格点单元格给出（那里才知道真实行号）；
+ * 而聚合查询（count/max/单行统计）本来就只有第 0 行 —— 那正是"想取一个值"
+ * 最常见的形状，也正是用户最不知道怎么写的那个。
+ */
+function pushFirstRowVars(node: FNode, out: VarEntry[]) {
+  const cols = probedColumns(node.data.probedOutput)
+  if (!cols.length) return
+  const container = probedContainer(node.data.probedOutput)
+  for (const c of cols) {
+    out.push({
+      path: `$.nodes.${node.id}.output.${container}[0].${c.name}`,
+      label: `${c.name} · 第一行`,
+      type: c.type ?? 'string',
+      group: `${node.data.label} (${node.id}) · 取单个值`,
+    })
+  }
+}
+
+/**
  * 给定当前节点，算出所有它能引用的变量。
  * 这是整个编辑器最关键的能力 —— 没有它，用户只能盲敲字段名。
  */
@@ -100,15 +127,17 @@ export function availableVars(
         group: `${up.data.label} (${up.id}) · 运行结果`,
       })
     }
-    // 这里**不要**把探测到的列名也当成变量路径列出来。
+    // 列名要带下标才成为路径。
     //
-    // 曾经列过，形如 $.nodes.n2.output.rows[].vid —— 但 lookupPath 按 . [ ]
-    // 切分，rows[].vid 变成 rows.vid，对数组按字符串取值得到 undefined，在
-    // 混合文本里渲染成空字符串；而 validateNode 因为路径完全相等还判它合法。
+    // 曾经列过**不带**下标的 $.nodes.n2.output.rows[].vid —— lookupPath 按
+    // . [ ] 切分，rows[].vid 变成 rows.vid，对数组按字符串取值得到 undefined，
+    // 在混合文本里渲染成空字符串；validateNode 因为路径完全相等还判它合法。
     // 唯一为解决"列名"而做的功能，在它唯一的真实场景下静默失效。
     //
-    // 列名不属于变量路径这个命名空间，它是 | table(列…) 的参数，
+    // rows[0].vid 没有这个问题（'0' 落在数组上取得到值），所以它可以进来；
+    // 而"整列"仍然不是路径，那是 | table(列…) / | lines(列) 的参数，
     // 由 upstreamColumns 供给选列器。
+    pushFirstRowVars(up, out)
   }
   return out
 }
@@ -138,6 +167,7 @@ export function allVars(
         group: `${n.data.label} (${n.id}) · 运行结果`,
       })
     }
+    pushFirstRowVars(n, out)
   }
   // 循环体存在时 $.loop.* 才有意义，和 availableVars 一个判断
   if (nodes.some((n) => n.data.typeId === 'flow.foreach')) {
@@ -170,35 +200,17 @@ export function upstreamColumns(
 
 /** 从字符串里抽出所有 {{ ... }} 引用 */
 export function extractRefs(value: string): string[] {
-  return [...value.matchAll(/\{\{([^}]*)\}\}/g)]
+  return [...value.matchAll(blockRe())]
     .flatMap((m) => [...m[1].matchAll(/\$\.[A-Za-z0-9_.[\]]+/g)].map((r) => r[0]))
 }
 
 /** 抽出所有 {{ }} 块的原始内容，用于识别写错的引用 */
 export function extractBlocks(value: string): string[] {
-  return [...value.matchAll(/\{\{([^}]*)\}\}/g)].map((m) => m[1].trim())
+  return [...value.matchAll(blockRe())].map((m) => m[1].trim())
 }
 
-const LITERAL_RE = /^(-?\d+(\.\d+)?|true|false|null|(["']).*\3)$/
-
-/**
- * 一个 {{ }} 块里没有任何 $. 引用，也不是纯字面量 —— 十有八九是写错了。
- *
- * 最典型的是把 SQL 占位符写成了 `{{date}}`：引擎会把裸标识符原样还回去，
- * SQL 变成 `where date = date`，恒真且全表扫，静默出错。
- */
-export function isBrokenBlock(block: string): boolean {
-  if (!block) return true
-  if (block.includes('$.')) return false
-  // 函数调用，比如 date('now-1d','yyyyMMdd')。参数对不对由运行/预览时报错，
-  // 这里只负责别把它当成写错的引用
-  if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(block.trim())) return false
-  // 去掉比较运算符后逐个看操作数
-  return block
-    .split(/(?:===|!==|==|!=|>=|<=|>|<)/)
-    .map((s) => s.trim())
-    .some((s) => s !== '' && !LITERAL_RE.test(s))
-}
+// isBrokenBlock 搬到了 blocks.ts —— 块的形状学只该有一个住址，
+// 校验方和编辑器对"什么算写错了"必须是同一份判断。要用的直接从 blocks 导入。
 
 /**
  * 保存期静态校验：引用了不存在的上游字段就报出来。
@@ -295,9 +307,15 @@ export function validateNode(
     // 只校验名字，不校验列名 —— validateNode 的返回值会阻断执行，而列名可能
     // 只是还没跑过所以没学到。列名写错交给消息预览提示，不拦。
     for (const block of extractBlocks(value)) {
-      const m = block.match(/\|\s*([A-Za-z_]+)/)
-      if (m && !FILTERS.includes(m[1] as (typeof FILTERS)[number])) {
-        errors.push(`「${key}」里的过滤器 |${m[1]} 不存在，可用：${FILTERS.join(' / ')}`)
+      // 逐个查链条上**每一个**过滤器，不是只查第一个 —— 支持链式之后
+      // `rows | column(vid) | sunm` 里的笔误只会出现在末尾。
+      // 用 splitTopLevelPipes 而不是全局正则：`join('|')` 的分隔符就是一根竖线，
+      // 正则会把它当管道，报一个根本不存在的错
+      for (const seg of splitTopLevelPipes(block).slice(1)) {
+        const m = seg.trim().match(/^([A-Za-z_]+)/)
+        if (m && !FILTERS.includes(m[1] as (typeof FILTERS)[number])) {
+          errors.push(`「${key}」里的过滤器 |${m[1]} 不存在，可用：${FILTERS.join(' / ')}`)
+        }
       }
     }
 

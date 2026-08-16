@@ -1,5 +1,7 @@
 import type { NodeType } from './types'
-import { DATE_FORMATS, DATE_MODES, DATE_MODE_LABELS, dateFormatLabels } from './lib/datefn'
+// 带 .ts：outputShape.ts 要能被 node --test 跑，而它的值导入链要经过这里。
+// 见 outputShape.ts 顶部的说明。
+import { DATE_FORMATS, DATE_MODES, DATE_MODE_LABELS, dateFormatLabels } from './lib/datefn.ts'
 
 /**
  * 节点注册表（空壳期写死在前端）。
@@ -91,6 +93,78 @@ export const NODE_TYPES: NodeType[] = [
     },
   },
 
+
+  {
+    type: 'trigger.webhook',
+    typeVersion: '1.0.0',
+    name: 'Webhook 触发',
+    category: '触发器',
+    icon: '🔗',
+    description: '外部系统 POST 一下就运行，body 里的同名字段自动当流程入参',
+    hasInput: false,
+    input: {
+      type: 'object',
+      required: ['authMode'],
+      properties: {
+        authMode: {
+          type: 'string',
+          title: '认证方式',
+          default: 'secret',
+          enum: ['secret', 'hmac', 'none'],
+          description: '路径里的 token 不是认证 —— 它会进日志、进上游配置文件',
+          'x-ui': {
+            widget: 'select',
+            labels: {
+              secret: '密钥请求头（推荐）',
+              hmac: 'HMAC 签名（上游能算签名时用）',
+              none: '不认证（仅限内网可信调用方）',
+            },
+          },
+        },
+        responseMode: {
+          type: 'string',
+          title: '响应方式',
+          default: 'lastNode',
+          enum: ['lastNode', 'immediate'],
+          description: '等待模式直接返回「结束」节点配置的流程结果；超时后返回 runId，流程继续运行',
+          'x-ui': {
+            widget: 'select',
+            labels: {
+              lastNode: '等待并返回流程结果',
+              immediate: '立即返回运行 ID',
+            },
+          },
+        },
+        responseTimeoutSeconds: {
+          type: 'integer',
+          title: '最多等待（秒）',
+          default: 300,
+          minimum: 1,
+          maximum: 1800,
+          description: '超过后返回 202 和运行 ID，工作流仍会继续执行',
+          'x-show': { responseMode: ['lastNode'] },
+        },
+        rateLimitPerMin: {
+          type: 'integer',
+          title: '每分钟最多触发',
+          default: 60,
+          minimum: 1,
+          maximum: 600,
+          description: '任何能 POST 的人都能触发一条 Hive 查询，这道闸不能不设',
+        },
+      },
+    },
+    output: {
+      type: 'object',
+      properties: {
+        body: { type: 'object', title: '请求体（原样）' },
+        headers: { type: 'object', title: '请求头', 'x-output-ui': { group: 'advanced' } },
+        remoteIp: { type: 'string', title: '来源 IP', 'x-output-ui': { group: 'run' } },
+        receivedAt: { type: 'string', title: '接收时间', 'x-output-ui': { group: 'run' } },
+      },
+    },
+  },
+
   // ---------------------------------------------------------------- 数据查询
   // 后端在线时这份会被 GET /registry/nodes 上报的 manifest 整个覆盖。
   // 字段必须和 server/sql_service/manifest.py 对齐 —— 不一致的话离线配出来的
@@ -116,7 +190,7 @@ export const NODE_TYPES: NodeType[] = [
         sql: {
           type: 'string',
           title: 'SQL',
-          description: '只读语句。占位符写 {{name}} 或 :name，同名流程入参会自动代入',
+          description: '键入 "/" 增加变量',
           'x-placeholders': { valuesFrom: 'params' },
           'x-ui': {
             widget: 'code',
@@ -246,7 +320,18 @@ export const NODE_TYPES: NodeType[] = [
         mode: { type: 'string', title: '模式', enum: ['all', 'any'], default: 'all', 'x-ui': { widget: 'select' } },
       },
     },
-    output: { type: 'object', properties: { branches: { type: 'array', title: '各分支输出', items: { type: 'object' } } } },
+    output: {
+      type: 'object',
+      properties: {
+        // 分支按**入边顺序**显示来源节点名，用户不用面对 branches[0]。
+        // 前提是 engine 那边用 map 不是 flatMap（没跑的分支留 null 占位），
+        // 否则下标和入边对不上，名字会贴到别人的数据上。
+        branches: {
+          type: 'array', title: '各分支输出', items: { type: 'object' },
+          'x-output-ui': { itemLabelFrom: 'sourceNodeName' },
+        },
+      },
+    },
   },
   {
     type: 'flow.end',
@@ -267,7 +352,13 @@ export const NODE_TYPES: NodeType[] = [
         },
       },
     },
-    output: { type: 'object', properties: { result: { title: '流程结果' } } },
+    // ports: [] 已经让它连不出去，upstreamNodes 永远到不了它；
+    // notASource 是给全流程「变量」通讯录那种不按边走的清单用的
+    output: {
+      type: 'object',
+      properties: { result: { title: '流程结果' } },
+      'x-output-ui': { notASource: true },
+    },
     policy: { idempotent: true },
   },
 
@@ -349,7 +440,8 @@ export const NODE_TYPES: NodeType[] = [
         iso: { type: 'string', title: 'ISO 串（UTC）' },
         unix: { type: 'integer', title: '时间戳（秒）' },
         weekday: { type: 'string', title: '星期几' },
-        expr: { type: 'string', title: '等价偏移表达式' },
+        // 等价偏移是调试用的，日常取值不该和「日期」「时间戳」并排显示
+        expr: { type: 'string', title: '等价偏移表达式', 'x-output-ui': { group: 'advanced' } },
       },
     },
     policy: { idempotent: true },
@@ -415,7 +507,15 @@ export const NODE_TYPES: NodeType[] = [
         },
       },
     },
-    output: { type: 'object', properties: { values: { type: 'object', title: '变量集合' } } },
+    output: {
+      type: 'object',
+      properties: {
+        // spread：取值面板把用户起的变量名当一级字段画，不画 values 这一层。
+        // 路径不变（仍是 $.nodes.v1.output.values.customerId），只是不让用户
+        // 面对一个叫「变量集合」的空壳 —— 他起的名字才是他认得的东西。
+        values: { type: 'object', title: '变量集合', 'x-output-ui': { spread: true } },
+      },
+    },
     policy: { idempotent: true },
   },
   {

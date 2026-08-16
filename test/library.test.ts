@@ -1,0 +1,247 @@
+import { test, beforeEach } from 'node:test'
+import assert from 'node:assert/strict'
+
+/**
+ * 流程库双后端的测试。
+ *
+ * 打桩 fetch 把整条链路跑起来（library → client → HTTP），这样能验到浏览器里
+ * 验不到的那一半 —— 开发机上没有 Postgres，服务端模式的 UI 路径在浏览器里
+ * 一次都走不到。
+ *
+ * 重点是三件容易出错的事：
+ * 1. 模式判定（storage.ok 才算服务端可用，不是 backend.ok）
+ * 2. 服务端读失败要**退回本地并说出来**，不能静默
+ * 3. 本地写永远先做，且永远做 —— beforeunload 只能同步保存
+ */
+
+// ---------------------------------------------------------------- 环境垫片
+
+class MemoryStorage {
+  private map = new Map<string, string>()
+  getItem(k: string) { return this.map.has(k) ? this.map.get(k)! : null }
+  setItem(k: string, v: string) { this.map.set(k, v) }
+  removeItem(k: string) { this.map.delete(k) }
+  clear() { this.map.clear() }
+}
+
+const storage = new MemoryStorage()
+;(globalThis as Record<string, unknown>).localStorage = storage
+
+type Route = { status?: number; body: unknown }
+let routes: Record<string, Route> = {}
+let calls: Array<{ method: string; url: string; body: unknown }> = []
+
+;(globalThis as Record<string, unknown>).fetch = async (url: string, init?: RequestInit) => {
+  const method = init?.method ?? 'GET'
+  const path = String(url).replace('http://localhost:8791', '')
+  calls.push({ method, url: path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+  const key = `${method} ${path.split('?')[0]}`
+  const route = routes[key]
+  if (!route) return { ok: false, status: 404, json: async () => ({ detail: `没有打桩 ${key}` }) }
+  const status = route.status ?? 200
+  return { ok: status < 400, status, json: async () => route.body }
+}
+
+const api = await import('../src/lib/client.ts')
+const lib = await import('../src/lib/library.ts')
+
+const DEF = {
+  id: 'f1', version: 0, name: '日报',
+  inputs: { type: 'object', properties: {} },
+  trigger: { kind: 'manual' as const },
+  nodes: [{ id: 'n1', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' as const }],
+  edges: [],
+  layout: { n1: { x: 0, y: 0 } },
+}
+
+async function mode(storageOk: boolean | undefined) {
+  routes['GET /health'] = {
+    body: {
+      ok: true, endpoint: 'x', missingCredentials: [],
+      ...(storageOk === undefined ? {} : { storage: { configured: true, ok: storageOk, detail: null } }),
+    },
+  }
+  await api.health()
+}
+
+beforeEach(() => {
+  storage.clear()
+  routes = {}
+  calls = []
+})
+
+// ---------------------------------------------------------------- 模式判定
+
+test('storage.ok 为真才算服务端模式', async () => {
+  await mode(true)
+  assert.equal(lib.storageMode(), 'server')
+})
+
+test('节点服务在但没配数据库 → 本地模式', async () => {
+  // 这是完全正常的一档状态：节点照跑，流程存浏览器本地。
+  // 把它和"节点服务在不在"合成一个布尔会让两件无关的事互相牵连
+  await mode(false)
+  assert.equal(lib.storageMode(), 'local')
+})
+
+test('老版本服务端没有 storage 字段 → 本地模式', async () => {
+  await mode(undefined)
+  assert.equal(lib.storageMode(), 'local')
+})
+
+test('服务端整个探不到 → 本地模式', async () => {
+  routes = {} // /health 也没打桩，等于连不上
+  await api.health()
+  assert.equal(lib.storageMode(), 'local')
+})
+
+// ---------------------------------------------------------------- 本地模式
+
+test('本地模式：保存只写 localStorage，不发请求', async () => {
+  await mode(false)
+  calls = []
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.ok, true)
+  assert.equal(r.mode, 'local')
+  assert.equal(calls.length, 0)
+  assert.equal(lib.listLocalFlows().length, 1)
+})
+
+test('本地模式：列表来自 localStorage', async () => {
+  await mode(false)
+  await lib.saveFlow(DEF as never)
+  const list = await lib.listFlows()
+  assert.equal(list.mode, 'local')
+  assert.equal(list.flows.length, 1)
+  assert.equal(list.localOnly.length, 0)
+})
+
+test('本地模式：发布是拒绝的，且说清为什么', async () => {
+  await mode(false)
+  const r = await lib.publishFlow('f1')
+  assert.equal(r.ok, false)
+  assert.match(r.error ?? '', /DATABASE_URL/)
+})
+
+// ---------------------------------------------------------------- 服务端模式
+
+test('服务端模式：列表来自服务端', async () => {
+  await mode(true)
+  routes['GET /api/flows'] = {
+    body: { flows: [{ id: 'f1', name: '日报', activeVersion: 2, updatedAt: '2026-08-16T00:00:00Z',
+      archivedAt: null, nodeCount: 3, nodeTypes: ['sql.query'], triggerKind: 'schedule', hasUnpublishedChanges: true }] },
+  }
+  const list = await lib.listFlows()
+  assert.equal(list.mode, 'server')
+  assert.equal(list.flows.length, 1)
+  assert.equal(list.flows[0].activeVersion, 2)
+  assert.equal(list.flows[0].hasUnpublishedChanges, true)
+})
+
+test('★ 只存在本地的流程要被标出来，而不是消失', async () => {
+  await mode(false)
+  await lib.saveFlow({ ...DEF, id: 'only_local', name: '只在本地' } as never)
+  await mode(true)
+  routes['GET /api/flows'] = { body: { flows: [] } }
+
+  const list = await lib.listFlows()
+  assert.equal(list.flows.length, 0)
+  assert.equal(list.localOnly.length, 1)
+  assert.equal(list.localOnly[0].name, '只在本地')
+})
+
+test('★ 不自动上传本地流程 —— 往服务器搬数据是一次明确的动作', async () => {
+  await mode(false)
+  await lib.saveFlow({ ...DEF, id: 'only_local' } as never)
+  await mode(true)
+  routes['GET /api/flows'] = { body: { flows: [] } }
+  calls = []
+  await lib.listFlows()
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0)
+})
+
+test('显式上传才发 POST', async () => {
+  await mode(true)
+  routes['POST /api/flows'] = { body: { id: 'f1' } }
+  const r = await lib.uploadLocalOnly([{ id: 'f1', name: '日报', updatedAt: 0, nodeCount: 1, def: DEF as never }])
+  assert.equal(r.moved, 1)
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 1)
+})
+
+test('★ 服务端读失败 → 退回本地，但把原因带出来', async () => {
+  await mode(false)
+  await lib.saveFlow(DEF as never)
+  await mode(true)
+  routes['GET /api/flows'] = { status: 500, body: { detail: '数据库连接中断' } }
+
+  const list = await lib.listFlows()
+  // 静默退回会让用户以为服务器上就是这些
+  assert.equal(list.mode, 'local')
+  assert.equal(list.flows.length, 1)
+  assert.match(list.error ?? '', /数据库连接中断/)
+})
+
+// ---------------------------------------------------------------- 保存的顺序
+
+test('★ 服务端模式下本地也要写 —— beforeunload 只能同步保存', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { body: { id: 'f1' } }
+  await lib.saveFlow(DEF as never)
+  assert.equal(lib.listLocalFlows().length, 1)
+})
+
+test('★ 服务端写失败但本地成功：不算丢数据，但必须报出来', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { status: 503, body: { detail: '数据库不可用' } }
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.ok, true)              // 数据没丢
+  assert.match(r.error ?? '', /数据库不可用/)   // 但用户以为存到服务器了
+  assert.equal(lib.listLocalFlows().length, 1)
+})
+
+test('服务端上还没有这条时自动补建', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { status: 404, body: { detail: '流程 f1 不存在' } }
+  routes['POST /api/flows'] = { body: { id: 'f1' } }
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.ok, true)
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 1)
+})
+
+test('saveFlowSync 永远只写本地', async () => {
+  await mode(true)
+  calls = []
+  assert.equal(lib.saveFlowSync(DEF as never), true)
+  assert.equal(calls.length, 0)
+})
+
+// ---------------------------------------------------------------- 发布
+
+test('发布返回新版本号', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/publish'] = { body: { id: 'f1', activeVersion: 3 } }
+  const r = await lib.publishFlow('f1')
+  assert.equal(r.ok, true)
+  assert.equal(r.version, 3)
+})
+
+test('发布失败要带回服务端的原话', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/publish'] = { status: 409, body: { detail: '流程 f1 已归档，不能发布' } }
+  const r = await lib.publishFlow('f1')
+  assert.equal(r.ok, false)
+  assert.match(r.error ?? '', /已归档/)
+})
+
+// ---------------------------------------------------------------- 删除
+
+test('服务端模式下删除既清本地也归档服务端', async () => {
+  await mode(false)
+  await lib.saveFlow(DEF as never)
+  await mode(true)
+  routes['DELETE /api/flows/f1'] = { body: { archived: true } }
+  calls = []
+  await lib.deleteFlow('f1')
+  assert.equal(lib.listLocalFlows().length, 0)
+  assert.equal(calls.filter((c) => c.method === 'DELETE').length, 1)
+})

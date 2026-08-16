@@ -18,7 +18,9 @@ import { redactNodeInput } from './lib/secrets'
 import { extractSqlPlaceholders } from './lib/placeholders'
 import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout'
 import { connectionProblem, graphProblems } from './lib/graph'
+import { portOf } from './lib/flowGraph.ts'
 import * as api from './lib/client'
+import { startRemoteRun } from './lib/remoteRun.ts'
 
 export type FNode = Node<FlowNodeData>
 
@@ -138,17 +140,22 @@ function makeNode(typeId: string, position: { x: number; y: number }, seq: numbe
  */
 function withLearnedOutput(nodes: FNode[], step: StepRun): FNode[] | null {
   if (step.status !== 'success') return null
-  const node = nodes.find((n) => n.id === step.nodeId)
+  return withLearnedOutputFrom(nodes, step.nodeId, step.output)
+}
+
+/** 同上，但输入是一份现成的输出数据（固定数据走这条）。 */
+function withLearnedOutputFrom(nodes: FNode[], nodeId: string, output: unknown): FNode[] | null {
+  const node = nodes.find((n) => n.id === nodeId)
   if (!node) return null
-  const learned = learnColumns(step.output)
+  const learned = learnColumns(output)
   const fields = node.data.typeId === 'http.request'
-    ? toResponseFields(step.output)
+    ? toResponseFields(output)
     : learned ? toProbedFields(learned) : null
   if (!fields) return null
   const prev = node.data.probedOutput ?? {}
   const unchanged = JSON.stringify(fields) === JSON.stringify(prev)
   if (unchanged) return null
-  return nodes.map((n) => (n.id === step.nodeId ? { ...n, data: { ...n.data, probedOutput: fields } } : n))
+  return nodes.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, probedOutput: fields } } : n))
 }
 
 interface FlowState {
@@ -187,6 +194,13 @@ interface FlowState {
   registryVersion: number
   /** 后端节点服务的状态。null = 还没探 / 探不到，整站退回 mock */
   backend: api.Health | null
+  /**
+   * 当前流程的 webhook 地址生成了没。**null = 还不知道**（没探 / 没连服务端）。
+   *
+   * 三态而不是两态：结果回来之前当成"没生成"会让画布先闪一下警告再消失，
+   * 而那一下说的是假话。放在 store 里是因为画布节点要跟着它重渲染。
+   */
+  webhookReady: boolean | null
   /**
    * 刚加出来的节点。画布看到它就把视野挪过去（落在屏幕外或被配置面板压住时），
    * 然后清空。
@@ -256,6 +270,9 @@ interface FlowState {
   setRunPanelHeight: (height: number) => void
   setActiveRun: (id: string | null) => void
   loadRegistry: () => Promise<void>
+  /** 探一次当前流程有没有 webhook 地址。画布上那行警告靠它 */
+  probeWebhook: () => Promise<void>
+  setWebhookReady: (ready: boolean | null) => void
   startRun: (trigger: Record<string, unknown>) => Promise<void>
   stopRun: () => void
   testStep: (id: string) => Promise<void>
@@ -306,6 +323,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   runGen: 0,
   registryVersion: 0,
   backend: null,
+  webhookReady: null,
   revealId: null,
   abort: null,
   probing: null,
@@ -852,12 +870,48 @@ export const useFlow = create<FlowState>((set, get) => ({
     }
   },
 
+  /**
+   * 当前流程有没有 webhook 地址。
+   *
+   * 只在画布上真有 trigger.webhook 节点时才发这个请求 —— 绝大多数流程没有，
+   * 不该为了一行不会显示的警告给每次打开流程都多加一次往返。
+   */
+  probeWebhook: async () => {
+    const { nodes, flowId } = get()
+    if (!nodes.some((n) => n.data.typeId === 'trigger.webhook')) {
+      set({ webhookReady: null })
+      return
+    }
+    if (!api.hasRemoteStorage()) {
+      // 没连服务端时不说"没生成" —— 那时候连生成的地方都没有，
+      // 该说的话在面板里（"未连接流程存储"），画布上再喊一遍只是噪音
+      set({ webhookReady: null })
+      return
+    }
+    try {
+      const view = await api.getFlowWebhook(flowId)
+      set({ webhookReady: Boolean(view.webhook) })
+    } catch {
+      // 探不到就维持"不知道"。把请求失败显示成"地址没生成"是在编造事实
+      set({ webhookReady: null })
+    }
+  },
+
+  setWebhookReady: (ready) => set({ webhookReady: ready }),
+
   pinNode: (id, data) => {
     // n8n canPinNode：恰好一个出口的节点才能 pin —— 数据边界上也挡一道，不只靠 UI
     const node = get().nodes.find((n) => n.id === id)
     const t = node && NODE_TYPE_MAP.get(node.data.typeId)
     if (!t || portsOf(t).length !== 1) return
-    set({ ...historyCommit(get()), pinData: { ...get().pinData, [id]: data } })
+    // 固定数据也要学列名。它是「输出栏的当前真相」，手写一份 mock 正是**没法**
+    // 真跑的时候用的 —— 那时候更需要下游能引用得到列，不然只剩手敲路径。
+    const learned = withLearnedOutputFrom(get().nodes, id, data)
+    set({
+      ...historyCommit(get()),
+      pinData: { ...get().pinData, [id]: data },
+      ...(learned ? { nodes: learned } : {}),
+    })
   },
 
   unpinNode: (id) => {
@@ -889,6 +943,34 @@ export const useFlow = create<FlowState>((set, get) => ({
         activeRunId: run.id,
       })
     }
+    // 服务端能跑就交给它 —— 关掉浏览器流程照跑，这是 M1 的全部意义。
+    // 跑不了（没配数据库、或者流程只存在本地）就退回浏览器引擎，
+    // 和"节点服务探不到就退回 mock"是同一条约定
+    if (api.hasRemoteStorage()) {
+      try {
+        await startRemoteRun({
+          flowId: get().flowId,
+          inputs: trigger,
+          signal: abort.signal,
+          onUpdate: upsertRun,
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        // 服务端拒绝（流程没同步上去、库挂了）不该让用户干等 ——
+        // 说清原因，让他知道是"没跑"而不是"跑了没反应"
+        if (get().runGen === gen) {
+          upsertRun({
+            id: `run_failed_${Date.now().toString(36)}`,
+            status: 'error', startedAt: Date.now(), finishedAt: Date.now(),
+            trigger, steps: {}, error: `服务端运行失败：${message}`,
+          })
+        }
+      } finally {
+        if (get().runGen === gen) set({ running: false, abort: null })
+      }
+      return
+    }
+
     try {
       await executeFlow({
         nodes: get().nodes,
@@ -1087,7 +1169,9 @@ export const useFlow = create<FlowState>((set, get) => ({
       id: `e${i}`,
       source: e.from,
       target: e.to,
-      sourceHandle: e.port ?? 'out',
+      // 端口缺省值走 portOf 这一个出处 —— 散着写的话，改一处漏两处会让
+      // flow.if 的分支灭活方向静默翻转。理由见 flowGraph.ts 的注释
+      sourceHandle: portOf(e),
       type: 'flowEdge',
     }))
     const maxSeq = nodes.reduce((m, n) => Math.max(m, Number(n.id.replace(/\D/g, '')) || 0), 0)

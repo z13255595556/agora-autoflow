@@ -11,3 +11,9 @@ server/.venv/
 __pycache__/
 *.pyc
 tsconfig.tsbuildinfo
+
+# 部署凭证：绝不进 git
+deploy/app.env
+deploy/pg_password.txt
+deploy/certs/
+deploy/htpasswd

@@ -35,7 +35,7 @@ SQL_QUERY: Dict[str, Any] = {
             "sql": {
                 "type": "string",
                 "title": "SQL",
-                "description": "只读语句。占位符写 {{name}} 或 :name，同名流程入参会自动代入",
+                "description": "键入 \"/\" 增加变量",
                 # 裸 {{name}} 由本服务渲染，前端别碰；值从兄弟字段 params 取
                 "x-placeholders": {"valuesFrom": "params"},
                 "x-ui": {

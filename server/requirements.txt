@@ -2,3 +2,6 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 requests>=2.31
 pydantic>=2.6
+# 流程持久化。没配 DATABASE_URL 时整个流程接口退回 503、前端继续用 localStorage，
+# 所以这个依赖装不上也不影响 SQL / 企微 / HTTP 三个节点跑起来
+psycopg[binary,pool]>=3.1

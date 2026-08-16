@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { ctxFromRun, resolveTemplate } from '../lib/engine'
-import { extractBlocks, upstreamColumns } from '../lib/vars'
+import { ctxFromRun, lookupPath, resolveTemplate } from '../lib/engine'
+import { extractBlocks, extractRefs, upstreamColumns } from '../lib/vars'
 import { useFlow } from '../store'
 
 /**
@@ -30,19 +30,32 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
   const edges = useFlow((s) => s.edges)
   const runs = useFlow((s) => s.runs)
   const activeRunId = useFlow((s) => s.activeRunId)
+  const pinData = useFlow((s) => s.pinData)
   const run = runs.find((r) => r.id === activeRunId) ?? runs[0] ?? null
 
   // 没跑过也要能预览：只用 date() 和固定文案的消息本来就不依赖运行数据，
   // 拿一个空上下文照样渲染得出来。引用上游的部分会显示成「（无数据）」，
   // 下面单独提示，比整块拒绝预览有用。
+  //
+  // pinData 传进去，固定数据也参与解析 —— 只 pin 不跑的节点以前在这里一律
+  // 解析成空，用户看着 NDV 里明明有数据，预览却是空的。
   const ctx = useMemo(
-    () => ctxFromRun(run) ?? { trigger: {}, run: { id: 'preview', startedAt: new Date().toISOString() }, nodes: {} },
-    [run],
+    () =>
+      ctxFromRun(run, pinData) ?? {
+        trigger: {},
+        run: { id: 'preview', startedAt: new Date().toISOString() },
+        nodes: {},
+      },
+    [run, pinData],
   )
 
   const rendered = useMemo(() => {
     try {
-      const v = resolveTemplate(content, ctx)
+      // 编辑期用 mark 而不是 throw：上游多半还没跑过，缺值是常态。
+      // 但缺的那一段现在会显示成 MISSING_MARK，而不是像以前那样悄悄消失 ——
+      // "消息里那段没了"正是这个坑最难被发现的形态。
+      // 运行期走的是缺省的 throw，两边不是同一套宽严，这是有意的。
+      const v = resolveTemplate(content, ctx, { onMissing: 'mark' })
       return { text: typeof v === 'string' ? v : JSON.stringify(v, null, 2), error: null as string | null }
     } catch (err) {
       return { text: '', error: err instanceof Error ? err.message : String(err) }
@@ -61,6 +74,35 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
     }
     return [...used].filter((c) => !known.has(c))
   }, [content, nodeId, nodes, edges])
+
+  // 下标越界 —— 取单个值最容易踩的坑。
+  //
+  // rows[2].vid 在只有 1 行的结果上得到 undefined，混合文本里渲染成空字符串，
+  // 全程没有任何报错：模板是照着三行的结果点出来的，某天只查回一行，消息里
+  // 那一段就凭空消失了。校验拦不住它（行数是运行期才知道的），但预览看得见。
+  const outOfRange = useMemo(() => {
+    const out: string[] = []
+    for (const ref of new Set(extractRefs(content))) {
+      const m = ref.match(/^(\$\.[A-Za-z0-9_.]+)\[(\d+)\]/)
+      if (!m) continue
+      const arr = lookupPath(ctx, m[1])
+      // 不是数组就不是这个坑（可能上游还没跑过，那由下面的"还没运行过"负责）
+      if (Array.isArray(arr) && Number(m[2]) >= arr.length) {
+        out.push(`${ref} —— 实际只有 ${arr.length} 行`)
+      }
+    }
+    return out
+  }, [content, ctx])
+
+  // 引用了但上下文里根本没有的节点。
+  //
+  // 以前这里判的是 `!run`，现在 pin 的数据也能解析，"有没有运行过"不再等于
+  // "解析不出来" —— 只 pin 了 n3 就去引用 n3 是完全能预览的，那时候再喊
+  // 「还没运行过」就是假警报。改成按引用到的节点逐个查。
+  const missingNodes = useMemo(() => {
+    const ids = new Set([...content.matchAll(/\$\.nodes\.([A-Za-z0-9_]+)/g)].map((m) => m[1]))
+    return [...ids].filter((id) => !(id in ctx.nodes))
+  }, [content, ctx])
 
   // 引用的上游被行数上限砍过 —— 表格里只有前 N 行，别让用户以为发的是全量
   const truncatedFrom = useMemo(() => {
@@ -98,10 +140,10 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
         </span>
       </div>
       <pre className="mono prewrap mprev__body">{text}</pre>
-      {!run && content.includes('$.nodes.') && (
+      {missingNodes.length > 0 && (
         <div className="mprev__warn">
-          ⚠ 还没运行过，引用上游节点的地方现在是空的（表格会显示「（无数据）」）。
-          跑一次流程，或对上游节点点「试运行本节点」，这里就是真实内容了。
+          ⚠ {missingNodes.join('、')} 还没有数据，引用它的地方现在是空的（表格会显示「（无数据）」）。
+          跑一次流程，或对它点「试运行本节点」，这里就是真实内容了。
         </div>
       )}
       {/* 没有"只预览不发送"开关了，运行到这个节点就是真发。说在最显眼的地方 */}
@@ -115,6 +157,12 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
         <div className="mprev__warn">
           ⚠ 内容里有表格，但消息类型是 {msgtype || '（未选）'} —— 企微只有 markdown_v2 会把它渲染成表格，
           其他类型会原样显示成一堆竖线。
+        </div>
+      )}
+      {outOfRange.length > 0 && (
+        <div className="mprev__warn">
+          ⚠ 这些引用的行号超出了实际行数，会<b>静默渲染成空</b>：{outOfRange.join('；')}。
+          只想要一个值就用第一行 <code>[0]</code>，想把整列发出去用 <code>| lines(列名)</code>。
         </div>
       )}
       {unknownCols.length > 0 && (

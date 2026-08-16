@@ -8,15 +8,24 @@
     "dev:web": "vite",
     "dev:api": "server/.venv/bin/python -m uvicorn sql_service.main:app --port 8791 --app-dir server",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "check:flows": "node --experimental-strip-types scripts/check-flows.ts",
+    "check:constants": "bash scripts/check-constants.sh",
+    "check": "npm run check:constants && npx tsc -b && npm test",
+    "worker": "node --experimental-strip-types worker/index.ts",
+    "test:worker": "node --test --experimental-strip-types test/worker.test.ts",
+    "test:scheduler": "node --test --experimental-strip-types test/scheduler.test.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.3.5",
+    "pg": "^8.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@types/pg": "^8.21.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

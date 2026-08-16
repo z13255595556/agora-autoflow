@@ -3,9 +3,11 @@ import { useFlow } from '../store'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { availableVars } from '../lib/vars'
 import { extractRows } from '../lib/output'
-import { previewFromRun } from '../lib/engine'
+import { latestOutput, previewFromRun } from '../lib/engine'
+import { redactOutput } from '../lib/secrets'
 import SchemaForm from './SchemaForm'
 import HttpRequestForm from './HttpRequestForm'
+import WebhookPanel from './WebhookPanel'
 
 /**
  * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
@@ -47,7 +49,9 @@ export default function NodeDetailView() {
   const step = steps[stepIdx]
   const isPinned = Object.prototype.hasOwnProperty.call(pinData, node.id)
   // n8n 语义：pinned 数据是输出栏的当前真相
-  const shownOutput = isPinned ? pinData[node.id] : step?.output
+  // 脱敏只作用于**看**：引用解析拿到的仍是真值，运行时该发什么还发什么。
+  // 以前 HTTP 响应头里的 set-cookie / authorization 是明文摆在这一栏的。
+  const shownOutput = redactOutput(node.data.typeId, isPinned ? pinData[node.id] : step?.output)
   const color = CATEGORY_COLOR[t.category] ?? '#64748b'
   // n8n canPinNode：恰好一个 main 输出才能 pin（If/Switch/foreach/终点节点都不行）
   const canPin = portsOf(t).length === 1
@@ -114,7 +118,7 @@ export default function NodeDetailView() {
               {upstream.length === 0 && <div className="empty">没有上游节点</div>}
               {upstream.map(({ edge, node: up }) => {
                 const upPinned = Object.prototype.hasOwnProperty.call(pinData, up!.id)
-                const upOut = upPinned ? pinData[up!.id] : run?.steps[up!.id]?.at(-1)?.output
+                const upOut = redactOutput(up!.data.typeId, latestOutput(run, pinData, up!.id))
                 return (
                   <details key={edge.id} className="ndv__upstream">
                     <summary>
@@ -137,6 +141,7 @@ export default function NodeDetailView() {
           <section className="ndv__col ndv__col--params">
             <div className="ndv__coltitle">参数</div>
             <div className="ndv__colbody">
+              {t.type === 'trigger.webhook' && <WebhookPanel nodeParams={node.data.params} />}
               {t.type === 'http.request' ? (
                 <HttpRequestForm
                   schema={t.input}
@@ -144,7 +149,7 @@ export default function NodeDetailView() {
                   required={t.input.required ?? []}
                   vars={vars}
                   onChange={(k, v) => updateNodeParam(node.id, k, v)}
-                  previewRef={previewFromRun(run)}
+                  previewRef={previewFromRun(run, pinData)}
                   nodeId={node.id}
                 />
               ) : (
@@ -154,7 +159,7 @@ export default function NodeDetailView() {
                   required={t.input.required ?? []}
                   vars={vars}
                   onChange={(k, v) => updateNodeParam(node.id, k, v)}
-                  previewRef={previewFromRun(run)}
+                  previewRef={previewFromRun(run, pinData)}
                   nodeId={node.id}
                 />
               )}
@@ -311,35 +316,63 @@ function ResultBanner({ output, rows }: { output: Record<string, unknown> | null
 /** 一屏之内渲染得完的行数上限。真要看全量请用 JSON 视图或调小 limit。 */
 const MAX_RENDER_ROWS = 200
 
+/**
+ * 结果表格。这里同时是**取值的入口**：表上的每一格、每个列名都能点，点了就
+ * 得到能直接粘进任何字段的表达式。
+ *
+ * "我只想要这一列里的这一个值" 是最常见的诉求，也是最没法凭空写出来的 ——
+ * 得同时知道节点 id、容器字段叫 rows、下标写在方括号里、外面还要包 {{ }}。
+ * 这四件事没有一件能从界面上看出来。数据本来就已经画在屏幕上了，让用户
+ * 指着它说"要这个"，比让他们把路径拼出来可靠得多。
+ *
+ * 复制之后把表达式**原文显示出来**，不只是提示"已复制" —— 看几次就学会了
+ * 下标和过滤器的写法，下次可以直接手写。
+ */
 function RowsTable({ rows, nodeId, container }: { rows: unknown[]; nodeId: string; container: string }) {
   const [copied, setCopied] = useState<string | null>(null)
   const cols = [...new Set(rows.flatMap((r) => (r && typeof r === 'object' ? Object.keys(r) : [])))]
   if (!cols.length) return <pre className="mono ndv__json">{JSON.stringify(rows, null, 2)}</pre>
 
-  const copy = (text: string, tag: string) => {
-    void navigator.clipboard.writeText(text)
-    setCopied(tag)
-    setTimeout(() => setCopied((c) => (c === tag ? null : c)), 1200)
+  // 不做定时消失：它不是"操作成功"的提示，是「你刚取的是这个」的常驻说明 ——
+  // 用户点完这一格，视线要移到中间那栏去粘贴，回头往往还想再确认一眼。
+  const copy = (text: string) => {
+    // 剪贴板可能被浏览器策略拒（非安全上下文、无权限）——那也要照常显示下面
+    // 那条表达式，用户至少能手抄。未捕获的 rejection 只会脏控制台。
+    void navigator.clipboard?.writeText(text).catch(() => {})
+    setCopied(text)
   }
   const ref = `$.nodes.${nodeId}.output.${container || 'rows'}`
   const shown = rows.slice(0, MAX_RENDER_ROWS)
+  // 整批行只有喂给 foreach / 过滤器时才有意义，单独一条路径粘进消息里是一坨
+  // JSON。所以三个入口给的是三种**成品**，不是三段路径。
+  const cellExpr = (i: number, c: string) => `{{ ${ref}[${i}].${c} }}`
+  const colExpr = (c: string) => `{{ ${ref} | lines(${c}) }}`
 
   return (
     <>
       <div className="ndv__copybar">
-        <button className="btn btn--sm" onClick={() => copy(ref, '__ref')} title="这一批行的引用路径，可以粘到消息模板里">
-          {copied === '__ref' ? '已复制' : `复制引用 ${ref}`}
+        <button
+          className="btn btn--sm"
+          onClick={() => copy(`{{ ${ref} }}`)}
+          title="整批行。适合喂给「循环」节点，或接 | table(列…) 变成表格"
+        >
+          复制整批行
         </button>
-        <span className="ndv__meta">点列名可复制列名</span>
+        <span className="ndv__meta">点单元格取这一个值 · 点列名取整列</span>
       </div>
+      {copied && (
+        <div className="ndv__copied">
+          已复制 <code>{copied}</code> —— 粘到消息内容、SQL 或任何输入框里
+        </div>
+      )}
       <div className="ndv__tablewrap">
-        <table className="ndv__table">
+        <table className="ndv__table ndv__table--pick">
           <thead>
             <tr>
               {cols.map((c) => (
                 <th key={c}>
-                  <button className="colcopy" onClick={() => copy(c, c)} title={`复制列名 ${c}`}>
-                    {copied === c ? '已复制' : c}
+                  <button className="colcopy" onClick={() => copy(colExpr(c))} title={`复制整列：${colExpr(c)}`}>
+                    {c}
                   </button>
                 </th>
               ))}
@@ -350,7 +383,17 @@ function RowsTable({ rows, nodeId, container }: { rows: unknown[]; nodeId: strin
               <tr key={i}>
                 {cols.map((c) => {
                   const v = (r as Record<string, unknown>)?.[c]
-                  return <td key={c}>{v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+                  return (
+                    <td key={c}>
+                      <button
+                        className={`cellcopy${copied === cellExpr(i, c) ? ' is-copied' : ''}`}
+                        onClick={() => copy(cellExpr(i, c))}
+                        title={`复制这一格：${cellExpr(i, c)}`}
+                      >
+                        {v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                      </button>
+                    </td>
+                  )
                 })}
               </tr>
             ))}

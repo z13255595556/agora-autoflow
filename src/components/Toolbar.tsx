@@ -4,6 +4,7 @@ import { validateNode } from '../lib/vars'
 import { graphProblems } from '../lib/graph'
 import { NODE_TYPE_MAP } from '../registry'
 import { focusValidationField } from '../lib/validationFocus'
+import { storageMode } from '../lib/library'
 import Icon from './Icon'
 
 export type DockPanel = 'flow' | 'json' | null
@@ -13,8 +14,14 @@ export type DockPanel = 'flow' | 'json' | null
  *
  * 原来是一排八个同样大小的灰按钮，主操作（运行）和「清空」长得一模一样，
  * 眼睛没有落点。现在按频率分三档：左边是身份（返回 / 流程名 / 保存状态），
- * 右边只留高频操作（保存、运行），其余收进「更多」。
+ * 右边保留高频操作（流程入参、保存、运行），导入导出和清空收进「更多」。
  */
+export interface PublishState {
+  /** 已发布并生效的版本号。null = 从未发布 */
+  activeVersion: number | null
+  hasUnpublishedChanges: boolean
+}
+
 export default function Toolbar({
   dock,
   onDock,
@@ -22,6 +29,8 @@ export default function Toolbar({
   onSave,
   dirty,
   saveError,
+  publish,
+  onPublish,
 }: {
   dock: DockPanel
   onDock: (p: DockPanel) => void
@@ -30,6 +39,9 @@ export default function Toolbar({
   /** 有持久化改动正在等待防抖自动保存。 */
   dirty: boolean
   saveError: string | null
+  publish: PublishState
+  /** 发布；返回错误信息表示失败，null 表示成功 */
+  onPublish: () => Promise<string | null>
 }) {
   const flowName = useFlow((s) => s.flowName)
   const setFlowName = useFlow((s) => s.setFlowName)
@@ -53,6 +65,15 @@ export default function Toolbar({
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [problemsOpen, setProblemsOpen] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  // 接了流程存储才有"版本"这个概念；本地模式下画一个点了会报错的按钮不如不画
+  const canPublish = storageMode() === 'server'
+  const doPublish = async () => {
+    setPublishing(true)
+    const err = await onPublish()
+    setPublishing(false)
+    if (err) window.alert(`发布失败：${err}`)
+  }
   const menuRef = useRef<HTMLDivElement>(null)
   const problemsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -190,6 +211,20 @@ export default function Toolbar({
 
         <i className="topbar__sep" />
 
+        <button
+          className={`btn topbar__inputs${dock === 'flow' ? ' btn--active' : ''}`}
+          onClick={() => {
+            setMenuOpen(false)
+            setProblemsOpen(false)
+            onDock(dock === 'flow' ? null : 'flow')
+          }}
+          title="添加或管理流程入参"
+          aria-pressed={dock === 'flow'}
+        >
+          <Icon name="plus" size={14} />
+          添加入参
+        </button>
+
         <div className="historytools" aria-label="编辑历史">
           <button
             className="historytools__btn"
@@ -224,15 +259,6 @@ export default function Toolbar({
           </button>
           {menuOpen && (
             <div className="menu__pop">
-              <button
-                className="menu__item"
-                onClick={() => {
-                  onDock(dock === 'flow' ? null : 'flow')
-                  setMenuOpen(false)
-                }}
-              >
-                流程设置<em>入参 / 名称</em>
-              </button>
               {/* 「整理」不放这儿 —— 画布左下角的控制条里那个还会顺手把视野跟过去，
                   这里放一个不跟视野的同名项，只会让人以为两个功能不一样 */}
               <button
@@ -266,6 +292,31 @@ export default function Toolbar({
         >
           保存
         </button>
+
+        {/* 发布只在接了流程存储时出现。本地模式下没有"版本"这个概念，
+            画一个点了会报错的按钮不如不画 */}
+        {canPublish && (
+          <button
+            className={`btn${publish.hasUnpublishedChanges ? ' btn--dirty' : ''}`}
+            onClick={() => void doPublish()}
+            disabled={publishing || running}
+            title={
+              publish.activeVersion === null
+                ? '发布后才会有第一个版本。定时和 Webhook 触发的都是已发布的那一版'
+                : publish.hasUnpublishedChanges
+                  ? `当前生效的是 v${publish.activeVersion}，草稿有改动还没发布 —— 定时/Webhook 跑的仍是 v${publish.activeVersion}`
+                  : `已发布 v${publish.activeVersion}，草稿与它一致`
+            }
+          >
+            {publishing
+              ? '发布中…'
+              : publish.activeVersion === null
+                ? '发布'
+                : publish.hasUnpublishedChanges
+                  ? `发布 v${publish.activeVersion + 1}`
+                  : `v${publish.activeVersion}`}
+          </button>
+        )}
 
         {running ? (
           <button className="btn btn--stop" onClick={stopRun} title="中止运行，并取消平台上还在跑的任务">

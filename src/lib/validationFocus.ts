@@ -32,7 +32,12 @@ export function focusValidationField(error: string, schema: JsonSchema): boolean
       .find((element) => element.dataset.fieldKey === key)
     if (!field) return false
     field.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    const control = field.querySelector<HTMLElement>('input:not([type="hidden"]), textarea, select, button')
+    // contenteditable 要显式列出来：它既不是 input 也不是 textarea，漏掉的话
+    // 选择器会往下命中字段里的第一个 <button>（取值面板的召唤按钮），
+    // 「定位」看起来生效了，焦点却落在一个跟这条错误无关的东西上。
+    const control = field.querySelector<HTMLElement>(
+      'input:not([type="hidden"]), textarea, select, [contenteditable="true"], button',
+    )
     control?.focus({ preventScroll: true })
     field.classList.remove('field--attention')
     void field.offsetWidth

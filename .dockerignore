@@ -1,0 +1,17 @@
+.git
+.gitignore
+.DS_Store
+node_modules
+dist
+*.log
+
+.env
+server/.env
+server/.venv
+**/__pycache__
+**/*.pyc
+
+deploy/app.env
+deploy/pg_password.txt
+deploy/htpasswd
+deploy/certs

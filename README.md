@@ -94,9 +94,171 @@ manifest 里的 `x-placeholders` 声明，不是硬编码 —— 别的服务想
 
 ```bash
 cd server
-python3 test_sqlparams.py          # 33 用例：注入、扫描器、只读、LIMIT
-.venv/bin/python test_service.py   # 29 用例：假上游跑通 submit/poll/probe/cancel
+python3 test_sqlparams.py          # 41 用例：注入、扫描器、只读、LIMIT
+.venv/bin/python test_service.py   # 86 用例：假上游跑通 submit/poll/probe/cancel
+.venv/bin/python test_wecom.py     # 27 用例
+.venv/bin/python test_ssrf.py      # 33 用例：出网防护
+.venv/bin/python test_flowdef.py   # 33 用例：流程定义校验
 ```
+
+## 部署
+
+本机开发不需要容器 —— Postgres 用 Homebrew、其余直接跑（见下一节）。
+这份是给服务器的：
+
+```bash
+cp deploy/env.example deploy/app.env     # 填四项 OAUTH_*
+openssl rand -hex 32 > deploy/pg_password.txt
+# 安装过 htpasswd（apache2-utils/httpd-tools）后交互式设置控制台账号密码。
+# 使用 APR1，确保 nginx:alpine 可以直接校验。
+htpasswd -cm deploy/htpasswd workflow-admin
+# 证书放 deploy/certs/{fullchain,privkey}.pem
+docker compose config                    # 上线前先确认挂载和环境完整
+docker compose up -d --build
+```
+
+四个服务：`postgres` / `api` / `worker` / `nginx`。
+前端由 `deploy/web.Dockerfile` 在镜像内构建，服务器不需要单独安装 Node.js。
+**沙箱（Python 代码节点）暂时没有** —— 它是唯一真正需要容器隔离的部分。
+
+几条不能省的：
+
+- **凭证走 `env_file` 挂载，绝不 COPY 进镜像** —— 镜像会被推到仓库、
+  被 pull、被 `docker history` 看光
+- **HTTPS 内网也要上**：webhook 带密钥，明文 HTTP 等于密钥裸奔
+- 默认用 `deploy/htpasswd` 的 Basic Auth 保护编辑器和控制面；接入公司 SSO 后，
+  用网关认证替换 nginx 中的 `auth_basic`，但不要让 `/api`、`/nodes` 裸露公网
+- API 和 worker 从同一份 `pg_password` Docker Secret 读取密码，不需要再拼
+  `DATABASE_URL`，密码也不会出现在 `docker compose config` 输出中
+- nginx 的 `client_max_body_size 1m` 要和服务端的上限对齐；
+  `/hooks/` 的 `proxy_read_timeout` 必须大于同步响应可配置的最大等待时间（当前 1800 秒）
+- access log **保持默认不记 body** —— 里面可能有用户 id、手机号
+- `deploy/backup.sh` 挂 cron：每日 `pg_dump` + 90 天清理 `run_events`，
+  但**保留 `runs` 主记录**（"去年为什么发了那个数"仍要答得上来）
+
+worker 起多个也安全：认领走 `FOR UPDATE SKIP LOCKED`，
+调度器靠 advisory lock 保证只有一个在扫表。
+
+## 流程持久化（M0）
+
+流程原先存在每个人自己浏览器的 localStorage 里：换台机器就没了、同事看不到。
+现在可以存到 Postgres：
+
+两种起库方式，任选：
+
+```bash
+# A. Homebrew（本机装，开机自启，端口 5432）
+brew install postgresql@16 && brew services start postgresql@16
+psql -d postgres -c "CREATE ROLE workflow LOGIN PASSWORD 'workflow'"
+createdb -O workflow workflow
+export DATABASE_URL=postgresql://workflow:workflow@127.0.0.1:5432/workflow
+
+# B. Docker（端口 5433，和 A 不冲突，可以并存）
+docker compose up -d
+export DATABASE_URL=postgresql://workflow:workflow@localhost:5433/workflow
+```
+
+然后照常起服务，建表由服务端自动迁移：
+
+```bash
+cd server
+.venv/bin/python -m uvicorn sql_service.main:app --port 8791
+```
+
+**没配 DATABASE_URL 也照样能用** —— 流程接口一律返回 503 并说清原因，
+前端继续用 localStorage。这和"节点服务探不到就整站退回 mock"是同一个约定：
+clone 下来第一件事不该是被迫装个数据库。当前状态在 `GET /health` 的
+`storage` 字段里。
+
+迁移是裸 SQL 文件 + 一张 `schema_migrations` 表，服务启动时自动跑，不引 Alembic
+（整个服务端四个依赖，为两张表引一套迁移框架不划算，出事时裸 SQL 也更容易接管）。
+
+### 草稿与版本
+
+| 概念 | 存哪 | 谁会读它 |
+|---|---|---|
+| **草稿** | `flows.draft` | 编辑器。防抖自动保存打的就是它，不产生版本 |
+| **版本** | `flow_versions`，**不可变** | 运行记录按 `runs.flow_version` 钉住的那一份 |
+| **生效版本** | `flows.active_version` | 将来的定时和 webhook 只触发这一版 |
+
+在此之前根本没有版本概念 —— `toDefinition()` 里 `version: 1` 是硬编码的。
+没有它，"改了流程之后历史运行记录还解释得通吗"这个问题无法回答。
+
+草稿改了不发布，线上不会变。列表页的 `hasUnpublishedChanges` 会标出来
+（只比逻辑不比布局，拖一下节点位置不算改动）——否则"我明明改了怎么没生效"
+是一定会发生的。
+
+### 服务端只拒绝，不修复
+
+前端有一份 `normalizeFlowDefinition`，它的职责是把外部 JSON **补齐**成编辑器
+能安全加载的样子。服务端的 `flowdef.validate` 职责不同：它是完整性边界，
+只判定不转换。
+
+理由是硬的：前端补一个默认值用户马上能在界面上看见；服务端补一个默认值则是
+悄悄存下一份和用户以为的不一样的定义。而且两份"修复"逻辑必然漂移，漂移的
+表现是"本地能存、线上存出来是另一个样"。
+
+拒绝的包括：悬空的边引用、重复节点 id、非法 `onError`、`pinData` 指向不存在的
+节点，以及体积上限（整份 1 MB、单条 pin 256 KB、节点数 500）——
+未认证的接口收 JSONB，没有上限就是一个内存放大器。
+
+`id` 和 `version` **由服务端分配**，客户端提交什么都不作数。
+
+### 审计
+
+不做 RBAC，只回答"谁改的"。`actor` 由反向代理把 SSO 用户名放进
+`X-Forwarded-User`，服务端不自己做认证。记录建立/发布/归档；
+**存草稿不记** —— 编辑器几秒存一次，记了会把审计表变成击键日志。
+
+### 存量流程的影响面分析
+
+节点的 input schema 由后端 manifest 整份下发，改一个字段名，所有已保存流程里
+那个参数就变成孤儿。[types.ts](src/types.ts) 里为同一类问题写过一句：这种不一致
+"一上线就没，而且**只在线上没，本地永远测不出来**"。
+
+流程还在各人 localStorage 里的时候这件事没法检测；集中到服务端之后既可检测
+也更致命 —— 一次变更同时打坏所有人的日报。
+
+```bash
+npm run check:flows                      # 从服务端拉全部流程逐条校验
+npm run check:flows -- exported/*.json   # 或者查一批导出的 JSON
+```
+
+退出码非 0 表示有流程会因当前的节点定义而失效，CI 可以直接拿它当门禁。
+它用的是**后端下发的注册表**而不是前端那份兜底定义 —— 要检测的正是后端
+manifest 的破坏性变更，拿前端的定义去查等于什么都没查。
+
+```bash
+cd server
+.venv/bin/python test_flowdef.py        # 33 用例，纯校验，不需要数据库
+DATABASE_URL=... .venv/bin/python test_flowstore.py   # 集成，需要真 Postgres
+```
+
+## HTTP 节点的出网防护
+
+`http.request` 从服务端发请求（浏览器直连会撞 CORS，行为还取决于谁的机器）。
+这意味着**服务端的网络位置就是这个节点的能力边界** —— 而这个进程同时持有
+数据平台的机器人票和企微 webhook 地址，且服务端目前没有任何认证。
+
+所以默认拦住三类目的地：回环、RFC1918 内网、链路本地（`169.254.169.254`
+云元数据在这里）。**跳转的每一跳都重新校验** —— 只校验第一跳等于没校验，
+一个指向元数据地址的 302 就能绕过全部检查。跨主机跳转还会剥掉 `Authorization`，
+否则恶意跳转能直接把 token 收走。
+
+两个环境变量：
+
+| 变量 | 作用 |
+|---|---|
+| `HTTP_NODE_ALLOWED_HOSTS` | 设了就是**严格白名单**：只有列出的主机能访问（内网地址也放行，那是运维明确同意的）。空格或逗号分隔 |
+| `HTTP_NODE_BLOCKED_CIDRS` | 在默认网段之外追加要拦的段，例如 k8s 用了 `100.64.0.0/10` |
+
+判定用的是**显式网段**而不是 `ipaddress.is_private`。后者是个大杂烩：
+`198.18.0.0/15`（RFC2544 基准测试段）也算 private，而 Zscaler / AnyConnect 这类
+代理型 DNS 恰好把所有外部域名解析到这一段 —— 用 `is_private` 判会把企微 webhook
+一起拦掉，一个安全修复变成"所有出网都不通"。
+
+残余风险照实说：校验和建连之间有 TOCTOU 窗口，DNS rebinding 理论上仍可绕过。
+彻底解决要固定已校验的 IP 去建连（自定义连接池适配器），成本超出这次修复的范围。
 
 ## 已经能用的
 
@@ -254,7 +416,53 @@ webhook 等同凭证：拿到的人就能往群里发，而它随流程定义一
 {{ $.nodes.n2.output.rows | json }}                  原样 JSON
 ```
 
+聚合，四个都接受可选列名（对象数组和标量数组两种形状都能用）：
+
+```
+{{ rows | sum(dc) }}              求和；rows | column(dc) | sum 等价
+{{ rows | unique }}               去重（按值比，不是按引用）
+{{ rows | join('、', name) }}      连成一串，默认分隔符是顿号
+{{ rows | sort(dc, desc) }}       排序，数字按数值比（否则 '10' 会排在 '9' 前）
+```
+
+**过滤器可以串起来**：
+
+```
+{{ rows | sort(dc, desc) | at(0, name) }}      跌得最狠的是谁
+{{ rows | column(vid) | unique | count }}      去重后几个
+```
+
+以前只能接一个 —— 表达不出来就只能回去改 SQL，而改 SQL 意味着多跑一次
+几分钟的 Hive 查询。`sort` 不会改上游数据（原地排序会让下一个引用它的地方
+拿到排过序的结果，而且没有任何痕迹）。
+
 不写列名就取全部列。空结果输出「（无数据）」而不是空白。
+
+### 引用取不到值 = 报错，不是空字符串
+
+```
+{{ $.nodes.q1.output.summary.bad }}          → 报错，并告诉你怎么写 default
+{{ $.nodes.q1.output.summary.bad | default('—') }}   → 渲染成 —
+{{ rows | find(vid, eq, 999) | default('无') }}      → default 可以叠在别的过滤器后面
+```
+
+以前这里是 `JSON.stringify(v) ?? ''`：`JSON.stringify(undefined)` 返回的是
+`undefined` 这个值（不是字符串），`?? ''` 于是把它变成空串。后果是
+`今天异常 {{ ….summary.bad }} 条` 渲染成「今天异常  条」、**run 记 success**、
+群里收到一句缺了数字的日报，全程没有任何报错。
+
+而 `sql.query` 的输出结构本来就是 probe/run 学出来的 —— Hive 列名一变就命中
+这条路径，编辑期的校验拦不住这种运行时漂移。引擎对裸标识符、写错的过滤器都
+专门抛了错，唯独漏了这一种。
+
+Airflow 的 `StrictUndefined`、Step Functions 的 `States.ParameterPathFailure`、
+Argo 的 parameter-not-found、Camunda 的求值失败→incident —— 四个系统的一致选择
+都是报错终止，确实允许缺值的场合用显式的 `default()` 开口子。
+
+`0` / `false` / `''` / `null` 都**不算**缺值，只有路径解不出来才算。
+
+编辑期的消息预览是例外：那时上游多半还没跑过，缺值是常态，所以渲染成显眼的
+`〔未取到值〕`而不是报错 —— 但也不再是"那段悄悄消失"。
 
 ## 前端驱动轮询的局限
 
@@ -270,6 +478,10 @@ webhook 等同凭证：拿到的人就能往群里发，而它随流程定义一
 
 - **嵌套循环不支持**：循环体里再放一个 `flow.foreach` 会显式报错
   （而不是静默产出错误数据）；后端真实引擎实现后放开
+- **循环项上限 1000 条**：超了是整个节点失败，不是截断 —— 截断会让"少跑了
+  几百条"变成一次绿色的运行。以前这里硬编码 `slice(0, 3)`（mock 期的限制，
+  但对真实节点也生效：循环体里的 SQL 是真跑的，配了 500 个 vid 只跑前 3 个，
+  剩下 497 个静默消失）
 - 循环体里的 `flow.if` 支持按迭代求值；`flow.merge` 在循环体里按普通节点处理
 - 表达式只支持单个引用 / 字面量 / 二元比较，函数调用、算术运算不支持
   （正式版换 CEL / expr-lang，这里只是 mock）

@@ -7,11 +7,12 @@ import JsonDrawer from './components/JsonDrawer'
 import RunPanel from './components/RunPanel'
 import NodeDetailView from './components/NodeDetailView'
 import Home from './components/Home'
-import { getFlow, saveFlow } from './lib/library'
+import { createFlow, getFlow, publishFlow, saveFlow, saveFlowSync } from './lib/library'
 import type { Template } from './lib/templates'
 import type { FlowDefinition } from './types'
 import { useFlow } from './store'
 import { NODE_TYPE_MAP } from './registry'
+import { ReferencePickerProvider } from './components/ReferencePickerContext'
 
 export default function App() {
   const route = routeFromPath(window.location.pathname)
@@ -29,9 +30,17 @@ export default function App() {
   })
   const loadRegistry = useFlow((s) => s.loadRegistry)
 
+  /** health 探完了没。**流程加载必须等它** —— 探完才知道该读服务端还是 localStorage */
+  const [backendProbed, setBackendProbed] = useState(false)
+  /** 服务端上这条流程的发布状态。本地模式下恒为 null */
+  const [flowMeta, setFlowMeta] = useState<{ activeVersion: number | null; hasUnpublishedChanges: boolean }>({
+    activeVersion: null,
+    hasUnpublishedChanges: false,
+  })
+
   // 探后端 + 拉节点注册表。探不到就整站留在 mock 模式，编辑器照样能用
   useEffect(() => {
-    void loadRegistry()
+    void loadRegistry().finally(() => setBackendProbed(true))
   }, [loadRegistry])
 
   // 编辑页是独立 URL。每次整页进入都按路径里的 flowId 重新加载，刷新不会丢流程。
@@ -41,17 +50,29 @@ export default function App() {
       window.location.replace('/')
       return
     }
-    const saved = getFlow(route.flowId)
-    if (!saved) {
-      window.location.replace('/')
-      return
-    }
-    useFlow.getState().loadDefinition(saved.def)
-    setDirty(false)
-    setSaveError(null)
-    setDock(null)
-    setEditorReady(true)
-  }, [route.kind, editorFlowId])
+    // 服务端存储在的话优先读它 —— 但要等 loadRegistry 探完 health 才知道在不在，
+    // 所以这里依赖 backendProbed，不能一进来就读
+    if (!backendProbed) return
+    let cancelled = false
+    void (async () => {
+      const saved = await getFlow(route.flowId)
+      if (cancelled) return
+      if (!saved) {
+        window.location.replace('/')
+        return
+      }
+      useFlow.getState().loadDefinition(saved.def)
+      // loadDefinition 之后才探：probeWebhook 要看画布上有没有 webhook 节点。
+      // 不 await —— 它只喂画布上一行提示，不该拖慢流程打开
+      void useFlow.getState().probeWebhook()
+      setFlowMeta({ activeVersion: saved.activeVersion ?? null, hasUnpublishedChanges: !!saved.hasUnpublishedChanges })
+      setDirty(false)
+      setSaveError(null)
+      setDock(null)
+      setEditorReady(true)
+    })()
+    return () => { cancelled = true }
+  }, [route.kind, editorFlowId, backendProbed])
 
   // dirty 表示还有等待自动保存的持久化改动；临时 UI 状态不进入这里。
   const [dirty, setDirty] = useState(false)
@@ -64,21 +85,25 @@ export default function App() {
   }, [])
   useDirtyWatch(route.kind === 'editor' && editorReady, markDirty)
 
-  const save = useCallback(() => {
-    const saved = saveFlow(useFlow.getState().toDefinition())
-    if (saved) {
+  const save = useCallback(async () => {
+    const result = await saveFlow(useFlow.getState().toDefinition())
+    if (result.ok) {
       setDirty(false)
-      setSaveError(null)
+      // 服务端写失败但本地写成功：数据没丢，但必须说出来 ——
+      // 用户以为存到服务器了，实际只在这台机器上
+      setSaveError(result.error ? `已存到本地，但同步到服务端失败：${result.error}` : null)
+      // 存了草稿就意味着和已发布那版可能不一致了
+      setFlowMeta((m) => (m.activeVersion === null ? m : { ...m, hasUnpublishedChanges: true }))
     } else {
-      setSaveError('浏览器本地存储写入失败，请检查存储空间或隐私设置')
+      setSaveError(result.error ?? '保存失败')
     }
-    return saved
+    return result.ok
   }, [])
 
   // 每次真实流程改动后重新计时；连续输入只在停下 900ms 后写一次。
   useEffect(() => {
     if (route.kind !== 'editor' || !editorReady || !dirty) return
-    const timer = window.setTimeout(() => { save() }, 900)
+    const timer = window.setTimeout(() => { void save() }, 900)
     return () => window.clearTimeout(timer)
   }, [route.kind, editorReady, dirty, editRevision, save])
 
@@ -91,7 +116,7 @@ export default function App() {
       const key = e.key.toLowerCase()
       if (mod && key === 's') {
         e.preventDefault()
-        save()
+        void save()
         return
       }
       if (!mod || isTextEditingTarget(e.target)) return
@@ -107,31 +132,52 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [route.kind, editorReady, save])
 
-  // 标签页关闭时定时器可能来不及触发；localStorage 是同步写，最后再落一次。
+  // 标签页关闭时定时器可能来不及触发，最后再落一次。
+  //
+  // **只写本地**：这个时机发不出可靠的异步请求，浏览器没有义务等一个 fetch 完成。
+  // 服务端那份靠防抖自动保存和离开编辑器时的 goHome 兜住；真在这里丢了同步，
+  // 下次打开这条流程会从本地读到较新的那份（getFlow 服务端读失败也回落本地）。
   useEffect(() => {
     if (!dirty) return
     const onLeave = (event: BeforeUnloadEvent) => {
-      if (!saveFlow(useFlow.getState().toDefinition())) event.preventDefault()
+      if (!saveFlowSync(useFlow.getState().toDefinition())) event.preventDefault()
     }
     window.addEventListener('beforeunload', onLeave)
     return () => window.removeEventListener('beforeunload', onLeave)
   }, [dirty])
 
+  /**
+   * 发布：草稿 → 新版本 → 设为生效。
+   *
+   * 发布前先把草稿存下去 —— 否则发布出去的是服务端上那份**旧草稿**，
+   * 而用户以为发的是眼前看到的内容。这是最容易被漏掉的一步。
+   */
+  const doPublish = useCallback(async (): Promise<string | null> => {
+    if (dirty && !(await save())) return '草稿没保存成功，先解决保存问题再发布'
+    const flowId = useFlow.getState().flowId
+    const result = await publishFlow(flowId)
+    if (!result.ok) return result.error ?? '发布失败'
+    setFlowMeta({ activeVersion: result.version ?? null, hasUnpublishedChanges: false })
+    return null
+  }, [dirty, save])
+
   const openFlowPage = (flowId: string) => {
     window.location.assign(`/workflows/${encodeURIComponent(flowId)}`)
   }
 
-  const createAndOpen = (def: FlowDefinition) => {
-    if (!saveFlow(def)) {
-      window.alert('浏览器本地存储写入失败，请检查存储空间或隐私设置')
+  const createAndOpen = async (def: FlowDefinition) => {
+    const result = await createFlow(def)
+    if (!result.ok) {
+      window.alert(result.error ?? '保存失败')
       return
     }
+    if (result.error) window.alert(`已存到本地，但同步到服务端失败：${result.error}`)
     openFlowPage(def.id)
   }
 
-  const goHome = () => {
-    // 防抖还没到点时先同步保存；只有真的写失败才留在编辑器。
-    if (dirty && !save()) return
+  const goHome = async () => {
+    // 防抖还没到点时先保存；只有真的写失败才留在编辑器。
+    if (dirty && !(await save())) return
     if (useFlow.getState().running) useFlow.getState().stopRun()
     window.location.assign('/')
   }
@@ -140,9 +186,10 @@ export default function App() {
     return (
       <div className="app">
         <Home
-          onOpenTemplate={(t: Template) => createAndOpen(t.build())}
+          ready={backendProbed}
+          onOpenTemplate={(t: Template) => void createAndOpen(t.build())}
           onOpenSaved={(flow) => openFlowPage(flow.id)}
-          onImport={createAndOpen}
+          onImport={(def: FlowDefinition) => void createAndOpen(def)}
         />
       </div>
     )
@@ -157,16 +204,21 @@ export default function App() {
       <Toolbar
         dock={dock}
         onDock={setDock}
-        onHome={goHome}
-        onSave={save}
+        onHome={() => void goHome()}
+        onSave={() => void save()}
         dirty={dirty}
         saveError={saveError}
+        publish={flowMeta}
+        onPublish={doPublish}
       />
       <ReactFlowProvider>
+        <ReferencePickerProvider>
         <div className="app__main">
           {/* 画布铺满，配置面板浮在它上面 —— 面板收起时画布就是整块的，
               不像固定栏那样永远切掉右边 348px */}
           <div className="app__stage">
+            {/* reservedRight 刻意**不**看 ndvNodeId：画布在模态背后，跟着 NDV
+                开关去改预留宽度只会让它每次都重新 fit 两趟 */}
             <Canvas reservedRight={dock || (selectedId && !selectedVisualOnly) ? 424 : 0} />
             {dock === 'json' ? (
               <JsonDrawer onClose={() => setDock(null)} />
@@ -175,13 +227,20 @@ export default function App() {
                 <FlowInspector onClose={() => setDock(null)} />
               </aside>
             ) : (
-              selectedId && !selectedVisualOnly && <Inspector />
+              // NDV 开着时不挂 Inspector。双击节点会同时置上 selectedId 和
+              // ndvNodeId（Canvas 的 onNodeClick + onNodeDoubleClick 都会触发，
+              // openNdv 也不清 selectedId），于是同一个节点存在**两棵**表单：
+              // 两份 ref、两份 slash 状态，而 .varpicker 的 z-index 70 还盖在
+              // .ndv__mask 的 60 上面 —— 侧栏的变量弹窗能飘到模态前面。
+              // NDV 本来就全屏盖住侧栏，卸掉它视觉上没有任何变化。
+              !ndvNodeId && selectedId && !selectedVisualOnly && <Inspector />
             )}
           </div>
           {runPanelOpen && <RunPanel />}
         </div>
         {/* key：切换节点时重挂载，iterIdx/editingPin 等内部状态不跨节点泄漏 */}
         {ndvNodeId && <NodeDetailView key={ndvNodeId} />}
+        </ReferencePickerProvider>
       </ReactFlowProvider>
     </div>
   )

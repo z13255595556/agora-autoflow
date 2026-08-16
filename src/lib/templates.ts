@@ -1,5 +1,5 @@
 import type { FlowDefinition } from '../types'
-import { newFlowId } from './library'
+import { newFlowId } from './library.ts'
 
 /**
  * 首页的模板。

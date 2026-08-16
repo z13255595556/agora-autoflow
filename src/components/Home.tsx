@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { deleteFlow, listFlows, newFlowId, saveFlow, type SavedFlow } from '../lib/library'
+import {
+  createFlow, deleteFlow, listFlows, newFlowId, uploadLocalOnly,
+  type FlowList, type SavedFlow,
+} from '../lib/library'
 import { TEMPLATES, type Template } from '../lib/templates'
 import { formatDate } from '../lib/datefn'
 import { NODE_TYPE_MAP, CATEGORY_COLOR } from '../registry'
 import type { FlowDefinition } from '../types'
 import Icon from './Icon'
 import { normalizeFlowDefinition } from '../lib/flowImport'
+import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
 
 /**
  * 首页 = 流程列表。
@@ -16,10 +20,17 @@ import { normalizeFlowDefinition } from '../lib/flowImport'
  * 有排序、每张卡能直接复制/导出/删除。
  */
 export default function Home({
+  ready,
   onOpenTemplate,
   onOpenSaved,
   onImport,
 }: {
+  /**
+   * health 探完了没。**列表必须等它** —— storageMode() 是同步读的，
+   * 探测没回来时它一律是 'local'，于是首页会拿本地那份当全部内容显示出来，
+   * 而服务端上的流程一条都不出现。这个错法很隐蔽：界面看着完全正常。
+   */
+  ready: boolean
   onOpenTemplate: (t: Template) => void
   onOpenSaved: (f: SavedFlow) => void
   onImport: (def: FlowDefinition) => void
@@ -30,21 +41,49 @@ export default function Home({
   const [creating, setCreating] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const saved = useMemo(() => listFlows(), [tick])
+  const [list, setList] = useState<FlowList>({ flows: [], mode: 'local', localOnly: [] })
+  const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
+
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    setLoading(true)
+    void listFlows().then((got) => {
+      if (cancelled) return
+      setList(got)
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [tick, ready])
+
+  const saved = list.flows
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase()
     return kw ? saved.filter((f) => f.name.toLowerCase().includes(kw)) : saved
   }, [saved, q])
 
-  const remove = (f: SavedFlow) => {
-    if (!confirm(`删除「${f.name}」？删了就没了，本地存的没有回收站。`)) return
-    deleteFlow(f.id)
+  const remove = async (f: SavedFlow) => {
+    const warn = list.mode === 'server'
+      ? `删除「${f.name}」？服务端会归档（运行历史还查得到），本地那份直接删掉。`
+      : `删除「${f.name}」？删了就没了，本地存的没有回收站。`
+    if (!confirm(warn)) return
+    await deleteFlow(f.id)
     setTick((t) => t + 1)
   }
 
-  const duplicate = (f: SavedFlow) => {
+  const duplicate = async (f: SavedFlow) => {
     // 换个 id 再存，否则会覆盖原来那条
-    saveFlow({ ...f.def, id: newFlowId(), name: `${f.name} 副本` })
+    const result = await createFlow({ ...f.def, id: newFlowId(), name: `${f.name} 副本` })
+    if (!result.ok) alert(result.error ?? '复制失败')
+    setTick((t) => t + 1)
+  }
+
+  const upload = async () => {
+    setUploading(true)
+    const { moved, errors } = await uploadLocalOnly(list.localOnly)
+    setUploading(false)
+    if (errors.length) alert(`上传了 ${moved} 条，${errors.length} 条失败：\n${errors.join('\n')}`)
     setTick((t) => t + 1)
   }
 
@@ -107,12 +146,39 @@ export default function Home({
           <div className="home__head">
             <h1 className="home__title">我的流程</h1>
             <p className="home__sub">
-              把 SQL、通知这些现成服务当积木搭起来，定时自己跑。
-              {saved.length > 0 && <em> 共 {saved.length} 条 · 存在这台机器的浏览器里</em>}
+              把 SQL、通知这些现成服务当积木搭起来。
+              {saved.length > 0 && (
+                <em>
+                  {' '}共 {saved.length} 条 ·{' '}
+                  {list.mode === 'server' ? '存在服务器上' : '存在这台机器的浏览器里'}
+                </em>
+              )}
             </p>
           </div>
 
-          {saved.length === 0 ? (
+          {/* 服务端读失败时静默退回本地会让用户以为服务器上就是这些 */}
+          {list.error && (
+            <div className="home__notice home__notice--warn">
+              读不到服务端的流程库，当前显示的是本机缓存：{list.error}
+            </div>
+          )}
+
+          {/* 只存在本地的流程绝不能从列表里消失，但也不自动上传 ——
+              往服务器上搬数据应该是一次明确的动作 */}
+          {list.localOnly.length > 0 && (
+            <div className="home__notice">
+              还有 {list.localOnly.length} 条流程只存在这台机器上（
+              {list.localOnly.slice(0, 3).map((f) => f.name).join('、')}
+              {list.localOnly.length > 3 ? ' 等' : ''}），服务器上没有。
+              <button className="btn btn--sm" disabled={uploading} onClick={() => void upload()}>
+                {uploading ? '上传中…' : '上传到服务器'}
+              </button>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="empty">正在读取流程库…</div>
+          ) : saved.length === 0 ? (
             <div className="home__blank">
               <div className="home__blankicon">◆</div>
               <div className="home__blanktitle">还没有流程</div>
@@ -198,7 +264,13 @@ function FlowCard({
     return () => document.removeEventListener('mousedown', close)
   }, [menu])
 
-  const scheduled = flow.def.trigger?.kind === 'schedule'
+  // 服务端算好的那个优先。def.trigger 对本地没缓存过的流程是空壳 ——
+  // 只读它的话，"这台浏览器没打开过"的定时流程会显示成手动触发
+  const kind = flow.triggerKind ?? flow.def.trigger?.kind
+  const scheduled = kind === 'schedule'
+  // webhook 流程以前也显示成「手动触发」—— 明明外部系统随时能打进来，
+  // 列表页却说它只能手点。这一栏的用途正是一眼扫出哪些流程会自己动
+  const hooked = kind === 'webhook'
   // 卡片上标出用到了哪些节点 —— 一眼能认出"这条是发企微的"，比只写节点数有用
   const kinds = useMemo(() => {
     const seen = new Map<string, { icon: string; name: string; color: string }>()
@@ -213,10 +285,17 @@ function FlowCard({
   return (
     <div className="fcard">
       <button className="fcard__hit" onClick={onOpen} title={`打开「${flow.name}」`}>
-        <span className={`fcard__icon${scheduled ? ' fcard__icon--sched' : ''}`}>{scheduled ? '⏰' : '▶'}</span>
+        <span className={`fcard__icon${scheduled ? ' fcard__icon--sched' : ''}`}>{scheduled ? '⏰' : hooked ? '🔗' : '▶'}</span>
         <span className="fcard__name">{flow.name}</span>
-        <span className={`fcard__tag${scheduled ? ' fcard__tag--sched' : ''}`}>
-          {scheduled ? '定时触发' : '手动触发'}
+        {/* 「定时触发」这个标签本身就在暗示它会自己跑。调度器没接上之前，
+            纠正必须紧挨着它 —— 否则用户在列表页扫一眼就会相信它在跑 */}
+        <span
+          className={`fcard__tag${scheduled ? (isSchedulerAlive() ? ' fcard__tag--sched' : ' fcard__tag--sched-off') : ''}`}
+          title={scheduled && !isSchedulerAlive() ? SCHEDULER_OFF_DETAIL : undefined}
+        >
+          {scheduled
+            ? (isSchedulerAlive() ? '定时触发' : '定时触发 · 未生效')
+            : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
         <span className="fcard__kinds">
           {kinds.map((k) => (

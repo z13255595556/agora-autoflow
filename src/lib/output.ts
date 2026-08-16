@@ -1,4 +1,4 @@
-import type { JsonSchema } from '../types'
+import type { FlowRun, JsonSchema } from '../types'
 
 /**
  * 节点输出里"那一批数据"惯用的容器字段名。
@@ -14,10 +14,70 @@ export const ROW_KEYS = ['rows', 'hits', 'series', 'results', 'branches'] as con
  * 放这里而不是 engine.ts：校验方 vars.ts 要用，而 engine.ts 又要用 vars.ts
  * 的 validateNode —— 放 engine 就成了循环依赖。output.ts 谁都不依赖。
  */
-export const FILTERS = ['count', 'json', 'list', 'lines', 'table', 'date'] as const
+export const FILTERS = [
+  'count', 'json', 'list', 'lines', 'table', 'date',
+  'at', 'first', 'last', 'find', 'column',
+  // 聚合。日报里天天要写"总数是多少""去重后几个""排前三的是谁"，
+  // 以前只能回去改 SQL —— 而改 SQL 意味着多跑一次几分钟的 Hive 查询
+  'sum', 'unique', 'join', 'sort',
+  // 缺值逃生口。引用取不到值时引擎会报错（而不是像以前那样渲染成空串），
+  // 确实允许缺值的场合用它显式声明：{{ $.x | default('—') }}
+  'default',
+] as const
+
+/**
+ * 按**顶层**竖线切开表达式：`rows | sort(dc, desc) | at(0, name)`
+ * → `['rows', 'sort(dc, desc)', 'at(0, name)']`
+ *
+ * 引号里的竖线不是管道 —— `join('|')` 的分隔符就是一根竖线，切错了就把
+ * 用户的参数劈成两段。
+ *
+ * 住在 output.ts 而不是 engine.ts：校验方 vars.ts 要用它逐个查过滤器名，
+ * 而 engine.ts 又要用 vars.ts 的 validateNode，放 engine 就成了循环依赖。
+ * 这和 FILTERS 当初搬过来是同一个理由。
+ */
+export function splitTopLevelPipes(expr: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quote: string | null = null
+  for (const c of expr) {
+    if (quote) {
+      cur += c
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === '"' || c === "'") {
+      quote = c
+      cur += c
+    } else if (c === '|') {
+      out.push(cur.trim())
+      cur = ''
+    } else {
+      cur += c
+    }
+  }
+  out.push(cur.trim())
+  return out
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * 某个节点"现在"的输出：固定数据优先，否则取最近一次运行的最后一步。
+ *
+ * 这三行原先在 NodeDetailView、MessagePreview 各抄了一遍。pin 优先的规则来自
+ * NDV 的「pinned 数据是输出栏的当前真相」，**每一处都必须一致** —— 不然界面上
+ * 看到的表格和表达式解析出来的会是两份数据。
+ *
+ * 住在这里而不是 engine.ts：它讲的是"哪份输出算当前的"，属于输出形态那一族；
+ * 而 outputShape.ts 也要用它，从 engine 取会绕出一条
+ * vars → outputShape → engine → vars 的环。engine 那边再导出一次给老调用点。
+ */
+export function latestOutput(run: FlowRun | null, pinData: Record<string, unknown>, nodeId: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(pinData, nodeId)) return pinData[nodeId]
+  return run?.steps[nodeId]?.at(-1)?.output
+}
 
 /**
  * 从输出里认出可以按表格渲染的那一批行。
@@ -100,9 +160,14 @@ const jsonType = (value: unknown): JsonSchema['type'] => {
 /**
  * 从 HTTP 响应体学习可直接引用的对象字段。只保存路径与类型，不保存响应值。
  * 点路径无法表达的 key（含点、空格等）不生成变量，避免选择后运行失败。
+ *
+ * 对象数组要下钻成 `items[].name` 这种形状：和 SQL 的 `rows[].col` 同一个约定，
+ * probedContainer / probedColumns 的 `indexOf('[].')` 直接解得开，pushFirstRowVars
+ * 随即产出 `body.items[0].name`。不下钻的话「HTTP 返回一个列表」这种最常见的
+ * 形状在变量里只是一个光秃秃的 `body.items`，什么都选不出来。
  */
 export function toResponseFields(output: unknown): Record<string, JsonSchema> | null {
-  if (!isRecord(output) || !isRecord(output.body)) return null
+  if (!isRecord(output) || output.body === undefined) return null
   const fields: Record<string, JsonSchema> = {}
   let count = 0
   const walk = (value: Record<string, unknown>, prefix: string, depth: number) => {
@@ -115,9 +180,20 @@ export function toResponseFields(output: unknown): Record<string, JsonSchema> | 
       fields[path] = { type, title: key }
       count += 1
       if (type === 'object' && isRecord(child)) walk(child, path, depth + 1)
+      // 对象数组：按首项的形状记列。空数组和标量数组没有列可记，跳过
+      else if (type === 'array' && Array.isArray(child) && isRecord(child[0])) {
+        walk(child[0], `${path}[]`, depth + 1)
+      }
     }
   }
-  walk(output.body, 'body', 0)
+  if (isRecord(output.body)) {
+    walk(output.body, 'body', 0)
+  } else if (Array.isArray(output.body) && isRecord(output.body[0])) {
+    walk(output.body[0], 'body[]', 0)
+  } else {
+    fields.body = { type: jsonType(output.body), title: '响应体' }
+    count += 1
+  }
   return count ? fields : null
 }
 

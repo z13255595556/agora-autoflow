@@ -1,5 +1,5 @@
 import type { Edge } from '@xyflow/react'
-import { NODE_TYPE_MAP } from '../registry'
+import { NODE_TYPE_MAP } from '../registry.ts'
 import type { FNode } from '../store'
 
 export interface GraphProblem {

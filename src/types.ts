@@ -41,6 +41,32 @@ export interface UiHint {
 }
 
 /**
+ * 输出字段在取值面板里怎么展示。
+ *
+ * **纯展示，绝不改变引用路径。** variable.assign 的 spread 只是不画 values 这一层，
+ * 路径仍然是 $.nodes.v1.output.values.customerId，lookupPath 认的还是它。
+ *
+ * 只用在 registry 独占的节点上。sql.query / notify.wecom / http.request 由后端
+ * manifest 整份下发（applyBackendNodes 全量覆盖），往 registry.ts 里给它们加的
+ * 注解后端一上线就没了 —— 而且**只在线上没，本地永远测不出来**。那三个节点
+ * 靠 outputShape.ts 里的名字表推断，一个注解都不需要。
+ */
+export interface OutputUiHint {
+  /** 'data'(缺省) | 'run'(「运行信息」，默认折叠) | 'advanced'(默认折叠) | 'hidden' */
+  group?: 'data' | 'run' | 'advanced' | 'hidden'
+  /** 把这个容器的**内容**当一级字段，容器本身不显示。variable.assign 的 values */
+  spread?: boolean
+  /** 数组元素的显示名来源。'sourceNodeName' = 按入边顺序取源节点名 */
+  itemLabelFrom?: 'sourceNodeName'
+  /** 值敏感，预览必须打码 */
+  secret?: boolean
+  /** 覆盖显示名 */
+  label?: string
+  /** 挂在 output 根上：整个节点不作为上游数据源 */
+  notASource?: boolean
+}
+
+/**
  * 条件显示（对齐 n8n displayOptions 语义）：
  * - show 里多个 key 之间是 AND，每个 key 的候选值数组内部是 OR
  * - hide 里多个 key 之间是 OR，任一命中即隐藏，优先级高于 show
@@ -79,6 +105,8 @@ export interface JsonSchema {
    * `$.` 前缀是两者唯一的判别依据。
    */
   'x-placeholders'?: { valuesFrom: string }
+  /** 取值面板的展示元数据。纯展示，不影响引用路径 */
+  'x-output-ui'?: OutputUiHint
 }
 
 /** 输出口。缺省单口 out；if/switch 这类控制节点有多口 */
@@ -210,6 +238,17 @@ export interface StepRun {
   handle?: string
   /** 真实执行（走了后端服务）而不是 mock */
   live?: boolean
+  /**
+   * 这条记录是本次运行里第几次写入（从 1 递增）。
+   *
+   * **执行顺序在 FlowRun.steps 里根本不存在** —— 它是 Record<nodeId, StepRun[]>，
+   * 按节点分组，组间无序；而 stepDelayMs=0 时所有 startedAt 会挤在同一毫秒，
+   * 拿时间戳排也排不出来。回放测试要比"两版引擎的执行序列是否一致"，
+   * 就必须有这么一个单调计数。
+   *
+   * 只有引擎写，UI 不读。
+   */
+  seq?: number
 }
 
 export interface FlowRun {

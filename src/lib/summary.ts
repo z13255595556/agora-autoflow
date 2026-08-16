@@ -1,6 +1,6 @@
 import type { NodeType } from '../types'
-import { DATE_MODE_LABELS } from './datefn'
-import { describeSchedule } from './schedule'
+import { DATE_MODE_LABELS } from './datefn.ts'
+import { describeSchedule } from './schedule.ts'
 
 /**
  * 节点卡片上的那行小字：这个节点**现在配成了什么**。

@@ -3,6 +3,8 @@ import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { useFlow, type FNode } from '../store'
 import { validateNode } from '../lib/vars'
 import { nodeSummary } from '../lib/summary'
+import { isSchedulerAlive, SCHEDULER_OFF_DETAIL, SCHEDULER_OFF_SHORT } from '../lib/scheduler'
+import { WEBHOOK_MISSING_DETAIL, WEBHOOK_MISSING_SHORT } from '../lib/webhookState'
 import Icon from './Icon'
 import { anchorOf, useCanvasCtx } from './canvasCtx'
 
@@ -15,6 +17,7 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const activeRunId = useFlow((s) => s.activeRunId)
   const isPinned = useFlow((s) => Object.prototype.hasOwnProperty.call(s.pinData, id))
   const isDirty = useFlow((s) => Boolean(s.dirtyNodes[id]))
+  const webhookReady = useFlow((s) => s.webhookReady)
   const openNdv = useFlow((s) => s.openNdv)
   const deleteNode = useFlow((s) => s.deleteNode)
   const duplicateNode = useFlow((s) => s.duplicateNode)
@@ -169,6 +172,25 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
         <div className="node__errline" title={errors.join('\n')}>
           <i>!</i>
           {errors.length === 1 ? errors[0] : `${errors.length} 处待补`}
+        </div>
+      )}
+
+      {/* 定时触发器只有 UI、没有调度器 —— 这一行必须挨着「每天 09:00」那句话，
+          因为形成"它会自动跑"这个信念的正是那句话。
+          不走 validateNode：那是**阻断执行**的错误，而手动运行是完全正常的 */}
+      {!isSchedulerAlive() && data.typeId === 'trigger.schedule' && (
+        <div className="node__warnline" title={SCHEDULER_OFF_DETAIL}>
+          <i>!</i>
+          {SCHEDULER_OFF_SHORT}
+        </div>
+      )}
+
+      {/* 同理：拖上来这个节点就会相信"外部能触发了"，但地址得先生成一次。
+          === false 而不是 !：还没探到结果时（null）不能先说一句假话 */}
+      {webhookReady === false && data.typeId === 'trigger.webhook' && (
+        <div className="node__warnline" title={WEBHOOK_MISSING_DETAIL}>
+          <i>!</i>
+          {WEBHOOK_MISSING_SHORT}
         </div>
       )}
 

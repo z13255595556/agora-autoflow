@@ -1,0 +1,91 @@
+# 部署编排。
+#
+#   cp deploy/env.example deploy/app.env   # 填 OAUTH_* 等凭证
+#   openssl rand -hex 32 > deploy/pg_password.txt
+#   htpasswd -cm deploy/htpasswd workflow-admin
+#   docker compose up -d --build
+#
+# 四个服务。**沙箱（Python 代码节点）暂时没有** —— 它是唯一真正需要容器
+# 隔离的部分，等 M4 做的时候加。
+#
+# 本机开发不需要这一套：Postgres 用 Homebrew 装、api/worker/前端直接跑
+# （见 README）。这份是给服务器用的。
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: workflow
+      POSTGRES_USER: workflow
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workflow -d workflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: { context: ., dockerfile: deploy/api.Dockerfile }
+    # 凭证走 env_file 挂载，**绝不 COPY 进镜像** ——
+    # 镜像会被推到仓库、被别人 pull、被 docker history 看光
+    env_file: [deploy/app.env]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: workflow
+      PGUSER: workflow
+      PGPASSWORD_FILE: /run/secrets/pg_password
+      # 同源反代之后不需要 CORS（代码里留空就是关掉）
+      CORS_ORIGINS: ""
+    secrets: [pg_password]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8791/health', timeout=2)); assert d['ok'] and d['storage']['ok']"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    build: { context: ., dockerfile: deploy/worker.Dockerfile }
+    env_file: [deploy/app.env]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: workflow
+      PGUSER: workflow
+      PGPASSWORD_FILE: /run/secrets/pg_password
+      NODE_SERVICE: http://api:8791
+    secrets: [pg_password]
+    depends_on:
+      postgres: { condition: service_healthy }
+      api: { condition: service_healthy }
+    # 起多个也安全：认领走 FOR UPDATE SKIP LOCKED，
+    # 调度器靠 advisory lock 保证只有一个在扫表
+    deploy: { replicas: 1 }
+    restart: unless-stopped
+
+  nginx:
+    build: { context: ., dockerfile: deploy/web.Dockerfile }
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    # 默认控制面保护。接入公司 SSO 后可在 nginx.conf 中替换 auth_basic。
+    secrets: [control_htpasswd]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+secrets:
+  pg_password:
+    file: ./deploy/pg_password.txt
+  control_htpasswd:
+    file: ./deploy/htpasswd
+
+volumes:
+  pgdata:

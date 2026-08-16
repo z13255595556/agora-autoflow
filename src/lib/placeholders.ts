@@ -49,10 +49,39 @@ function skipRegions(sql: string): Array<[number, number]> {
   return regions
 }
 
+/**
+ * SQL 里的"死区"判定：字符串字面量和注释。
+ *
+ * 死区里的裸 `{{name}}` 前后端都不会替换它（后端的 BRACE_RE 同样跳过这些区间），
+ * 所以它就是字面文本 —— 胶囊编辑器据此不把它画成占位符。
+ *
+ * 注意这**只**管裸标识符。`'{{ $.x }}'` 这种带 $. 的引用在引号里照样会被
+ * resolvePreservingPlaceholders 替换掉（registry 里的 SQL 模板就是这么写的），
+ * 那种仍然是货真价实的引用。
+ */
+export function sqlInertAt(sql: string): (pos: number) => boolean {
+  const regions = skipRegions(sql)
+  return (pos: number) => regions.some(([s, e]) => pos >= s && pos < e)
+}
+
+/**
+ * SQL 里有没有真正的 ORDER BY。
+ *
+ * 没有的话「第 N 行」就不稳定 —— 在 Hive / Doris 上行序由执行计划决定，两次
+ * 同样的查询可以给出不同顺序。「最后一行」更是干脆没有意义。取值面板据此
+ * 禁用/提示，让用户改用「按条件查找」。
+ *
+ * 复用 sqlInertAt 的跳区：`-- order by` 和 `'order by'` 都不算。
+ */
+export function hasOrderBy(sql: string): boolean {
+  if (!sql) return false
+  const inSkip = sqlInertAt(sql)
+  return [...sql.matchAll(/\border\s+by\b/gi)].some((m) => m.index !== undefined && !inSkip(m.index))
+}
+
 export function extractSqlPlaceholders(sql: string): Placeholder[] {
   if (!sql) return []
-  const regions = skipRegions(sql)
-  const inSkip = (pos: number) => regions.some(([s, e]) => pos >= s && pos < e)
+  const inSkip = sqlInertAt(sql)
 
   const found: Array<{ at: number; name: string; written: string }> = []
 

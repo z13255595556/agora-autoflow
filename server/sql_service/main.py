@@ -7,13 +7,16 @@
 proxy_read_timeout（nginx 默认 60s），而且每个慢查询占死一个 worker。
 """
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
-from . import datalego, http_request, manifest, robot, sqlparams, wecom
+from . import datalego, db, errors, flowdef, flowstore, http_request, manifest, robot, runstore, sqlparams, webhooks, wecom
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -43,7 +46,7 @@ def _check_handle(handle: str) -> None:
     让用户去改，而 handle 不合法改 SQL 是没用的。
     """
     if not datalego.JOB_ID_RE.match(handle or ""):
-        raise HTTPException(400, f"非法的任务 handle: {handle!r}")
+        raise HTTPException(400, errors.payload("BAD_REQUEST", f"非法的任务 handle: {handle!r}"))
 
 
 def _token() -> str:
@@ -51,7 +54,7 @@ def _token() -> str:
         return robot.get_token()
     except robot.RobotError as exc:
         # 服务端配置问题，不是调用方能解决的 —— 503 而不是 400
-        raise HTTPException(503, f"机器人账号不可用：{exc}")
+        raise HTTPException(503, errors.payload("SERVICE_UNAVAILABLE", f"机器人账号不可用：{exc}"))
 
 
 def _build_sql(params: Dict[str, Any], limit_override: Optional[int] = None) -> Dict[str, Any]:
@@ -59,11 +62,11 @@ def _build_sql(params: Dict[str, Any], limit_override: Optional[int] = None) -> 
     sql = str(params.get("sql") or "")
     binds = params.get("params") or {}
     if not isinstance(binds, dict):
-        raise HTTPException(400, "params 必须是对象（占位符名 → 值）")
+        raise HTTPException(400, errors.payload("BAD_REQUEST", "params 必须是对象（占位符名 → 值）"))
 
     engine = str(params.get("engine") or "hive")
     if engine not in datalego.ENGINES:
-        raise HTTPException(400, f"不支持的引擎 {engine!r}，可选：{'、'.join(datalego.ENGINES)}")
+        raise HTTPException(400, errors.payload("BAD_REQUEST", f"不支持的引擎 {engine!r}，可选：{'、'.join(datalego.ENGINES)}"))
 
     raw_limit = params.get("limit")
     limit = limit_override if limit_override is not None else (
@@ -73,7 +76,7 @@ def _build_sql(params: Dict[str, Any], limit_override: Optional[int] = None) -> 
     try:
         rendered = sqlparams.render(sql, binds)
     except sqlparams.SqlParamError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, errors.payload("SQL_PARAM_ERROR", str(exc)))
 
     return {
         "sql": sqlparams.apply_limit(rendered, limit),
@@ -97,10 +100,43 @@ def _submit(plan: Dict[str, Any]) -> Dict[str, Any]:
             if attempt == 1:
                 robot.invalidate()
                 continue
-            raise HTTPException(502, "数据平台不接受机器人账号的票，请检查服务端凭证配置")
+            raise HTTPException(502, errors.payload("PLATFORM_AUTH", "数据平台不接受机器人账号的票，请检查服务端凭证配置"))
         except datalego.QueryError as exc:
-            raise HTTPException(400, str(exc))
+            raise HTTPException(400, errors.payload("SQL_QUERY_ERROR", str(exc)))
     raise HTTPException(500, "unreachable")
+
+
+def _idempotent(key: Optional[str], run):
+    """有副作用的节点：同 key 24 小时内只真正执行一次。
+
+    没配数据库时直接执行 —— 幂等是加强项，不该让节点因为没有库就不能跑。
+    """
+    if not key or not db.configured():
+        return run()
+    try:
+        with db.pool().connection() as conn:
+            hit = conn.execute(
+                "SELECT response FROM node_idempotency WHERE key = %s"
+                "  AND created_at > now() - interval '24 hours'",
+                (key,),
+            ).fetchone()
+            if hit:
+                return hit[0]
+    except Exception:  # noqa: BLE001
+        return run()
+
+    out = run()
+    try:
+        with db.pool().connection() as conn:
+            conn.execute(
+                "INSERT INTO node_idempotency (key, response) VALUES (%s,%s)"
+                " ON CONFLICT (key) DO NOTHING",
+                (key, Jsonb(out)),
+            )
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 @app.get("/health")
@@ -110,7 +146,114 @@ def health() -> Dict[str, Any]:
         "ok": not missing,
         "endpoint": datalego.endpoint(),
         "missingCredentials": missing,
+        # 数据库是独立的一档能力：没有它节点照样跑，只是流程存在浏览器本地。
+        # 前端据此决定用 API 还是 localStorage，所以必须如实上报而不是并进 ok
+        "storage": db.status(),
+        # 定时触发到底会不会跑。前端据此决定挂不挂"不会自动运行"的提示
+        "scheduler": db.scheduler_status(),
     }
+
+
+# ---------------------------------------------------------------- 流程（控制面）
+#
+# 与 /nodes/* 分开：那些是**节点执行面**，由引擎调用；这些是控制面，由编辑器调用。
+# 将来引擎搬到独立 worker 进程后，两者的调用方彻底不同。
+
+
+class FlowBody(BaseModel):
+    definition: Dict[str, Any]
+    id: Optional[str] = None
+
+
+def _actor(header: Optional[str]) -> Optional[str]:
+    """谁在操作。
+
+    服务端**不自己做认证** —— 由反向代理做 SSO 并把用户名带进请求头。
+    没有代理时是 None，审计里就是匿名；这比自己发明一套登录要诚实得多。
+    """
+    name = (header or "").strip()
+    return name or None
+
+
+def _guard(fn, *args, **kwargs):
+    """把存储层的异常翻译成 HTTP。每一类都要能让调用方知道该怎么办。"""
+    try:
+        return fn(*args, **kwargs)
+    except db.DbUnavailable as exc:
+        # 503 而不是 500：这是服务端配置问题，调用方改什么都没用；
+        # 前端据此退回 localStorage
+        raise HTTPException(503, str(exc))
+    except flowdef.FlowDefError as exc:
+        raise HTTPException(400, str(exc))
+    except flowstore.NotFound as exc:
+        raise HTTPException(404, str(exc))
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except flowstore.FlowArchived as exc:
+        raise HTTPException(409, str(exc))
+    except runstore.NotFound as exc:
+        raise HTTPException(404, str(exc))
+    except runstore.NotPublished as exc:
+        raise HTTPException(409, str(exc))
+    except webhooks.WebhookError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
+@app.get("/api/flows")
+def list_flows(includeArchived: bool = False) -> Dict[str, Any]:
+    return {"flows": _guard(flowstore.list_flows, includeArchived)}
+
+
+@app.post("/api/flows")
+def create_flow(
+    body: FlowBody,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    flow_id = (body.id or "").strip() or str(body.definition.get("id") or "").strip()
+    if not flow_id:
+        raise HTTPException(400, "缺少流程 id")
+    return _guard(flowstore.create_flow, flow_id, body.definition, _actor(x_forwarded_user))
+
+
+@app.get("/api/flows/{flow_id}")
+def get_flow(flow_id: str) -> Dict[str, Any]:
+    return _guard(flowstore.get_flow, flow_id)
+
+
+@app.put("/api/flows/{flow_id}")
+def save_flow(
+    flow_id: str,
+    body: FlowBody,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    return _guard(flowstore.save_draft, flow_id, body.definition, _actor(x_forwarded_user))
+
+
+@app.post("/api/flows/{flow_id}/publish")
+def publish_flow(
+    flow_id: str,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    return _guard(flowstore.publish, flow_id, _actor(x_forwarded_user))
+
+
+@app.get("/api/flows/{flow_id}/versions")
+def flow_versions(flow_id: str) -> Dict[str, Any]:
+    return {"versions": _guard(flowstore.list_versions, flow_id)}
+
+
+@app.get("/api/flows/{flow_id}/versions/{version}")
+def flow_version(flow_id: str, version: int) -> Dict[str, Any]:
+    return _guard(flowstore.get_version, flow_id, version)
+
+
+@app.delete("/api/flows/{flow_id}")
+def archive_flow(
+    flow_id: str,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _guard(flowstore.archive, flow_id, _actor(x_forwarded_user))
+    return {"archived": True}
 
 
 @app.get("/registry/nodes")
@@ -126,8 +269,19 @@ def options(key: str) -> Dict[str, Any]:
 
 
 @app.post("/nodes/notify.wecom/execute")
-def execute_wecom(body: SubmitBody) -> Dict[str, Any]:
-    """同步节点：发一条就返回，不用轮询。调用即真发。"""
+def execute_wecom(
+    body: SubmitBody,
+    idempotency_key: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """同步节点：发一条就返回，不用轮询。调用即真发。
+
+    带 Idempotency-Key 时同 key 24 小时内只真正发一次 ——
+    没有它，重试和崩溃恢复都会变成"群里收到三条一样的日报"。
+    """
+    return _idempotent(idempotency_key, lambda: _do_wecom(body))
+
+
+def _do_wecom(body: SubmitBody) -> Dict[str, Any]:
     p = body.params
     mentioned = [m.strip() for m in str(p.get("mentioned") or "").split(",") if m.strip()]
     try:
@@ -174,7 +328,7 @@ def poll_node(handle: str, limit: int = 1000) -> Dict[str, Any]:
         robot.invalidate()
         raise HTTPException(502, "数据平台不接受机器人账号的票，请检查服务端凭证配置")
     except datalego.ExpiredError as exc:
-        raise HTTPException(410, str(exc))
+        raise HTTPException(410, errors.payload("RESULT_EXPIRED", str(exc)))
     except datalego.QueryError as exc:
         # 查询本身失败（语法错、表不存在）—— 这是用户能改的，原文带回去
         return {"done": True, "failed": True, "progress": 100.0, "error": str(exc)}
@@ -211,3 +365,137 @@ def cancel_node(body: CancelBody) -> Dict[str, Any]:
     except Exception as exc:  # 取消失败不该让中止流程本身失败
         return {"cancelled": False, "detail": str(exc)}
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------- 运行
+#
+# 执行本身由 Node worker 做。这里只入队和查询 —— worker 和 api 之间
+# 不直接通信，只通过 Postgres。
+
+
+class RunBody(BaseModel):
+    inputs: Dict[str, Any] = Field(default_factory=dict)
+    mode: str = "manual"
+    triggerKind: str = "manual"
+    version: Optional[int] = None
+
+
+@app.post("/api/flows/{flow_id}/runs")
+def create_run(
+    flow_id: str,
+    body: RunBody,
+    idempotency_key: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    return _guard(
+        runstore.create_run,
+        flow_id,
+        inputs=body.inputs,
+        mode=body.mode,
+        trigger_kind=body.triggerKind,
+        version=body.version,
+        idempotency_key=idempotency_key,
+    )
+
+
+@app.get("/api/runs")
+def list_runs(flowId: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    return {"runs": _guard(runstore.list_runs, flowId, limit)}
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str) -> Dict[str, Any]:
+    return _guard(runstore.get_run, run_id)
+
+
+@app.get("/api/runs/{run_id}/events")
+def run_events(run_id: str, fromSeq: int = 0) -> Dict[str, Any]:
+    """增量取事件。SSE 的轮询降级版：断线重连带上最后收到的 seq，不丢也不重。"""
+    return {"events": _guard(runstore.events_since, run_id, fromSeq)}
+
+
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str) -> Dict[str, Any]:
+    return _guard(runstore.request_cancel, run_id)
+
+
+# ---------------------------------------------------------------- Webhook
+#
+# 入口不在 /api 下：认证方式完全不同（token 在路径里 + 密钥在头里，
+# 而不是反向代理带进来的 SSO 用户）。
+
+
+class WebhookSettings(BaseModel):
+    authMode: Optional[str] = None
+    rateLimitPerMin: Optional[int] = None
+    responseMode: Optional[str] = None
+    responseTimeoutSeconds: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+@app.get("/api/flows/{flow_id}/webhook")
+def get_webhook(flow_id: str) -> Dict[str, Any]:
+    hook = _guard(webhooks.get, flow_id)
+    return {
+        "webhook": hook,
+        "deliveries": _guard(webhooks.deliveries, flow_id) if hook else [],
+        # 没发布的流程 webhook 打过来是 409。面板要提前说，而不是等上游试出来
+        "activeVersion": _guard(webhooks.active_version, flow_id),
+    }
+
+
+@app.post("/api/flows/{flow_id}/webhook")
+def create_webhook(flow_id: str, body: Optional[WebhookSettings] = None) -> Dict[str, Any]:
+    """建一个 webhook。管理接口可持续回显密钥，认证仍使用不可逆 hash。
+
+    认证方式和限流上限从画布上那个节点的参数带过来 —— 不带就用默认值。
+    """
+    b = body or WebhookSettings()
+    return _guard(
+        webhooks.ensure,
+        flow_id,
+        b.authMode if b.authMode is not None else "secret",
+        b.rateLimitPerMin if b.rateLimitPerMin is not None else 60,
+        b.responseMode if b.responseMode is not None else "lastNode",
+        b.responseTimeoutSeconds if b.responseTimeoutSeconds is not None else 300,
+    )
+
+
+@app.put("/api/flows/{flow_id}/webhook")
+def update_webhook(flow_id: str, body: WebhookSettings) -> Dict[str, Any]:
+    """改认证方式 / 限流 / 启停。**改认证方式会让上游当前的调用立刻 401**，
+    所以它是一次明确的动作，不跟着流程保存走。"""
+    return _guard(
+        webhooks.update,
+        flow_id,
+        body.authMode,
+        body.rateLimitPerMin,
+        body.responseMode,
+        body.responseTimeoutSeconds,
+        body.enabled,
+    )
+
+
+@app.post("/api/flows/{flow_id}/webhook/rotate")
+def rotate_webhook(flow_id: str) -> Dict[str, Any]:
+    return _guard(webhooks.rotate, flow_id)
+
+
+@app.post("/hooks/{token}")
+async def trigger_webhook(token: str, request: Request) -> Response:
+    """上游系统打的就是这个。
+
+    **读 raw body 而不是让 FastAPI 解析** —— HMAC 必须对原始字节算签名，
+    parse 后重新序列化会因为 key 顺序和空格差异导致签名对不上。
+    """
+    raw = await request.body()
+    ip = request.client.host if request.client else None
+    try:
+        # 同步响应会按 Webhook 配置等待，放进线程池，不能阻塞 FastAPI 的事件循环。
+        status, body = await run_in_threadpool(webhooks.handle, token, raw, dict(request.headers), ip)
+    except webhooks.WebhookError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status)
+    except db.DbUnavailable as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    except (runstore.NotFound, runstore.NotPublished) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse(body, status_code=status)
