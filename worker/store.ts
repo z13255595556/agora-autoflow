@@ -113,6 +113,23 @@ export async function loadFlowVersion(flowId: string, version: number): Promise<
   return rows[0].definition
 }
 
+/**
+ * 这一版是谁发布的。**定时和 webhook 触发就以这个人的名义去数据平台查数。**
+ *
+ * 后台运行没有登录用户 —— 浏览器根本不在场，读不到任何 cookie。发布者是唯一
+ * 说得通的人选：他按下发布，就是他让这条流程每天自己跑起来的。
+ *
+ * 读的是**运行钉住的那一版**（runs.flow_version）而不是当前 owner：改天流程
+ * 转手了，历史那一次运行当时用谁的权限跑的，记录里还得能对得上。
+ */
+export async function publisherOf(flowId: string, version: number): Promise<string | null> {
+  const { rows } = await pool.query<{ created_by: string | null }>(
+    'SELECT created_by FROM flow_versions WHERE flow_id = $1 AND version = $2',
+    [flowId, version],
+  )
+  return rows[0]?.created_by ?? null
+}
+
 export async function loadSteps(runId: string): Promise<StepRow[]> {
   const { rows } = await pool.query(
     `SELECT node_id, loop_path, status, matched, fanout, output, input, error, progress, seq

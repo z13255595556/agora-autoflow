@@ -3,6 +3,7 @@ import {
   createFlow, deleteFlow, listFlows, newFlowId, uploadLocalOnly,
   type FlowList, type SavedFlow,
 } from '../lib/library'
+import { whoami } from '../lib/client'
 import { TEMPLATES, type Template } from '../lib/templates'
 import { formatDate } from '../lib/datefn'
 import { NODE_TYPE_MAP, CATEGORY_COLOR } from '../registry'
@@ -44,6 +45,15 @@ export default function Home({
   const [list, setList] = useState<FlowList>({ flows: [], mode: 'local', localOnly: [] })
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  /** 我是谁。服务端从登录 cookie 解出来的邮箱，认不出就是 null */
+  const [me, setMe] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!ready) return
+    // 认不出身份不是错误（本地开发就没有 cookie），静默就好 —— 该说的话
+    // 由「无主」标签和 /whoami 去说
+    void whoami().then((who) => setMe(who.creator)).catch(() => setMe(null))
+  }, [ready])
 
   useEffect(() => {
     if (!ready) return
@@ -153,6 +163,9 @@ export default function Home({
                   {list.mode === 'server' ? '存在服务器上' : '存在这台机器的浏览器里'}
                 </em>
               )}
+              {/* 列表只有自己的流程。不说出来的话，"我的流程怎么少了"
+                  会先变成一张工单，再变成"这系统把我数据搞丢了" */}
+              {list.mode === 'server' && me && <em> · 当前是 {me} 的工作台</em>}
             </p>
           </div>
 
@@ -298,6 +311,13 @@ function FlowCard({
             : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
         <span className="fcard__kinds">
+          {/* 归属功能上线之前建的流程还没有主，所有人都看得见。要说清楚怎么认领，
+              否则用户只会疑惑"这条为什么别人那儿也有" */}
+          {flow.origin === 'server' && flow.owner === null && (
+            <span className="fcard__kind fcard__kind--orphan" title="这条流程建于归属功能上线之前，还没有主。发布一次就归你，之后只有你看得到">
+              还没有归属
+            </span>
+          )}
           {kinds.map((k) => (
             <span className="fcard__kind" key={k.name} style={{ '--accent': k.color } as React.CSSProperties}>
               {k.icon} {k.name}

@@ -36,6 +36,13 @@ export interface SavedFlow {
   /** 这条是从哪来的。'local' 表示服务端上没有它 */
   origin?: 'server' | 'local'
   /**
+   * 归属（邮箱）。null = 还没有主，谁发布一次就归谁。
+   *
+   * 列表里**不会**出现别人的流程 —— 服务端就没返回。这个字段只用来提示
+   * "这条还没主"，不做任何前端过滤：把权限判断放到前端等于没有权限判断。
+   */
+  owner?: string | null
+  /**
    * 触发方式，服务端算好的。
    *
    * **不能从 def.trigger 读**：列表页拿到的 def 对于本地没缓存过的流程是个空壳
@@ -123,6 +130,7 @@ function fromRemote(r: api.RemoteFlow, def: FlowDefinition): SavedFlow {
     hasUnpublishedChanges: r.hasUnpublishedChanges,
     triggerKind: r.triggerKind,
     origin: 'server',
+    owner: r.owner,
   }
 }
 

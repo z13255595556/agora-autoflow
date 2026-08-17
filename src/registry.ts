@@ -215,12 +215,10 @@ export const NODE_TYPES: NodeType[] = [
           description: '外面套一层 LIMIT，防止 SELECT * 打满引擎',
         },
         queue: { type: 'string', title: '队列', default: 'share', 'x-show': { engine: ['hive'] }, 'x-ui': { widget: 'text' } },
-        creator: {
-          type: 'string',
-          title: '记账邮箱',
-          description: '只影响平台上的执行人显示，不影响查询权限',
-          'x-ui': { placeholder: 'someone@agora.io' },
-        },
+        // 这里曾经有个「记账邮箱」(creator)。**故意删掉的**：数据平台按 creator
+        // 裁决查询权限，而节点参数是编流程的人随手填的字符串，留着它等于谁都能
+        // 以别人的权限查数。现在由服务端从登录 cookie 解出来（identity.py），
+        // 前端既看不到也改不了 —— 后端 manifest 那份也一并去掉了，两边必须一致。
       },
     },
     output: {

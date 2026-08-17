@@ -1271,6 +1271,8 @@ body.is-dragging-node * { cursor: grabbing !important; user-select: none !import
 }
 .kv__add:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
 
+.fcard__kind--orphan { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+
 /* 条件行：IF / 且 / 或 + 变量 + 比较方式 + 值 */
 .cond { display: flex; flex-direction: column; gap: 8px; }
 .cond__row { display: flex; gap: 6px; align-items: flex-start; }

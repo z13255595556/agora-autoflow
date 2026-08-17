@@ -104,24 +104,43 @@ def _run_json(r: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def list_runs(flow_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+def _assert_visible(conn, run_id: str, viewer: Optional[str]) -> None:
+    """这条运行记录当前用户看得见吗 —— 看的是它所属流程的归属。
+
+    看不见和不存在给同一个 404，和流程那边同一个理由（见 flowstore.VISIBLE）。
+    """
+    if viewer is flowstore.ANY:
+        return
+    sql = ("SELECT r.id FROM runs r JOIN flows f ON f.id = r.flow_id"
+           " WHERE r.id = %s AND " + flowstore.VISIBLE)
+    if not _one(conn, sql, (run_id, viewer)):
+        raise NotFound(f"运行 {run_id} 不存在")
+
+
+def list_runs(flow_id: Optional[str] = None, limit: int = 50,
+              viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+    """运行记录列表。**按流程归属过滤** —— steps 里装的是查询结果本身，
+    比流程定义更敏感：流程只泄露"我在查什么"，运行记录直接是那些数据。"""
     with db.pool().connection() as conn:
         rows = _rows(
             conn,
-            "SELECT * FROM runs" + (" WHERE flow_id = %s" if flow_id else "")
-            + " ORDER BY created_at DESC LIMIT " + str(max(1, min(limit, 200))),
-            (flow_id,) if flow_id else (),
+            "SELECT r.* FROM runs r JOIN flows f ON f.id = r.flow_id"
+            " WHERE " + flowstore.VISIBLE
+            + (" AND r.flow_id = %s" if flow_id else "")
+            + " ORDER BY r.created_at DESC LIMIT " + str(max(1, min(limit, 200))),
+            (viewer, flow_id) if flow_id else (viewer,),
         )
     return [_run_json(r) for r in rows]
 
 
-def get_run(run_id: str) -> Dict[str, Any]:
+def get_run(run_id: str, viewer: Optional[str] = flowstore.ANY) -> Dict[str, Any]:
     """一次运行的完整状态：run 行 + 全部 steps。
 
     steps 是执行状态的**当前真相**（decide 读它算下一步）；
     事件流是"发生过什么"，给 SSE 和事后回放用。两者职责不同，都要有。
     """
     with db.pool().connection() as conn:
+        _assert_visible(conn, run_id, viewer)
         r = _one(conn, "SELECT * FROM runs WHERE id = %s", (run_id,))
         if not r:
             raise NotFound(f"运行 {run_id} 不存在")
@@ -159,9 +178,10 @@ def get_run(run_id: str) -> Dict[str, Any]:
     return out
 
 
-def events_since(run_id: str, from_seq: int = 0) -> List[Dict[str, Any]]:
+def events_since(run_id: str, from_seq: int = 0, viewer: Optional[str] = flowstore.ANY) -> List[Dict[str, Any]]:
     """增量取事件。SSE 断线重连时带上最后收到的 seq，不丢也不重。"""
     with db.pool().connection() as conn:
+        _assert_visible(conn, run_id, viewer)
         rows = _rows(
             conn,
             "SELECT seq, ts, type, node_id, loop_path, payload FROM run_events"
@@ -181,7 +201,7 @@ def events_since(run_id: str, from_seq: int = 0) -> List[Dict[str, Any]]:
     ]
 
 
-def request_cancel(run_id: str) -> Dict[str, Any]:
+def request_cancel(run_id: str, viewer: Optional[str] = flowstore.ANY) -> Dict[str, Any]:
     """请求取消。**不直接改成 canceled** —— 正在跑的节点要先撤掉。
 
     worker 下一轮 decide 会看到 cancel_requested_at，把在跑的 http-async
@@ -189,6 +209,7 @@ def request_cancel(run_id: str) -> Dict[str, Any]:
     然后才收尾。取消是一个过程，不是一个瞬间。
     """
     with db.pool().connection() as conn:
+        _assert_visible(conn, run_id, viewer)
         r = _one(conn, "SELECT status FROM runs WHERE id = %s", (run_id,))
         if not r:
             raise NotFound(f"运行 {run_id} 不存在")

@@ -11,6 +11,20 @@ class NotFound(LookupError):
     pass
 
 
+# 能看见一条流程的条件：是我的，或者还没有主（008 迁移之前建的）。
+# 公开给 runstore 用 —— 运行记录的可见性必须和流程完全同一条规则，
+# 抄一份迟早会漂移（而漂移的方向通常是"运行记录比流程更松"）。
+#
+# 越权**一律按"不存在"处理，不是 403**：403 等于告诉对方"这条在，只是不给你"，
+# 把别人的流程 id 和存在性透出去了。id 是能猜的（run 链接、导出的 JSON 里都有）。
+VISIBLE = "(f.owner IS NOT DISTINCT FROM %s OR f.owner IS NULL)"
+
+# viewer 的哨兵值：内部调用（worker 取定义、webhook 触发）不做归属过滤 ——
+# 那些路径没有"当前用户"，按 NULL 过滤会把所有有主的流程挡在外面。
+# 写成显式哨兵而不是默认 None，是为了让"这里刻意不过滤"在调用点看得见。
+ANY = object()
+
+
 class FlowArchived(RuntimeError):
     pass
 
@@ -34,12 +48,22 @@ def _audit(conn, actor: Optional[str], action: str, target_id: str, detail: Any 
     )
 
 
+def _assert_visible(conn, flow_id: str, viewer: Optional[str]) -> None:
+    """这条流程当前用户看得见吗。看不见和不存在给同一个错，理由见 VISIBLE。"""
+    sql = "SELECT id FROM flows f WHERE id = %s" + ("" if viewer is ANY else " AND " + VISIBLE)
+    args = (flow_id,) if viewer is ANY else (flow_id, viewer)
+    if not _one(conn, sql, args):
+        raise NotFound(f"流程 {flow_id} 不存在")
+
+
 def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
     draft = row["draft"]
     published = row.get("published_definition")
     return {
         "id": row["id"],
         "name": row["name"],
+        # 归属。None = 还没有主（008 迁移之前建的），谁发布一次就归谁
+        "owner": row.get("owner"),
         "activeVersion": row["active_version"],
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
         "archivedAt": row["archived_at"].isoformat() if row.get("archived_at") else None,
@@ -64,32 +88,39 @@ def _differs(draft: Any, published: Any) -> bool:
     return logic(draft) != logic(published)
 
 
-def list_flows(include_archived: bool = False) -> List[Dict[str, Any]]:
+def list_flows(include_archived: bool = False, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+    """我的工作台。**只有自己的流程，外加还没有主的那些。**
+
+    viewer=None（认不出身份）时只看得到无主流程 —— 不是"看到全部"。
+    退化成看到全部的话，SSO 出点问题就等于隔离整个不存在，而且没有任何迹象。
+    """
     with db.pool().connection() as conn:
         rows = _rows(
             conn,
-            "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at,"
+            "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
             "       v.definition AS published_definition"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
             "    ON v.flow_id = f.id AND v.version = f.active_version"
-            + ("" if include_archived else " WHERE f.archived_at IS NULL")
+            " WHERE " + VISIBLE
+            + ("" if include_archived else " AND f.archived_at IS NULL")
             + " ORDER BY f.updated_at DESC",
+            (viewer,),
         )
     return [_summary(r) for r in rows]
 
 
-def get_flow(flow_id: str) -> Dict[str, Any]:
+def get_flow(flow_id: str, viewer: Optional[str] = ANY) -> Dict[str, Any]:
     with db.pool().connection() as conn:
         row = _one(
             conn,
-            "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at,"
+            "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
             "       v.definition AS published_definition"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
             "    ON v.flow_id = f.id AND v.version = f.active_version"
-            " WHERE f.id = %s",
-            (flow_id,),
+            " WHERE f.id = %s" + ("" if viewer is ANY else " AND " + VISIBLE),
+            (flow_id,) if viewer is ANY else (flow_id, viewer),
         )
     if not row:
         raise NotFound(f"流程 {flow_id} 不存在")
@@ -106,8 +137,8 @@ def create_flow(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str
         if exists:
             raise FileExistsError(f"流程 {flow_id} 已存在")
         conn.execute(
-            "INSERT INTO flows (id, name, draft) VALUES (%s, %s, %s)",
-            (flow_id, draft["name"], Jsonb(draft)),
+            "INSERT INTO flows (id, name, draft, owner) VALUES (%s, %s, %s, %s)",
+            (flow_id, draft["name"], Jsonb(draft), actor),
         )
         _audit(conn, actor, "flow.create", flow_id, {"name": draft["name"]})
         conn.commit()
@@ -121,7 +152,11 @@ def save_draft(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str,
     audit 表变成击键日志，所以这里不写审计（发布才写）。
     """
     with db.pool().connection() as conn:
-        row = _one(conn, "SELECT active_version FROM flows WHERE id = %s", (flow_id,))
+        row = _one(
+            conn,
+            "SELECT active_version FROM flows f WHERE id = %s AND " + VISIBLE,
+            (flow_id, actor),
+        )
         if not row:
             raise NotFound(f"流程 {flow_id} 不存在")
         draft = flowdef.for_storage(definition, flow_id, row["active_version"] or 0)
@@ -140,7 +175,11 @@ def publish(flow_id: str, actor: Optional[str]) -> Dict[str, Any]:
     "active_version 指向一个不存在的版本"——后者会让所有触发都取不到定义。
     """
     with db.pool().connection() as conn:
-        row = _one(conn, "SELECT draft, archived_at FROM flows WHERE id = %s FOR UPDATE", (flow_id,))
+        row = _one(
+            conn,
+            "SELECT draft, archived_at FROM flows f WHERE id = %s AND " + VISIBLE + " FOR UPDATE",
+            (flow_id, actor),
+        )
         if not row:
             raise NotFound(f"流程 {flow_id} 不存在")
         if row["archived_at"] is not None:
@@ -157,20 +196,22 @@ def publish(flow_id: str, actor: Optional[str]) -> Dict[str, Any]:
             " VALUES (%s, %s, %s, %s)",
             (flow_id, nxt, Jsonb(definition), actor),
         )
-        # 草稿也跟着更新版本号，这样导出的草稿能看出它对应第几版
+        # 草稿也跟着更新版本号，这样导出的草稿能看出它对应第几版。
+        # owner 那个 COALESCE：**谁发布的谁是 owner**。无主流程（008 之前建的）
+        # 由第一次发布的人认领；已经有主的不会被后来者顶掉
         conn.execute(
-            "UPDATE flows SET active_version = %s, draft = %s, updated_at = now() WHERE id = %s",
-            (nxt, Jsonb(definition), flow_id),
+            "UPDATE flows SET active_version = %s, draft = %s, owner = COALESCE(owner, %s),"
+            "       updated_at = now() WHERE id = %s",
+            (nxt, Jsonb(definition), actor, flow_id),
         )
         _audit(conn, actor, "flow.publish", flow_id, {"version": nxt})
         conn.commit()
     return get_flow(flow_id)
 
 
-def list_versions(flow_id: str) -> List[Dict[str, Any]]:
+def list_versions(flow_id: str, viewer: Optional[str] = ANY) -> List[Dict[str, Any]]:
     with db.pool().connection() as conn:
-        if not _one(conn, "SELECT id FROM flows WHERE id = %s", (flow_id,)):
-            raise NotFound(f"流程 {flow_id} 不存在")
+        _assert_visible(conn, flow_id, viewer)
         rows = _rows(
             conn,
             "SELECT version, created_at, created_by FROM flow_versions"
@@ -187,13 +228,14 @@ def list_versions(flow_id: str) -> List[Dict[str, Any]]:
     ]
 
 
-def get_version(flow_id: str, version: int) -> Dict[str, Any]:
+def get_version(flow_id: str, version: int, viewer: Optional[str] = ANY) -> Dict[str, Any]:
     """取某一版的定义快照。
 
     运行记录必须读这里（按 runs.flow_version），**不能读 active_version** ——
     否则流程一改，历史运行记录就再也解释不通了。
     """
     with db.pool().connection() as conn:
+        _assert_visible(conn, flow_id, viewer)
         row = _one(
             conn,
             "SELECT definition, created_at, created_by FROM flow_versions"
@@ -217,7 +259,7 @@ def archive(flow_id: str, actor: Optional[str]) -> None:
     昨天发了那个数"恰恰是最常被问到的问题。
     """
     with db.pool().connection() as conn:
-        if not _one(conn, "SELECT id FROM flows WHERE id = %s", (flow_id,)):
+        if not _one(conn, "SELECT id FROM flows f WHERE id = %s AND " + VISIBLE, (flow_id, actor)):
             raise NotFound(f"流程 {flow_id} 不存在")
         conn.execute("UPDATE flows SET archived_at = now() WHERE id = %s AND archived_at IS NULL", (flow_id,))
         _audit(conn, actor, "flow.archive", flow_id)

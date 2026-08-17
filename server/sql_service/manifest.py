@@ -68,12 +68,10 @@ SQL_QUERY: Dict[str, Any] = {
                 # Hive 才有队列概念，另外两个引擎不用显示这个字段
                 "x-show": {"engine": ["hive"]},
             },
-            "creator": {
-                "type": "string",
-                "title": "记账邮箱",
-                "description": "只影响平台上的执行人显示，不影响查询权限",
-                "x-ui": {"placeholder": "someone@agora.io"},
-            },
+            # 这里曾经有个「记账邮箱」输入框（creator）。**故意删掉的**：
+            # 平台按 creator 裁决数据权限，而节点参数是编流程的人随手填的字符串，
+            # 留着它等于任何人都能以任何人的权限查数。现在由服务端从登录 cookie
+            # 里解出来（identity.py），前端既看不到也改不了。
         },
     },
     "output": {

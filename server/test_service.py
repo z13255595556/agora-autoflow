@@ -4,6 +4,7 @@
 
     cd server && .venv/bin/python test_service.py
 """
+import base64
 import json
 import sys
 import types
@@ -18,7 +19,7 @@ os.environ.update(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from sql_service import datalego, http_request, main, robot, wecom  # noqa: E402
+from sql_service import datalego, http_request, main, manifest, robot, wecom  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -66,7 +67,9 @@ def fake_post(url, **kw):
         return FakeResp({"access_token": "tok_" + "x" * 20, "expires_in": 7200})
     if "job/trigger" in url:
         body = kw.get("json") or {}
-        SUBMITTED.append(body)
+        # creator 是 query 参数不是 body 字段，但它决定用谁的权限 ——
+        # 断言得看得见它，所以一并记下来
+        SUBMITTED.append({**body, "_query": kw.get("params") or {}})
         job_id = f"job_{len(SUBMITTED):08d}"
         JOBS[job_id] = 1  # 第一次轮询未完成，第二次完成
         return FakeResp({"id": job_id})
@@ -304,6 +307,77 @@ ok("占位符已渲染且套了 LIMIT",
    SUBMITTED[-1]["sql"],
    "SELECT * FROM (\nSELECT vid, name FROM ods.vendor WHERE vid = 88031\n) AS __wf_limited LIMIT 500")
 ok("引擎透传", SUBMITTED[-1]["engine"], "hive")
+ok("没有登录态就不带 creator（= 用机器人账号的权限）", SUBMITTED[-1]["_query"], {})
+
+# ------------------------------------------------- creator 只认登录态，不认参数
+#
+# 这两条是权限隔离的全部依据，错一条就是越权：
+#   1. cookie 里解出来的邮箱要真的发出去；
+#   2. 请求体里带的 creator 一律无视 —— 那是编流程的人能随手改的字符串。
+_JWT_EMAIL = "zhaojiwei@agora.io"
+_payload = base64.urlsafe_b64encode(
+    json.dumps({"user": {"email": _JWT_EMAIL}}).encode()
+).decode().rstrip("=")
+_COOKIE = {"HCIAuthToken": f"h.{_payload}.s"}
+
+client.post("/nodes/sql.query/submit", json={"params": {
+    "engine": "hive", "sql": "SELECT 1", "params": {},
+}}, cookies=_COOKIE)
+ok("cookie 里的邮箱作为 creator 发给平台", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+
+client.post("/nodes/sql.query/submit", json={"params": {
+    "engine": "hive", "sql": "SELECT 1", "params": {},
+    "creator": "someone.else@agora.io",
+}}, cookies=_COOKIE)
+ok("参数里的 creator 被无视，以登录态为准", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+
+client.post("/nodes/sql.query/submit", json={"params": {
+    "engine": "hive", "sql": "SELECT 1", "params": {},
+    "creator": "someone.else@agora.io",
+}})
+ok("没登录态时参数里的 creator 也不认", SUBMITTED[-1]["_query"], {})
+
+# ---------------------------------------------- worker 代提交：定时任务用发布者的名义
+#
+# 定时和 webhook 触发时浏览器不在场，没有 cookie。身份来自发布者，由 worker 从库里
+# 读出来带过来。**这个头必须验密钥**：不验的话任何人加一个头就能以别人的权限查数。
+_PUBLISHER = {"X-Run-Creator": "publisher@agora.io", "X-Worker-Token": "s3cret"}
+
+client.post("/nodes/sql.query/submit", json={"params": {
+    "engine": "hive", "sql": "SELECT 1", "params": {},
+}}, headers=_PUBLISHER)
+ok("没配 WORKER_TOKEN 时代提交的头一律不认（fail closed）", SUBMITTED[-1]["_query"], {})
+
+os.environ["WORKER_TOKEN"] = "s3cret"
+try:
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, headers=_PUBLISHER)
+    ok("密钥对上了才以发布者的名义提交", SUBMITTED[-1]["_query"], {"creator": "publisher@agora.io"})
+
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, headers={**_PUBLISHER, "X-Worker-Token": "wrong"})
+    ok("密钥不对就当没这个头", SUBMITTED[-1]["_query"], {})
+
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, headers={**_PUBLISHER, "X-Run-Creator": "not-an-email"}, )
+    ok("发布记录里不是邮箱就不带（老版本存的是用户名）", SUBMITTED[-1]["_query"], {})
+
+    # 人在场的时候以人为准：worker 的头只在没有登录态时才轮得到
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, headers=_PUBLISHER, cookies=_COOKIE)
+    ok("有登录 cookie 时以登录者为准", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+finally:
+    os.environ.pop("WORKER_TOKEN", None)
+
+_who = client.get("/whoami", cookies=_COOKIE).json()
+ok("whoami 报告用谁的权限", (_who["creator"], _who["source"]), (_JWT_EMAIL, "cookie"))
+truthy("认不出身份时 whoami 说清后果", client.get("/whoami").json()["note"])
+ok("节点参数里不再有 creator 输入框",
+   "creator" in manifest.SQL_QUERY["input"]["properties"], False)
 
 # ---------------------------------------------------------------- 轮询
 first = client.get(f"/nodes/sql.query/poll?handle={handle}&limit=500").json()

@@ -88,10 +88,10 @@ ok("草稿内容确实更新了",
 
 # ---------------------------------------------------------------- 发布
 
-published = flowstore.publish(fid, "bob")
+published = flowstore.publish(fid, "alice")
 ok("发布后生效版本是 1", published["activeVersion"], 1)
 ok("发布后版本列表有一条", len(flowstore.list_versions(fid)), 1)
-ok("版本记了是谁发的", flowstore.list_versions(fid)[0]["createdBy"], "bob")
+ok("版本记了是谁发的", flowstore.list_versions(fid)[0]["createdBy"], "alice")
 
 v1 = flowstore.get_version(fid, 1)
 ok("版本快照存的是发布那一刻的内容",
@@ -109,7 +109,7 @@ ok("改草稿后标出有未发布改动", after["hasUnpublishedChanges"], True)
 ok("已发布的那一版没被改动",
    flowstore.get_version(fid, 1)["definition"]["nodes"][1]["params"]["sql"], "SELECT 2")
 
-flowstore.publish(fid, "bob")
+flowstore.publish(fid, "alice")
 ok("再发布版本号递增", flowstore.get_flow(fid)["activeVersion"], 2)
 ok("发布后不再显示有未发布改动", flowstore.get_flow(fid)["hasUnpublishedChanges"], False)
 ok("旧版本仍然读得到", flowstore.get_version(fid, 1)["definition"]["nodes"][1]["params"]["sql"], "SELECT 2")
@@ -124,17 +124,17 @@ raises("读不存在的版本报 NotFound", flowstore.NotFound, lambda: flowstor
 
 # ---------------------------------------------------------------- 列表
 
-listed = {f["id"]: f for f in flowstore.list_flows()}
+listed = {f["id"]: f for f in flowstore.list_flows(viewer="alice")}
 ok("列表里有它", fid in listed, True)
 ok("列表带生效版本号", listed[fid]["activeVersion"], 2)
 
 # ---------------------------------------------------------------- 归档
 
-flowstore.archive(fid, "carol")
-ok("归档后默认列表里不出现", fid in {f["id"] for f in flowstore.list_flows()}, False)
-ok("显式要归档的能看到", fid in {f["id"] for f in flowstore.list_flows(True)}, True)
+flowstore.archive(fid, "alice")
+ok("归档后默认列表里不出现", fid in {f["id"] for f in flowstore.list_flows(viewer="alice")}, False)
+ok("显式要归档的能看到", fid in {f["id"] for f in flowstore.list_flows(True, viewer="alice")}, True)
 ok("归档后仍然读得到（运行记录要靠它解释历史）", flowstore.get_flow(fid)["id"], fid)
-raises("归档后不能发布", flowstore.FlowArchived, lambda: flowstore.publish(fid, "carol"))
+raises("归档后不能发布", flowstore.FlowArchived, lambda: flowstore.publish(fid, "alice"))
 
 # ---------------------------------------------------------------- 审计
 
@@ -144,15 +144,84 @@ with db.pool().connection() as conn:
     ).fetchall()
 ok("审计记下了建/发布/发布/归档",
    [r[0] for r in got], ["flow.create", "flow.publish", "flow.publish", "flow.archive"])
-ok("审计记下了是谁", [r[1] for r in got], ["alice", "bob", "bob", "carol"])
+ok("审计记下了是谁", [r[1] for r in got], ["alice", "alice", "alice", "alice"])
 # 编辑器防抖自动保存几秒一次，每次记一条会把审计表变成击键日志
 ok("存草稿不进审计", "flow.save" in [r[0] for r in got], False)
+
+# ---------------------------------------------------------------- 归属与隔离
+#
+# 每个人是自己的工作台。别人的流程在这里不是"看得到点不动"，而是**不存在** ——
+# 404 而不是 403：403 等于承认这条在，把别人的流程 id 和存在性透出去了。
+
+mine = new_id()
+flowstore.create_flow(mine, definition("alice 的流程"), "alice@agora.io")
+ok("建流程时就写好归属", flowstore.get_flow(mine)["owner"], "alice@agora.io")
+ok("自己看得见", mine in {f["id"] for f in flowstore.list_flows(viewer="alice@agora.io")}, True)
+ok("别人的工作台里没有它", mine in {f["id"] for f in flowstore.list_flows(viewer="bob@agora.io")}, False)
+ok("匿名也看不见（不是看到全部）", mine in {f["id"] for f in flowstore.list_flows()}, False)
+
+raises("别人读不到", flowstore.NotFound, lambda: flowstore.get_flow(mine, "bob@agora.io"))
+raises("别人存不了草稿", flowstore.NotFound,
+       lambda: flowstore.save_draft(mine, definition("被改了"), "bob@agora.io"))
+raises("别人发布不了", flowstore.NotFound, lambda: flowstore.publish(mine, "bob@agora.io"))
+raises("别人归档不了", flowstore.NotFound, lambda: flowstore.archive(mine, "bob@agora.io"))
+raises("别人翻不到版本列表", flowstore.NotFound, lambda: flowstore.list_versions(mine, "bob@agora.io"))
+
+flowstore.publish(mine, "alice@agora.io")
+raises("别人取不到版本快照", flowstore.NotFound,
+       lambda: flowstore.get_version(mine, 1, "bob@agora.io"))
+ok("自己取得到", flowstore.get_version(mine, 1, "alice@agora.io")["version"], 1)
+# worker / webhook 这类内部路径没有"当前用户"，必须能拿到定义，否则定时任务全跑不了
+ok("内部路径不做归属过滤", flowstore.get_version(mine, 1)["version"], 1)
+
+# ---------------------------------------------------------------- 无主流程谁发布归谁
+#
+# 008 之前建的流程 owner 是 NULL。不批量指派 —— 指派错了比没指派更难发现；
+# 让归属通过"谁发布一次"自然长出来。
+
+orphan = new_id()
+flowstore.create_flow(orphan, definition("历史遗留"), None)
+ok("无主流程谁都看得见", 
+   all(orphan in {f["id"] for f in flowstore.list_flows(viewer=v)}
+       for v in [None, "alice@agora.io", "bob@agora.io"]), True)
+
+flowstore.publish(orphan, "bob@agora.io")
+ok("谁发布的谁是 owner", flowstore.get_flow(orphan)["owner"], "bob@agora.io")
+ok("认领之后别人就看不见了",
+   orphan in {f["id"] for f in flowstore.list_flows(viewer="alice@agora.io")}, False)
+raises("认领之后别人也改不了", flowstore.NotFound,
+       lambda: flowstore.save_draft(orphan, definition("抢过来"), "alice@agora.io"))
+
+# 再发布一次不会易主 —— COALESCE 只在没主时写
+flowstore.publish(orphan, "bob@agora.io")
+ok("已有主的不会被后来者顶掉", flowstore.get_flow(orphan)["owner"], "bob@agora.io")
+
+# ---------------------------------------------------------------- 运行记录也按归属
+#
+# 这一层比流程定义更要紧：steps 里存的是**查询结果本身**。
+# 流程只泄露"我在查什么"，运行记录直接是那些数据。
+
+from sql_service import runstore  # noqa: E402
+
+run = runstore.create_run(mine, inputs={})
+rid = run["runId"]
+ok("自己列得到自己的运行", rid in {r["id"] for r in runstore.list_runs(viewer="alice@agora.io")}, True)
+ok("别人列不到", rid in {r["id"] for r in runstore.list_runs(viewer="bob@agora.io")}, False)
+ok("匿名也列不到", rid in {r["id"] for r in runstore.list_runs()}, False)
+raises("别人按 id 也读不到", runstore.NotFound, lambda: runstore.get_run(rid, "bob@agora.io"))
+raises("别人取不到事件流", runstore.NotFound, lambda: runstore.events_since(rid, 0, "bob@agora.io"))
+raises("别人取消不了", runstore.NotFound, lambda: runstore.request_cancel(rid, "bob@agora.io"))
+ok("自己读得到", runstore.get_run(rid, "alice@agora.io")["id"], rid)
 
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:
     for made in MADE:
         conn.execute("DELETE FROM audit WHERE target_id = %s", (made,))
+        # runs → flow_versions 有外键，先收运行记录再删流程
+        conn.execute("DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (made,))
+        conn.execute("DELETE FROM steps WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (made,))
+        conn.execute("DELETE FROM runs WHERE flow_id = %s", (made,))
         conn.execute("DELETE FROM flows WHERE id = %s", (made,))
     conn.commit()
 

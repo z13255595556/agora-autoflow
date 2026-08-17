@@ -10,7 +10,7 @@ import type { FlowDefinition } from '../src/types.ts'
 import type { FNode } from '../src/store.ts'
 import {
   appendEvent, claimRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
-  pool, reapExpired, writeStep, LEASE_SECONDS, type RunRow,
+  pool, publisherOf, reapExpired, writeStep, LEASE_SECONDS, type RunRow,
 } from './store.ts'
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
@@ -42,6 +42,19 @@ async function loadRegistry(): Promise<void> {
   applyBackendNodes(nodes)
 }
 
+/**
+ * 代提交的身份头。
+ *
+ * 密钥和邮箱**必须一起给**：只给邮箱服务端不认（fail closed），
+ * 只给密钥则退回机器人账号权限。没配 WORKER_TOKEN 时一个头都不发 ——
+ * 让"没配"是一个安静的降级，而不是一堆被服务端默默丢掉的头。
+ */
+const WORKER_TOKEN = process.env.WORKER_TOKEN ?? ''
+const delegation = (creator: string | null): Record<string, string> =>
+  WORKER_TOKEN && creator
+    ? { 'X-Worker-Token': WORKER_TOKEN, 'X-Run-Creator': creator }
+    : {}
+
 interface Ctx {
   trigger: Record<string, unknown>
   run: { id: string; startedAt: string }
@@ -52,6 +65,9 @@ interface Ctx {
 /** 执行一条 run 直到终态或没事可做 */
 async function driveRun(run: RunRow): Promise<void> {
   const definition = (await loadFlowVersion(run.flow_id, run.flow_version)) as unknown as FlowDefinition
+  // 以发布者的名义去数据平台查数。服务端只在 WORKER_TOKEN 对得上时才认这个头
+  // （见 identity.delegated_creator）—— 否则任何人加个头就能冒充别人查数
+  const creator = await publisherOf(run.flow_id, run.flow_version)
   const graph = toGraph(definition)
   const { nodes, edges } = prepare(graph.nodes, graph.edges)
   const nodeById = new Map(nodes.map((n) => [n.id, n]))
@@ -126,7 +142,7 @@ async function driveRun(run: RunRow): Promise<void> {
       // 一次只跑一个再重新 decide。批量执行等于偷偷引入并行，
       // 而并行会静默绕过全局 fail-fast（等价性测试抓到过这一条）
       const target = result.toRun[0]
-      await runOneStep(run, cur, definition, nodes, edges, nodeById, steps, target, base)
+      await runOneStep(run, cur, definition, nodes, edges, nodeById, steps, target, base, creator)
     }
   } finally {
     clearInterval(beat)
@@ -143,6 +159,8 @@ async function runOneStep(
   steps: Awaited<ReturnType<typeof loadSteps>>,
   target: { nodeId: string; loopPath: number[] },
   baseMs: number,
+  /** 以谁的名义调数据平台 —— 这一版的发布者。见 store.publisherOf */
+  creator: string | null,
 ): Promise<void> {
   const node = nodeById.get(target.nodeId)!
   const t = NODE_TYPE_MAP.get(node.data.typeId)
@@ -262,7 +280,7 @@ async function runOneStep(
       const idem = `${run.id}:${target.nodeId}:${target.loopPath.join('.')}`
       const r = await fetch(`${API}/nodes/${t.type}/execute`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idem },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idem, ...delegation(creator) },
         body: JSON.stringify({ params: input }),
       })
       const body = await r.json()
@@ -295,7 +313,7 @@ async function runOneStep(
   try {
     const r = await fetch(`${API}/nodes/${t.type}/submit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submitKey },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submitKey, ...delegation(creator) },
       body: JSON.stringify({ params: input }),
     })
     const body = await r.json()

@@ -186,7 +186,25 @@ export interface RemoteFlow {
   triggerKind: string
   /** 草稿和已发布那一版不一致（只比逻辑不比布局） */
   hasUnpublishedChanges: boolean
+  /**
+   * 归属（邮箱）。null = 还没有主 —— 是 owner 那次迁移之前建的流程。
+   *
+   * 列表里能出现的只有两种：我的，和无主的。**别人的流程根本不在返回里**，
+   * 所以前端不需要（也不该）拿这个字段做任何过滤 —— 它只用来提示"这条还没主"。
+   */
+  owner: string | null
   draft?: Record<string, unknown>
+}
+
+/** 这次请求以谁的身份查数。/whoami 的返回 */
+export interface WhoAmI {
+  creator: string | null
+  source: 'cookie' | 'worker' | 'DEV_COOKIE' | 'DATALEGO_USER' | 'none'
+  note: string | null
+}
+
+export function whoami() {
+  return req<WhoAmI>('/whoami')
 }
 
 export interface FlowVersionMeta {
