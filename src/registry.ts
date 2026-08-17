@@ -255,15 +255,23 @@ export const NODE_TYPES: NodeType[] = [
     name: '条件分支',
     category: '控制',
     icon: '◇',
-    description: '按表达式结果走 true / false 两个出口',
+    description: '按条件判定走 true / false 两个出口',
     ports: [
       { id: 'true', label: '真' },
       { id: 'false', label: '假' },
     ],
+    // 条件不走 required：它有两种合法写法（条件行 / 老的表达式），
+    // 通用的必填校验表达不了"两个里有一个就行"，交给 validateNode 单独查
     input: {
       type: 'object',
-      required: ['condition'],
       properties: {
+        conditions: {
+          type: 'object',
+          title: '条件',
+          // expressionFrom：这个控件顺带编辑 condition 那个兄弟字段
+          //（和 x-placeholders.valuesFrom 一个套路），SchemaForm 据此不再单独画它
+          'x-ui': { widget: 'conditions', expressionFrom: 'condition' },
+        },
         condition: {
           type: 'string',
           title: '条件表达式',

@@ -3,6 +3,7 @@ import type { JsonSchema } from '../types'
 import { NODE_TYPE_MAP } from '../registry.ts'
 import type { FNode } from '../store'
 import { blockRe, isBrokenBlock } from './blocks.ts'
+import { conditionErrors, conditionTemplates, readConditionGroup } from './conditions.ts'
 import { isFieldVisible } from './display.ts'
 import { dateNodeError, datePresets } from './datefn.ts'
 import { FILTERS, probedColumns, probedContainer, probedObjectFields, splitTopLevelPipes } from './output.ts'
@@ -258,6 +259,13 @@ export function validateNode(
     }
   }
 
+  // 条件分支：条件行和老的表达式二选一即可，通用的 required 表达不了这个
+  if (node.data.typeId === 'flow.if') {
+    const group = readConditionGroup(node.data.params)
+    if (group) errors.push(...conditionErrors(group))
+    else if (!String(node.data.params.condition ?? '').trim()) errors.push('必填项「条件」未填')
+  }
+
   for (const key of t.input.required ?? []) {
     // 被 x-show/x-hide 隐藏的字段不做必填校验（n8n 同款行为）
     if (!isFieldVisible(key, t.input, node.data.params)) continue
@@ -272,8 +280,18 @@ export function validateNode(
   const isKnown = (ref: string) =>
     knownPaths.some((k) => ref === k || ref.startsWith(`${k}.`) || ref.startsWith(`${k}[`))
   const upstreamIds = new Set(upstreamNodes(node.id, nodes, edges).map((n) => n.id))
-  for (const [key, value] of Object.entries(node.data.params)) {
-    if (typeof value !== 'string') continue
+  // 条件行里的模板嵌在对象里，params 那层遍历看不见它们。补进来一起查，
+  // 否则条件分支会成为唯一一个"引用写错了也不报"的地方 —— 而它写错的后果
+  // 是整条分支静默走错方向
+  const conditionGroup = node.data.typeId === 'flow.if' ? readConditionGroup(node.data.params) : null
+  const stringParams: Array<[string, string]> = [
+    ...Object.entries(node.data.params)
+      .filter((e): e is [string, string] => typeof e[1] === 'string')
+      // 有条件行时老表达式不生效，就不该因为它拦下保存（和隐藏字段同一个道理）
+      .filter(([key]) => !(conditionGroup && key === 'condition')),
+    ...(conditionGroup ? conditionTemplates(conditionGroup).map((tpl): [string, string] => ['条件', tpl]) : []),
+  ]
+  for (const [key, value] of stringParams) {
     // 隐藏字段里的引用不参与校验（值保留但不生效）
     if (!isFieldVisible(key, t.input, node.data.params)) continue
     const ph = t.input.properties?.[key]?.['x-placeholders']

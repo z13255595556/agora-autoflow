@@ -12,6 +12,7 @@ import { dateFn, dateNodeOutput, formatDate, toDate } from './datefn.ts'
 import { FILTERS, ROW_KEYS, splitTopLevelPipes } from './output.ts'
 import { extractSqlPlaceholders } from './placeholders.ts'
 import { applySelectionFilter, parseFilterArgs } from './selectionFilters.ts'
+import { compareCondition, opNeedsValue, opToleratesMissing, readConditionGroup } from './conditions.ts'
 import { redactNodeInput } from './secrets.ts'
 // 图遍历那部分已经提纯到 engine-core：decide() 要用同一套判定，而它必须是纯的
 import { outgoing, reachableFrom, topoSort } from './engine-core/graph.ts'
@@ -425,6 +426,38 @@ export function truthy(v: unknown): boolean {
   return Boolean(v)
 }
 
+/**
+ * flow.if 判真。**两种写法共用的唯一入口** —— 引擎、worker、单节点试运行
+ * 都从这里过，判定规则不许有第二份。
+ *
+ * 优先条件行（`params.conditions`）；一行都读不出来就回退到老的
+ * `params.condition` 表达式。老流程存的就是后者，一行都不用改。
+ *
+ * **每一行都求值，不做短路。** and 里第一行为假就跳过后面几行，等于
+ * "后面几行引用写错了要看运气才报错" —— 同一份定义换个行序错误就出现/消失，
+ * 这种不确定性比多算一行贵得多。
+ */
+export function evaluateIf(params: Record<string, unknown>, ctx: Ctx): boolean {
+  const group = readConditionGroup(params)
+  if (!group) return truthy(resolveTemplate(params.condition, ctx))
+
+  const results = group.items.map((item) => {
+    let left: unknown
+    try {
+      left = resolveTemplate(item.left, ctx)
+    } catch (err) {
+      // 「为空 / 不为空」问的正是"那儿有没有东西"，取不到就是空 —— 这是答案不是故障。
+      // 其余比较方式照引擎通则炸掉：`包含` 一个不存在的字段是笔误，不是 false
+      if (!(err instanceof MissingValue) || !opToleratesMissing(item.op)) throw err
+      left = undefined
+    }
+    const right = opNeedsValue(item.op) ? resolveTemplate(item.right ?? '', ctx) : undefined
+    return compareCondition(item.op, left, right)
+  })
+
+  return group.logic === 'or' ? results.some(Boolean) : results.every(Boolean)
+}
+
 // latestOutput 搬到了 output.ts —— 它讲的是"哪份输出算当前的"，属于输出形态那一族，
 // 而 outputShape 也要用它，从 engine 取会绕出一条 vars → outputShape → engine → vars 的环。
 // 这里再导出一次，调用点不用改。
@@ -588,7 +621,9 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
       return dateNodeOutput(resolved, Number.isNaN(base.getTime()) ? new Date() : base)
     }
     case 'flow.if':
-      return { matched: truthy(resolved.condition) }
+      // 不看 resolved：条件行是嵌在对象里的模板字符串，resolveParams 不会下钻到
+      // 数组元素里去解析它们。判定统一走 evaluateIf，和 executeFlow 同一份规则
+      return { matched: evaluateIf(node.data.params, ctx) }
     case 'flow.merge':
       // 只汇总真正连进来的分支，不是全图所有节点。
       //
@@ -974,7 +1009,16 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
         if (node.data.onError === 'fail') failed = true
         continue
       }
-      const matched = truthy(resolveTemplate(node.data.params.condition, ctx))
+      // 条件行里的引用不经过 tryResolveParams（它不下钻数组），所以求值可能在
+      // 这里才炸。不接住的话异常会逃出 executeFlow，运行记录停在 running 变僵尸
+      let matched: boolean
+      try {
+        matched = evaluateIf(node.data.params, ctx)
+      } catch (err) {
+        record({ nodeId: node.id, status: 'error', startedAt, durationMs: Date.now() - startedAt, input: localInput, output: null, error: err instanceof Error ? err.message : String(err) })
+        if (node.data.onError === 'fail') failed = true
+        continue
+      }
       ctx.nodes[node.id] = { output: { matched } }
       record({ nodeId: node.id, status: 'success', startedAt, durationMs: Date.now() - startedAt, input: localInput, output: { matched } })
       const deadPort = matched ? 'false' : 'true'
@@ -1111,7 +1155,15 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
             if (bn.data.onError === 'fail') { aborted = true; break }
             continue
           }
-          const matched = truthy(resolveTemplate(bn.data.params.condition, localCtx))
+          let matched: boolean
+          try {
+            matched = evaluateIf(bn.data.params, localCtx)
+          } catch (err) {
+            record({ nodeId: bn.id, status: 'error', startedAt: bStart, durationMs: Date.now() - bStart, input: bInput, output: null, error: err instanceof Error ? err.message : String(err), iteration: i })
+            iterFailed = true
+            if (bn.data.onError === 'fail') { aborted = true; break }
+            continue
+          }
           ctx.nodes[bn.id] = { output: { matched } }
           record({ nodeId: bn.id, status: 'success', startedAt: bStart, durationMs: Date.now() - bStart, input: bInput, output: { matched }, iteration: i })
           const deadPort = matched ? 'false' : 'true'

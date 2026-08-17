@@ -1,4 +1,5 @@
 import type { NodeType } from '../types'
+import { conditionSummary, readConditionGroup } from './conditions.ts'
 import { DATE_MODE_LABELS } from './datefn.ts'
 import { describeSchedule } from './schedule.ts'
 
@@ -60,8 +61,13 @@ export function nodeSummary(t: NodeType, params: Record<string, unknown>): strin
       return content ? `${type} · ${clip(content, 30)}` : `${type} · 内容为空`
     }
 
-    case 'flow.if':
+    case 'flow.if': {
+      // 优先级和 engine.evaluateIf 一致：有条件行就以条件行为准，
+      // 卡片上显示的必须是**真正会被执行的那份**
+      const group = readConditionGroup(params)
+      if (group) return clip(conditionSummary(group))
       return str(params, 'condition') ? clip(str(params, 'condition')) : '未设条件'
+    }
 
     case 'flow.foreach':
       return str(params, 'items') ? `遍历 ${clip(str(params, 'items'), 30)}` : '未设遍历对象'

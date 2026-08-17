@@ -1271,6 +1271,48 @@ body.is-dragging-node * { cursor: grabbing !important; user-select: none !import
 }
 .kv__add:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
 
+/* 条件行：IF / 且 / 或 + 变量 + 比较方式 + 值 */
+.cond { display: flex; flex-direction: column; gap: 8px; }
+.cond__row { display: flex; gap: 6px; align-items: flex-start; }
+.cond__lead { flex: 0 0 34px; padding-top: 6px; }
+.cond__if { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: var(--text-faint); }
+.cond__logic {
+  width: 34px; height: 22px; border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface); color: var(--text-dim); font-size: 11px; line-height: 1;
+}
+.cond__logic:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.cond__fields { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.cond__line { display: flex; gap: 6px; align-items: stretch; }
+.cond__var { flex: 1 1 auto; min-width: 0; display: flex; gap: 4px; align-items: stretch; }
+.cond__var > :first-child { flex: 1 1 auto; min-width: 0; }
+.cond__pick {
+  flex: none; display: grid; place-items: center; width: 28px;
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface-2); color: var(--text-faint);
+}
+.cond__pick:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.cond__op { flex: 0 0 30%; min-width: 88px; }
+.cond__del {
+  flex: none; display: grid; place-items: center; width: 28px; height: 30px;
+  border: 1px solid var(--border); border-radius: var(--r);
+  background: none; color: var(--text-faint); line-height: 1;
+}
+.cond__del:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.cond__add {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 1px dashed var(--border-strong); border-radius: var(--r);
+  padding: 5px 12px; font-size: 12px; color: var(--text-dim);
+}
+.cond__add:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.cond__adv { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.cond__advtoggle {
+  align-self: flex-start; background: none; border: 0; padding: 0;
+  font-size: 11.5px; color: var(--text-dim);
+}
+.cond__advtoggle:hover { color: var(--primary); }
+.cond__advtoggle b { display: inline-block; width: 12px; color: var(--text-faint); font-weight: 600; }
+.cond__hint { font-size: 10.5px; color: var(--text-faint); line-height: 1.5; }
+
 /* 占位符参数表：行由 SQL 推导 */
 .phe { display: flex; flex-direction: column; gap: 6px; }
 .phe__row { display: flex; gap: 6px; align-items: center; }

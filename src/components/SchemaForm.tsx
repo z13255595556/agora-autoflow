@@ -11,6 +11,7 @@ import { validationFieldKey } from '../lib/validationFocus'
 import DatePreview from './DatePreview'
 import MessagePreview from './MessagePreview'
 import RefField from './RefField'
+import ConditionsEditor from './ConditionsEditor'
 import Icon from './Icon'
 import CurlImport from './CurlImport'
 import { isSensitiveHeaderName } from '../lib/secrets'
@@ -66,9 +67,16 @@ export default function SchemaForm({
     if (target) placeholderSource[target] = k
   }
 
+  // 条件行控件顺带编辑一个兄弟字段（老的表达式），那个字段就不该再单独画一遍 ——
+  // 同一个条件在表单里出现两次，哪一处生效是隐式的
+  const ownedByWidget = new Set(
+    Object.values(schema.properties ?? {}).map((s) => s['x-ui']?.expressionFrom).filter(Boolean) as string[],
+  )
+
   // 条件显示：联动参数变化实时增减字段。占位符取值区只有 SQL 里真的存在
   // 占位符时才有意义，没有占位符就整块隐藏，不显示额外说明或空状态。
   const entries = Object.entries(schema.properties ?? {}).filter(([key]) => {
+    if (ownedByWidget.has(key)) return false
     if (!isFieldVisible(key, schema, values)) return false
     const sourceKey = placeholderSource[key]
     if (!sourceKey) return true
@@ -103,6 +111,19 @@ export default function SchemaForm({
             </label>
 
             {sub.description && <div className="field__desc">{sub.description}</div>}
+
+            {/* 条件行：变量 + 比较方式 + 值。它自己管两个参数键，所以拿的是整份 values */}
+            {ui.widget === 'conditions' && (
+              <ConditionsEditor
+                fieldKey={key}
+                expressionKey={ui.expressionFrom}
+                values={values}
+                onChange={onChange}
+                vars={vars}
+                labelCtx={labelCtx}
+                nodeId={nodeId}
+              />
+            )}
 
             {/* select：静态 enum 或 optionsFrom 动态拉取 */}
             {sub.type === 'string' && ui.widget === 'select' && (

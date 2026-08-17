@@ -3,7 +3,7 @@
  * 这里的结构就是后端注册表和流程 DSL 的形状，前端只是它的一个视图。
  */
 
-export type UiWidget = 'text' | 'textarea' | 'code' | 'select' | 'number' | 'kv' | 'switch'
+export type UiWidget = 'text' | 'textarea' | 'code' | 'select' | 'number' | 'kv' | 'switch' | 'conditions'
 
 export interface UiHint {
   widget?: UiWidget
@@ -36,6 +36,14 @@ export interface UiHint {
   inserters?: Array<'table' | 'message'>
   /** KV 编辑器中按敏感键名遮罩 value，适用于 HTTP headers。 */
   sensitiveKeys?: boolean
+  /**
+   * widget=conditions 时，"直接写表达式"那条逃生口存在哪个兄弟字段里。
+   *
+   * 和 x-placeholders.valuesFrom 同一个套路：一个控件管两个参数。声明了它
+   * 之后 SchemaForm 不再单独画那个字段 —— 否则同一个条件会在表单里出现两次，
+   * 而两处填的东西谁生效是隐式的。
+   */
+  expressionFrom?: string
   /** 单值凭证输入，默认用密码态显示且禁止浏览器自动填充。 */
   secret?: boolean
 }
