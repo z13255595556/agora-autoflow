@@ -168,6 +168,11 @@ def _role_password_statement(action: str, role: str, password: str) -> sql.Compo
     ).format(sql.SQL(action), sql.Identifier(role), sql.Literal(password))
 
 
+def _workspace_schema_statement(schema: str) -> sql.Composed:
+    """Create a schema owned by the provisioning admin, not the user role."""
+    return sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema))
+
+
 def _ensure_user(email: str) -> Tuple[str, str, str, str]:
     email, role, schema = _identity(email)
     admin_dsn, secret = _require_config()
@@ -179,7 +184,7 @@ def _ensure_user(email: str) -> Tuple[str, str, str, str]:
             if not exists:
                 conn.execute(_role_password_statement("CREATE ROLE", role, password))
             conn.execute(_role_password_statement("ALTER ROLE", role, password))
-            conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {} AUTHORIZATION {}").format(sql.Identifier(schema), sql.Identifier(role)))
+            conn.execute(_workspace_schema_statement(schema))
             conn.execute(sql.SQL("REVOKE ALL ON SCHEMA public FROM PUBLIC"))
             conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database)))
             conn.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(database), sql.Identifier(role)))
