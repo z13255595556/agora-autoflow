@@ -17,10 +17,10 @@ from .datalego import ENGINES
 SQL_QUERY: Dict[str, Any] = {
     "type": "sql.query",
     "typeVersion": "2.0.0",
-    "name": "SQL 查询",
+    "name": "DataLego SQL",
     "category": "数据查询",
     "icon": "▤",
-    "description": "在数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接",
+    "description": "在 DataLego 数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接",
     "input": {
         "type": "object",
         "required": ["engine", "sql"],
@@ -311,4 +311,40 @@ HTTP_REQUEST: Dict[str, Any] = {
     "policy": {"idempotent": False},
 }
 
-ALL = [SQL_QUERY, NOTIFY_WECOM, HTTP_REQUEST]
+POSTGRES_WORKSPACE: Dict[str, Any] = {
+    "type": "postgres.workspace",
+    "typeVersion": "1.0.0",
+    "name": "自建 PostgreSQL",
+    "category": "数据查询",
+    "icon": "▤",
+    "description": "在你自己的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库",
+    "input": {
+        "type": "object", "required": ["sql"],
+        "properties": {
+            "sql": {
+                "type": "string", "title": "SQL",
+                "description": "一次执行一条 SQL；可在个人工作区创建、查询和修改表",
+                "x-placeholders": {"valuesFrom": "params"},
+                "x-ui": {"widget": "code", "language": "sql", "rows": 8,
+                           "placeholder": "CREATE TABLE report (id bigint, name text)"},
+            },
+            "params": {"type": "object", "title": "占位符参数", "additionalProperties": True, "x-ui": {"widget": "kv"}},
+            "limit": {"type": "integer", "title": "返回行数上限", "default": 1000, "minimum": 1, "maximum": 1000},
+        },
+    },
+    "output": {
+        "type": "object",
+        "properties": {
+            "rows": {"type": "array", "title": "结果行", "items": {"type": "object"}, "x-large": True},
+            "columns": {"type": "array", "title": "列信息", "items": {"type": "object"}},
+            "rowCount": {"type": "integer", "title": "返回行数"},
+            "affectedRows": {"type": "integer", "title": "影响行数"},
+            "truncated": {"type": "boolean", "title": "是否截断"},
+            "renderedSql": {"type": "string", "title": "实际执行的 SQL"},
+        },
+    },
+    "runtime": {"kind": "http", "execute": "POST /nodes/postgres.workspace/execute"},
+    "policy": {"idempotent": False},
+}
+
+ALL = [SQL_QUERY, POSTGRES_WORKSPACE, NOTIFY_WECOM, HTTP_REQUEST]

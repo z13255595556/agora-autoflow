@@ -16,7 +16,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, wecom
+from . import datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, wecom, workspace
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -169,10 +169,18 @@ def whoami(request: Request) -> Dict[str, Any]:
     cookie，两者的缓存语义不一样。它存在的理由只有一个 —— 平台回"无权限"时，
     第一个要回答的问题是"这次到底用的谁"，靠猜会浪费很久。
     """
-    creator = identity.creator_for(request)
+    user = identity.current_user_for(request)
+    creator = user.email if user else identity.creator_for(request)
     return {
         "creator": creator,
         "source": identity.source_of(request),
+        "user": None if user is None else {
+            "id": user.id,
+            "email": user.email,
+            "displayName": user.display_name,
+            "permissions": list(user.permissions),
+            "isAdmin": user.is_admin,
+        },
         # 认不出身份不报错，但要把后果说清楚：走机器人账号 = 没有按人隔离
         "note": None if creator else "认不出登录身份，查询将使用服务端机器人账号的权限",
     }
@@ -356,6 +364,26 @@ def execute_http_request(body: SubmitBody) -> Dict[str, Any]:
         raise HTTPException(502, str(exc))
     except http_request.HttpRequestError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/nodes/postgres.workspace/execute")
+def execute_postgres_workspace(
+    body: SubmitBody,
+    request: Request,
+    idempotency_key: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """Run one statement in the caller's isolated PostgreSQL workspace."""
+    email = identity.creator_for(request)
+    if not email:
+        raise HTTPException(403, errors.payload("WORKSPACE_IDENTITY", "无法识别登录邮箱，不能使用自建 PostgreSQL 工作区"))
+
+    def run() -> Dict[str, Any]:
+        try:
+            return {"output": workspace.execute(email, body.params)}
+        except workspace.WorkspaceError as exc:
+            raise HTTPException(exc.status, errors.payload(exc.code, str(exc)))
+
+    return _idempotent(idempotency_key, run)
 
 
 @app.post("/nodes/sql.query/submit")

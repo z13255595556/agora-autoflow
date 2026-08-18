@@ -138,6 +138,8 @@ export interface RetryPolicy {
 export interface NodeRuntime {
   kind: 'http' | 'http-async'
   endpoint?: string
+  /** 同步节点的一次性执行端点。 */
+  execute?: string
   submit?: string
   poll?: string
   cancel?: string

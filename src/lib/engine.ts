@@ -608,12 +608,13 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
       // 手动点运行时，定时触发器就是立刻跑一次 —— scheduledFor 记的是这次的
       // 计划时间，真到点自动跑的时候由调度器填
       return { runId: ctx.run.id, startedAt: ctx.run.startedAt, scheduledFor: ctx.run.startedAt }
-    case 'sql.query': {
+    case 'sql.query':
+    case 'postgres.workspace': {
       const cols = probedCols.length ? probedCols : ['vid', 'name', 'created_at']
       const rows = Array.from({ length: 3 }, (_, i) =>
         Object.fromEntries(cols.map((c) => [c, c === 'vid' ? String(ctx.trigger.vid ?? 10000 + i) : `${c}_${i + 1}`])),
       )
-      return { rows, rowCount: rows.length, truncated: false }
+      return { rows, rowCount: rows.length, affectedRows: 0, truncated: false }
     }
     case 'date.compute': {
       // 基准和 {{ date() }} 完全一致：本次运行的开始时刻。两种写法混用也不会差一天

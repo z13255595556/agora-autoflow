@@ -278,7 +278,7 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
                   rememberNodeType('sql.query')
                   addNodeAfter('sql.query', triggerId)
                 }}>
-                  <span>▤</span> SQL 查询
+                  <span>▤</span> DataLego SQL
                 </button>
                 <button disabled={!triggerId} onClick={() => {
                   if (!triggerId) return
