@@ -236,7 +236,7 @@ export default function Home({
                 <Icon name="close" />
               </button>
             </div>
-            <div className="modal__note">从模板开始，节点和连线都是搭好的；空白流程只给一个触发器。</div>
+            <div className="modal__note">选择流程的启动方式，随后在画布中添加需要的处理节点。</div>
             <div className="modal__cards">
               {TEMPLATES.map((t) => (
                 <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>

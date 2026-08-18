@@ -54,9 +54,17 @@ export const NODE_TYPES: NodeType[] = [
           type: 'string',
           title: '每天几点',
           default: '09:00',
-          description: '24 小时制，服务器时区',
+          description: '24 小时制，默认按北京时间（UTC+8）执行',
           'x-show': { mode: ['daily'] },
           'x-ui': { placeholder: '09:00' },
+        },
+        timezone: {
+          type: 'string',
+          title: '时区',
+          default: 'Asia/Shanghai',
+          enum: ['Asia/Shanghai'],
+          description: '所有定时表达式按北京时间（UTC+8）计算',
+          'x-ui': { widget: 'select', labels: { 'Asia/Shanghai': '北京时间（UTC+8）' } },
         },
         minute: {
           type: 'integer',
