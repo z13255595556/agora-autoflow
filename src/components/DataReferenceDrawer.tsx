@@ -9,6 +9,7 @@ import {
   type MatchOperator, type ReferenceSelection,
 } from '../lib/referenceSelection'
 import { previewText } from '../lib/refLabel'
+import { formatDate } from '../lib/datefn'
 import type { ReferenceTarget } from './ReferencePickerContext'
 import Icon from './Icon'
 
@@ -308,7 +309,7 @@ function RegionView({ shape, region, dirty, running, backendOnline, onBack, onRe
           {testError && <div className="dataref__error">{testError}</div>}
         </div>
       )}
-      {shape.source === 'run' && !dirty && <div className={`dataref__fresh${shape.live === false ? ' is-mock' : ''}`}>{shape.live === false ? '模拟结果' : '实际结果'} · {shape.at ? new Date(shape.at).toLocaleTimeString() : '刚刚'}</div>}
+      {shape.source === 'run' && !dirty && <div className={`dataref__fresh${shape.live === false ? ' is-mock' : ''}`}>{shape.live === false ? '模拟结果' : '实际结果'} · {shape.at ? formatDate(new Date(shape.at), 'time') : '刚刚'}</div>}
 
       {region.table ? (
         <TableRegion shape={shape} region={region} onChoose={onChoose} />

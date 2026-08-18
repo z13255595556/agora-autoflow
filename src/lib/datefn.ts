@@ -11,6 +11,24 @@
 /** 相对时间锚点前缀 */
 const NOW = 'now'
 
+/**
+ * AutoFlow stores instants as UTC but interprets calendar expressions (today,
+ * yesterday, month start) in the product's business timezone.  Keep this
+ * independent from the server and browser locale: production servers remain
+ * on UTC while a report scheduled for 09:00 uses Beijing calendar dates.
+ * Asia/Shanghai has a fixed UTC+8 offset and no daylight-saving transitions.
+ */
+export const BUSINESS_TIMEZONE = 'Asia/Shanghai'
+const BUSINESS_OFFSET_MS = 8 * 60 * 60 * 1000
+
+function businessCalendar(d: Date): Date {
+  return new Date(d.getTime() + BUSINESS_OFFSET_MS)
+}
+
+function fromBusinessCalendar(d: Date): Date {
+  return new Date(d.getTime() - BUSINESS_OFFSET_MS)
+}
+
 type Unit = 's' | 'm' | 'h' | 'd' | 'w' | 'M' | 'y'
 
 const UNIT_NAME: Record<Unit, string> = {
@@ -42,8 +60,12 @@ export function resolveMoment(expr: string, base: Date): Date {
   }
 
   if (!body.startsWith(NOW)) {
-    // 也允许直接给一个具体日期，方便"固定某天"
-    const fixed = new Date(body)
+    // 无时区的纯日期是业务日历日期：2026-08-18 = 北京时间当天零点，
+    // 不是 ECMAScript 默认解释的 UTC 零点。带时间或时区的 ISO 值保持原样。
+    const dateOnly = body.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    const fixed = dateOnly
+      ? new Date(Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]), -8))
+      : new Date(body)
     if (Number.isNaN(fixed.getTime())) {
       throw new DateError(`看不懂的日期「${raw}」。写 now、now-1d、now-2h，或一个具体日期如 2026-08-13`)
     }
@@ -51,7 +73,10 @@ export function resolveMoment(expr: string, base: Date): Date {
   }
 
   const rest = body.slice(NOW.length)
-  const d = new Date(base.getTime())
+  // Shift to a UTC-shaped Beijing calendar, mutate with UTC setters, then
+  // shift back. This makes calendar units deterministic on both UTC servers
+  // and browsers in another timezone.
+  const d = businessCalendar(base)
   if (rest) {
     UNIT_RE.lastIndex = 0
     let consumed = 0
@@ -66,18 +91,18 @@ export function resolveMoment(expr: string, base: Date): Date {
       throw new DateError(`看不懂的偏移「${rest}」。写法是 now-1d、now+2h、now-30m，单位 s/m/h/d/w/M/y（m 分钟、M 月）`)
     }
   }
-  return truncate ? truncateTo(d, truncate) : d
+  return fromBusinessCalendar(truncate ? truncateTo(d, truncate) : d)
 }
 
 function applyOffset(d: Date, n: number, unit: Unit) {
   switch (unit) {
-    case 's': d.setSeconds(d.getSeconds() + n); break
-    case 'm': d.setMinutes(d.getMinutes() + n); break
-    case 'h': d.setHours(d.getHours() + n); break
-    case 'd': d.setDate(d.getDate() + n); break
-    case 'w': d.setDate(d.getDate() + n * 7); break
-    case 'M': d.setMonth(d.getMonth() + n); break
-    case 'y': d.setFullYear(d.getFullYear() + n); break
+    case 's': d.setUTCSeconds(d.getUTCSeconds() + n); break
+    case 'm': d.setUTCMinutes(d.getUTCMinutes() + n); break
+    case 'h': d.setUTCHours(d.getUTCHours() + n); break
+    case 'd': d.setUTCDate(d.getUTCDate() + n); break
+    case 'w': d.setUTCDate(d.getUTCDate() + n * 7); break
+    case 'M': d.setUTCMonth(d.getUTCMonth() + n); break
+    case 'y': d.setUTCFullYear(d.getUTCFullYear() + n); break
   }
 }
 
@@ -89,22 +114,22 @@ function applyOffset(d: Date, n: number, unit: Unit) {
  */
 function truncateTo(d: Date, unit: Unit): Date {
   const out = new Date(d.getTime())
-  out.setMilliseconds(0)
+  out.setUTCMilliseconds(0)
   if (unit === 's') return out
-  out.setSeconds(0)
+  out.setUTCSeconds(0)
   if (unit === 'm') return out
-  out.setMinutes(0)
+  out.setUTCMinutes(0)
   if (unit === 'h') return out
-  out.setHours(0)
+  out.setUTCHours(0)
   if (unit === 'd') return out
   if (unit === 'w') {
     // 周一为一周之首（ISO），不是周日
-    out.setDate(out.getDate() - ((out.getDay() + 6) % 7))
+    out.setUTCDate(out.getUTCDate() - ((out.getUTCDay() + 6) % 7))
     return out
   }
-  out.setDate(1)
+  out.setUTCDate(1)
   if (unit === 'M') return out
-  out.setMonth(0)
+  out.setUTCMonth(0)
   return out
 }
 
@@ -134,18 +159,19 @@ export function formatDate(d: Date, format: string): string {
   if (fmt === 'unix') return String(Math.floor(d.getTime() / 1000))
   if (fmt === 'unix_ms') return String(d.getTime())
 
+  const local = businessCalendar(d)
   const map: Record<string, string> = {
-    yyyy: String(d.getFullYear()),
-    yy: pad(d.getFullYear() % 100),
-    MM: pad(d.getMonth() + 1),
-    M: String(d.getMonth() + 1),
-    dd: pad(d.getDate()),
-    d: String(d.getDate()),
-    HH: pad(d.getHours()),
-    H: String(d.getHours()),
-    mm: pad(d.getMinutes()),
-    ss: pad(d.getSeconds()),
-    SSS: pad(d.getMilliseconds(), 3),
+    yyyy: String(local.getUTCFullYear()),
+    yy: pad(local.getUTCFullYear() % 100),
+    MM: pad(local.getUTCMonth() + 1),
+    M: String(local.getUTCMonth() + 1),
+    dd: pad(local.getUTCDate()),
+    d: String(local.getUTCDate()),
+    HH: pad(local.getUTCHours()),
+    H: String(local.getUTCHours()),
+    mm: pad(local.getUTCMinutes()),
+    ss: pad(local.getUTCSeconds()),
+    SSS: pad(local.getUTCMilliseconds(), 3),
   }
   // 长 token 必须排在前面，否则 yyyy 会被 yy 先吃掉
   return fmt.replace(/'([^']*)'|yyyy|yy|MM|M|dd|d|HH|H|mm|ss|SSS/g, (tok, literal) =>
@@ -174,7 +200,9 @@ export function toDate(value: unknown): Date | null {
     if (!s) return null
     // 纯数字：先按 yyyyMMdd 这种紧凑分区格式试，再按时间戳试
     if (/^\d{8}$/.test(s)) {
-      return new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)))
+      // YYYYMMDD 是业务日历日期，不是 UTC 日期。把北京时间零点转成
+      // 对应的 UTC 时刻，避免 UTC 服务器把 20260818 解释为北京时间 08:00。
+      return new Date(Date.UTC(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)), -8))
     }
     if (/^\d+$/.test(s)) return toDate(Number(s))
     const d = new Date(s)

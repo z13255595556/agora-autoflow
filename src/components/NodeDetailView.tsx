@@ -8,6 +8,7 @@ import { redactOutput } from '../lib/secrets'
 import SchemaForm from './SchemaForm'
 import HttpRequestForm from './HttpRequestForm'
 import WebhookPanel from './WebhookPanel'
+import { formatDate } from '../lib/datefn'
 
 /**
  * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
@@ -248,7 +249,7 @@ export default function NodeDetailView() {
                 )}
                 {step && (
                   <span className="ndv__meta">
-                    {step.durationMs}ms · {new Date(step.startedAt).toLocaleTimeString()}
+                    {step.durationMs}ms · {formatDate(new Date(step.startedAt), 'time')}
                     {step.pinned && ' · 来自固定数据'}
                   </span>
                 )}

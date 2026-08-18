@@ -4,6 +4,7 @@ import type { StepStatus } from '../types'
 import Icon from './Icon'
 import { graphProblems } from '../lib/graph'
 import { validateNode } from '../lib/vars'
+import { formatDate } from '../lib/datefn'
 
 const STATUS_ICON: Record<StepStatus, string> = {
   waiting: '·',
@@ -182,7 +183,7 @@ export default function RunPanel() {
             >
               <i>{r.status === 'running' ? '◌' : r.status === 'success' ? '✓' : '✗'}</i>
               <code>{r.id}</code>
-              <span>{new Date(r.startedAt).toLocaleTimeString()}</span>
+              <span>{formatDate(new Date(r.startedAt), 'time')}</span>
             </button>
           ))}
         </div>
