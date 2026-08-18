@@ -38,6 +38,7 @@ ok("邮箱稳定映射", workspace._identity("Alice@Agora.io"), workspace._ident
 role_sql = workspace._role_password_statement("CREATE ROLE", "af_u_test", "secret'quote").as_string(None)
 ok("角色 DDL 不使用绑定占位符", "%s" not in role_sql and "$1" not in role_sql, True)
 ok("角色 DDL 安全引用密码", "'secret''quote'" in role_sql, True)
+ok("角色 DDL 不要求超级用户属性", "NOSUPERUSER" not in role_sql and "NOREPLICATION" not in role_sql, True)
 raises("多语句拒绝", lambda: workspace._prepare_sql({"sql": "SELECT 1; SELECT 2"}), "一条")
 raises("事务控制拒绝", lambda: workspace._prepare_sql({"sql": "BEGIN"}), "只允许")
 raises("角色管理拒绝", lambda: workspace._prepare_sql({"sql": "CREATE ROLE bad"}), "不允许")

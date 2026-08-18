@@ -164,8 +164,7 @@ def _role_password_statement(action: str, role: str, password: str) -> sql.Compo
     if action not in {"CREATE ROLE", "ALTER ROLE"}:
         raise ValueError(f"unsupported role action: {action}")
     return sql.SQL(
-        "{} {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
-        "NOREPLICATION PASSWORD {}"
+        "{} {} LOGIN NOINHERIT PASSWORD {}"
     ).format(sql.SQL(action), sql.Identifier(role), sql.Literal(password))
 
 
