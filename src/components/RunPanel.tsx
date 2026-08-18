@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useFlow } from '../store'
 import type { StepStatus } from '../types'
 import Icon from './Icon'
@@ -34,6 +34,8 @@ export default function RunPanel() {
   const activeRunId = useFlow((s) => s.activeRunId)
   const running = useFlow((s) => s.running)
   const startRun = useFlow((s) => s.startRun)
+  const form = useFlow((s) => s.manualInputs)
+  const setForm = useFlow((s) => s.setManualInputs)
   const setActiveRun = useFlow((s) => s.setActiveRun)
   const setRunPanelOpen = useFlow((s) => s.setRunPanelOpen)
   const openNdv = useFlow((s) => s.openNdv)
@@ -42,7 +44,6 @@ export default function RunPanel() {
   const edges = useFlow((s) => s.edges)
   const pinData = useFlow((s) => s.pinData)
 
-  const [form, setForm] = useState<Record<string, string>>({})
   const run = runs.find((r) => r.id === activeRunId) ?? runs[0] ?? null
   const resizeStart = useRef<{ pointerId: number; y: number; height: number } | null>(null)
 

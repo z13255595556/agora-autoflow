@@ -181,6 +181,8 @@ interface FlowState {
   runs: FlowRun[]
   /** 当前查看的运行 */
   activeRunId: string | null
+  /** 手动运行面板中已输入、但尚未提交的流程入参。试运行节点也要用这份上下文。 */
+  manualInputs: Record<string, string>
   running: boolean
   /** 双击节点打开的详情视图（n8n NDV） */
   ndvNodeId: string | null
@@ -269,6 +271,7 @@ interface FlowState {
   setRunPanelOpen: (open: boolean) => void
   setRunPanelHeight: (height: number) => void
   setActiveRun: (id: string | null) => void
+  setManualInputs: (inputs: Record<string, string>) => void
   loadRegistry: () => Promise<void>
   /** 探一次当前流程有没有 webhook 地址。画布上那行警告靠它 */
   probeWebhook: () => Promise<void>
@@ -315,6 +318,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   pinData: {},
   runs: [],
   activeRunId: null,
+  manualInputs: {},
   running: false,
   ndvNodeId: null,
   runPanelOpen: false,
@@ -924,6 +928,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   setRunPanelOpen: (runPanelOpen) => set({ runPanelOpen }),
   setRunPanelHeight: (runPanelHeight) => set({ runPanelHeight: Math.min(560, Math.max(180, runPanelHeight)) }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
+  setManualInputs: (manualInputs) => set({ manualInputs }),
 
   startRun: async (trigger) => {
     if (get().running) return
@@ -1017,7 +1022,21 @@ export const useFlow = create<FlowState>((set, get) => ({
   testStep: async (id) => {
     const node = get().nodes.find((n) => n.id === id)
     if (!node || get().running) return
-    const baseRun = get().runs.find((r) => r.id === get().activeRunId) ?? get().runs[0] ?? null
+    const runs = get().runs
+    const baseRun = runs.find((r) => r.id === get().activeRunId) ?? runs[0] ?? null
+    // run_teststep 只装单节点结果，初次失败时 trigger 必然为空。它可以继续
+    // 提供上游输出，但 $.trigger.* 应回退到最近一次完整运行。
+    const triggerRun = Object.keys(baseRun?.trigger ?? {}).length
+      ? baseRun
+      : runs.find((r) => r.id !== 'run_teststep' && Object.keys(r.trigger).length) ?? null
+    const manualTrigger: Record<string, unknown> = {}
+    for (const field of get().flowInputs) {
+      if (!Object.prototype.hasOwnProperty.call(get().manualInputs, field.key)) continue
+      const raw = get().manualInputs[field.key]
+      manualTrigger[field.key] = field.type === 'integer' ? Number(raw || 0) : field.type === 'boolean' ? raw === 'true' : raw
+    }
+    // 当前表单中的值优先；没有重新填写的字段沿用最近一次完整手动运行。
+    const trigger = { ...(triggerRun?.trigger ?? {}), ...manualTrigger }
     const gen = get().runGen
     const abort = new AbortController()
     const { [id]: _dirty, ...restDirty } = get().dirtyNodes
@@ -1035,7 +1054,7 @@ export const useFlow = create<FlowState>((set, get) => ({
           status: step.status === 'running' ? 'running' : step.status === 'error' ? 'error' : 'success',
           startedAt: step.startedAt,
           ...(step.status !== 'running' ? { finishedAt: Date.now() } : {}),
-          trigger: {},
+          trigger,
           steps: { [id]: [step] },
         }
         const idx = runs.findIndex((r) => r.id === solo.id)
@@ -1059,7 +1078,8 @@ export const useFlow = create<FlowState>((set, get) => ({
         nodes: get().nodes,
         edges: get().edges,
         flowInputs: get().flowInputs,
-        trigger: baseRun?.trigger ?? {},
+        // 当前手动表单的已填项覆盖历史值；未动过的字段沿用历史运行。
+        trigger,
         pinData: get().pinData,
         baseRun,
         onStep: mergeStep,
@@ -1198,6 +1218,7 @@ export const useFlow = create<FlowState>((set, get) => ({
       ),
       runs: [],
       activeRunId: null,
+      manualInputs: {},
       ndvNodeId: null,
       runPanelOpen: false,
       dirtyNodes: {},
@@ -1227,6 +1248,7 @@ export const useFlow = create<FlowState>((set, get) => ({
       pinData: {},
       runs: [],
       activeRunId: null,
+      manualInputs: {},
       ndvNodeId: null,
       runPanelOpen: false,
       dirtyNodes: {},
