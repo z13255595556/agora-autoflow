@@ -43,6 +43,12 @@ schema_sql = workspace._workspace_schema_statement("af_u_test").as_string(None)
 ok("工作区 schema 由管理员创建", schema_sql, 'CREATE SCHEMA IF NOT EXISTS "af_u_test"')
 ok("工作区 schema 不要求用户角色成员关系", "AUTHORIZATION" not in schema_sql, True)
 ok("运行时不开启 public schema 权限管理", "REVOKE ALL ON SCHEMA public" not in open(workspace.__file__, encoding="utf-8").read(), True)
+upsert, upsert_values, upsert_head, _ = workspace._prepare_sql({
+    "sql": "INSERT INTO app_sign_key_cache (app_id, sign_key) VALUES (:app_id, :sign_key) ON CONFLICT (app_id) DO UPDATE SET sign_key = EXCLUDED.sign_key",
+    "params": {"app_id": "demo", "sign_key": "secret"},
+})
+ok("UPSERT 的 UPDATE SET 允许执行", upsert_head, "insert")
+ok("UPSERT 参数保持绑定", upsert_values, {"app_id": "demo", "sign_key": "secret"})
 raises("多语句拒绝", lambda: workspace._prepare_sql({"sql": "SELECT 1; SELECT 2"}), "一条")
 raises("事务控制拒绝", lambda: workspace._prepare_sql({"sql": "BEGIN"}), "只允许")
 raises("角色管理拒绝", lambda: workspace._prepare_sql({"sql": "CREATE ROLE bad"}), "不允许")

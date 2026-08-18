@@ -27,7 +27,7 @@ TABLE_DDL_RE = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_RE = re.compile(
-    r"\b(begin|commit|rollback|savepoint|release|set|reset|discard|vacuum|analyze|"
+    r"\b(begin|commit|rollback|savepoint|release|reset|discard|vacuum|analyze|"
     r"grant|revoke|create\s+(role|database|extension|function|procedure|trigger)|"
     r"alter\s+(role|database|system)|drop\s+(role|database|extension|function|procedure)|"
     r"copy\s+.*\b(program|to|from)\b|listen|notify|unlisten)\b",
