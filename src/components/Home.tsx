@@ -236,16 +236,31 @@ export default function Home({
                 <Icon name="close" />
               </button>
             </div>
-            <div className="modal__note">选择流程的启动方式，随后在画布中添加需要的处理节点。</div>
-            <div className="modal__cards">
-              {TEMPLATES.map((t) => (
-                <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
-                  <span className="tplcard__icon">{t.icon}</span>
-                  <span className="tplcard__name">{t.name}</span>
-                  <span className="tplcard__desc">{t.desc}</span>
-                </button>
-              ))}
-            </div>
+            <div className="modal__note">选择触发方式从零开始，或直接导入常用流程模板。</div>
+            <section className="modal__group" aria-labelledby="create-from-scratch">
+              <h2 className="modal__group-title" id="create-from-scratch">从零开始创建</h2>
+              <div className="modal__cards">
+                {TEMPLATES.filter((t) => t.key !== 'scheduled-sql').map((t) => (
+                  <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
+                    <span className="tplcard__icon">{t.icon}</span>
+                    <span className="tplcard__name">{t.name}</span>
+                    <span className="tplcard__desc">{t.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+            <section className="modal__group" aria-labelledby="import-from-template">
+              <h2 className="modal__group-title" id="import-from-template">从模板导入</h2>
+              <div className="modal__cards modal__cards--templates">
+                {TEMPLATES.filter((t) => t.key === 'scheduled-sql').map((t) => (
+                  <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
+                    <span className="tplcard__icon">{t.icon}</span>
+                    <span className="tplcard__name">{t.name}</span>
+                    <span className="tplcard__desc">{t.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
           </div>
         </div>
       )}
