@@ -42,6 +42,7 @@ ok("角色 DDL 不要求超级用户属性", "NOSUPERUSER" not in role_sql and "
 schema_sql = workspace._workspace_schema_statement("af_u_test").as_string(None)
 ok("工作区 schema 由管理员创建", schema_sql, 'CREATE SCHEMA IF NOT EXISTS "af_u_test"')
 ok("工作区 schema 不要求用户角色成员关系", "AUTHORIZATION" not in schema_sql, True)
+ok("运行时不开启 public schema 权限管理", "REVOKE ALL ON SCHEMA public" not in open(workspace.__file__, encoding="utf-8").read(), True)
 raises("多语句拒绝", lambda: workspace._prepare_sql({"sql": "SELECT 1; SELECT 2"}), "一条")
 raises("事务控制拒绝", lambda: workspace._prepare_sql({"sql": "BEGIN"}), "只允许")
 raises("角色管理拒绝", lambda: workspace._prepare_sql({"sql": "CREATE ROLE bad"}), "不允许")

@@ -185,7 +185,6 @@ def _ensure_user(email: str) -> Tuple[str, str, str, str]:
                 conn.execute(_role_password_statement("CREATE ROLE", role, password))
             conn.execute(_role_password_statement("ALTER ROLE", role, password))
             conn.execute(_workspace_schema_statement(schema))
-            conn.execute(sql.SQL("REVOKE ALL ON SCHEMA public FROM PUBLIC"))
             conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database)))
             conn.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(database), sql.Identifier(role)))
             conn.execute(sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(role)))
