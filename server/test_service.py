@@ -4,7 +4,6 @@
 
     cd server && .venv/bin/python test_service.py
 """
-import base64
 import json
 import sys
 import types
@@ -19,7 +18,7 @@ os.environ.update(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from sql_service import datalego, http_request, main, manifest, robot, wecom  # noqa: E402
+from sql_service import datalego, http_request, identity, main, manifest, robot, wecom  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -106,6 +105,30 @@ fake_requests = types.SimpleNamespace(
 datalego.requests = fake_requests
 robot.requests = fake_requests
 
+# Athena is the browser-identity authority.  The test deliberately sends an
+# opaque cookie: the AutoFlow process must forward it, never decode it.
+ATHENA_CALLS = []
+_ATHENA_EMAIL = "zhaojiwei@agora.io"
+
+
+def fake_athena_get(url, **kw):
+    ATHENA_CALLS.append((url, kw))
+    cookie = (kw.get("headers") or {}).get("Cookie", "")
+    if "rejected-session" in cookie:
+        return FakeResp({"error": "Login required"}, status=401)
+    if "malformed-session" in cookie:
+        return FakeResp({"user": {"email": _ATHENA_EMAIL}})
+    return FakeResp({"user": {
+        "id": _ATHENA_EMAIL,
+        "email": _ATHENA_EMAIL,
+        "displayName": "Zhao Jiwei",
+        "permissions": [],
+        "isAdmin": True,
+    }})
+
+
+identity.requests = types.SimpleNamespace(get=fake_athena_get, RequestException=Exception)
+
 # 企微也必须换成假的。去掉 dry_run 之后，执行端点是真的会往外发 HTTP 的 ——
 # 这个文件以前只假了 datalego，靠 dry_run 短路才没打出去。
 WECOM_POSTED = []
@@ -151,8 +174,12 @@ ok("health 没有缺凭证", r["missingCredentials"], [])
 
 nodes = client.get("/registry/nodes").json()["nodes"]
 by_type = {n["type"]: n for n in nodes}
-ok("注册表上报三个节点", sorted(by_type), ["http.request", "notify.wecom", "sql.query"])
+ok("注册表上报四个节点", sorted(by_type), ["http.request", "notify.wecom", "postgres.workspace", "sql.query"])
 ok("SQL 是异步节点", by_type["sql.query"]["runtime"]["kind"], "http-async")
+ok("DataLego SQL 保留旧 type", by_type["sql.query"]["name"], "DataLego SQL")
+ok("自建 PostgreSQL 是同步节点", by_type["postgres.workspace"]["runtime"]["kind"], "http")
+ok("自建 PostgreSQL 不接受连接参数",
+   sorted(by_type["postgres.workspace"]["input"]["properties"]), ["limit", "params", "sql"])
 ok("企微是同步节点", by_type["notify.wecom"]["runtime"]["kind"], "http")
 ok("HTTP 调用是同步真实节点", by_type["http.request"]["runtime"]["kind"], "http")
 truthy("输出结构标了动态探测", by_type["sql.query"]["output"].get("x-dynamic") == "probe")
@@ -176,6 +203,12 @@ ok("markdown_v2 隐藏 @成员字段",
    {"msgtype": ["markdown_v2"]})
 ok("不再有 dryRun 参数（调用即发送）",
    "dryRun" in by_type["notify.wecom"]["input"]["properties"], False)
+
+# 必须有可验证的 OA 身份；绝不能退化为共享工作区。
+workspace_anon = client.post("/nodes/postgres.workspace/execute", json={"params": {"sql": "SELECT 1"}})
+ok("自建 PostgreSQL 缺身份 → 403", workspace_anon.status_code, 403)
+ok("自建 PostgreSQL 缺身份有明确错误码",
+   workspace_anon.json()["detail"]["code"], "WORKSPACE_IDENTITY")
 
 # 企微节点的执行端点。requests 是假的，不会真打到企微
 r = client.post("/nodes/notify.wecom/execute", json={"params": {
@@ -309,27 +342,28 @@ ok("占位符已渲染且套了 LIMIT",
 ok("引擎透传", SUBMITTED[-1]["engine"], "hive")
 ok("没有登录态就不带 creator（= 用机器人账号的权限）", SUBMITTED[-1]["_query"], {})
 
-# ------------------------------------------------- creator 只认登录态，不认参数
+# ------------------------------------------------- creator 只认 Athena 验证结果，不认参数
 #
 # 这两条是权限隔离的全部依据，错一条就是越权：
-#   1. cookie 里解出来的邮箱要真的发出去；
+#   1. Athena 验证的邮箱要真的发出去；
 #   2. 请求体里带的 creator 一律无视 —— 那是编流程的人能随手改的字符串。
-_JWT_EMAIL = "zhaojiwei@agora.io"
-_payload = base64.urlsafe_b64encode(
-    json.dumps({"user": {"email": _JWT_EMAIL}}).encode()
-).decode().rstrip("=")
-_COOKIE = {"HCIAuthToken": f"h.{_payload}.s"}
+_COOKIE = {"HCIAuthToken": "opaque-session"}
 
 client.post("/nodes/sql.query/submit", json={"params": {
     "engine": "hive", "sql": "SELECT 1", "params": {},
 }}, cookies=_COOKIE)
-ok("cookie 里的邮箱作为 creator 发给平台", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+ok("Athena 验证的邮箱作为 creator 发给平台", SUBMITTED[-1]["_query"], {"creator": _ATHENA_EMAIL})
+ok("Cookie 仅透传给固定 Athena 地址", ATHENA_CALLS[-1][0], identity.ATHENA_ME_URL)
+ok("Cookie 透传不丢失", "HCIAuthToken=opaque-session" in ATHENA_CALLS[-1][1]["headers"]["Cookie"], True)
+ok("Athena 调用使用短超时且禁止跳转",
+   (ATHENA_CALLS[-1][1]["timeout"], ATHENA_CALLS[-1][1]["allow_redirects"]),
+   (identity.ATHENA_ME_TIMEOUT_SECONDS, False))
 
 client.post("/nodes/sql.query/submit", json={"params": {
     "engine": "hive", "sql": "SELECT 1", "params": {},
     "creator": "someone.else@agora.io",
 }}, cookies=_COOKIE)
-ok("参数里的 creator 被无视，以登录态为准", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+ok("参数里的 creator 被无视，以 Athena 为准", SUBMITTED[-1]["_query"], {"creator": _ATHENA_EMAIL})
 
 client.post("/nodes/sql.query/submit", json={"params": {
     "engine": "hive", "sql": "SELECT 1", "params": {},
@@ -365,16 +399,34 @@ try:
     }}, headers={**_PUBLISHER, "X-Run-Creator": "not-an-email"}, )
     ok("发布记录里不是邮箱就不带（老版本存的是用户名）", SUBMITTED[-1]["_query"], {})
 
-    # 人在场的时候以人为准：worker 的头只在没有登录态时才轮得到
+    # 人在场时 Athena 为准：worker 的头只在没有浏览器登录态时才轮得到
     client.post("/nodes/sql.query/submit", json={"params": {
         "engine": "hive", "sql": "SELECT 1", "params": {},
     }}, headers=_PUBLISHER, cookies=_COOKIE)
-    ok("有登录 cookie 时以登录者为准", SUBMITTED[-1]["_query"], {"creator": _JWT_EMAIL})
+    ok("有登录 cookie 时以 Athena 用户为准", SUBMITTED[-1]["_query"], {"creator": _ATHENA_EMAIL})
+
+    # 不透明 Cookie 可以长得像伪造 JWT，但 Athena 拒绝后不能信它，也不能
+    # 因为同时携带 Worker 头而绕过浏览器身份校验。
+    rejected = {"HCIAuthToken": "rejected-session.payload.claiming-admin"}
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, headers=_PUBLISHER, cookies=rejected)
+    ok("Athena 拒绝的 Cookie 不会成为 creator 或回退 Worker", SUBMITTED[-1]["_query"], {})
+
+    malformed = {"HCIAuthToken": "malformed-session"}
+    client.post("/nodes/sql.query/submit", json={"params": {
+        "engine": "hive", "sql": "SELECT 1", "params": {},
+    }}, cookies=malformed)
+    ok("Athena 异常响应不会成为 creator", SUBMITTED[-1]["_query"], {})
 finally:
     os.environ.pop("WORKER_TOKEN", None)
 
 _who = client.get("/whoami", cookies=_COOKIE).json()
-ok("whoami 报告用谁的权限", (_who["creator"], _who["source"]), (_JWT_EMAIL, "cookie"))
+ok("whoami 报告 Athena 用户", (_who["creator"], _who["source"]), (_ATHENA_EMAIL, "athena"))
+ok("whoami 返回经验证的用户资料", _who["user"], {
+    "id": _ATHENA_EMAIL, "email": _ATHENA_EMAIL, "displayName": "Zhao Jiwei",
+    "permissions": [], "isAdmin": True,
+})
 truthy("认不出身份时 whoami 说清后果", client.get("/whoami").json()["note"])
 ok("节点参数里不再有 creator 输入框",
    "creator" in manifest.SQL_QUERY["input"]["properties"], False)

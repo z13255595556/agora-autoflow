@@ -199,7 +199,7 @@ export interface RemoteFlow {
 /** 这次请求以谁的身份查数。/whoami 的返回 */
 export interface WhoAmI {
   creator: string | null
-  source: 'cookie' | 'worker' | 'DEV_COOKIE' | 'DATALEGO_USER' | 'none'
+  source: 'athena' | 'worker' | 'none'
   note: string | null
 }
 

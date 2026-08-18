@@ -129,10 +129,19 @@ OAUTH_PASSWORD=替换
 # 不配的话定时任务一律退回机器人账号的权限（fail closed），不会报错。
 # 生成：openssl rand -hex 32
 WORKER_TOKEN=替换
+
+# 自建 PostgreSQL 节点的独立工作区库。不要使用上面的 autoflow 控制库账号。
+# 先按本节下方的命令初始化数据库和管理员账号，再填入这个 DSN。
+WORKSPACE_ADMIN_DSN=postgresql://autoflow_workspace_admin:替换为工作区管理员密码@127.0.0.1:5432/autoflow_workspace
+# 生成：openssl rand -hex 32。长期保留，变更会轮换所有用户工作区账号密码。
+WORKSPACE_ROLE_SECRET=替换
+# 每个 OA 用户私有 schema 的软配额，默认 1 GiB。
+WORKSPACE_QUOTA_BYTES=1073741824
 ```
 
-用户身份不需要任何配置：本服务与 Athena 同域，浏览器自带的 `HCIAuthToken`
-会随请求送达 API，服务端从中解出邮箱（不验签，只读身份）。这个邮箱同时决定
+用户身份不需要任何配置：本服务与 Athena 同域，浏览器 Cookie 会随请求送达 API。
+API 服务只把原始 Cookie 转发到固定的 `https://athena.agoralab.co/api/me`，由 Athena
+验证登录态并返回用户信息；AutoFlow 不解析 `HCIAuthToken`。返回的邮箱同时决定
 **流程归属**和**查询用谁的数据权限**。
 
 本机开发环境中的 OAuth 配置位于 `server/.env`，生产环境中应通过安全渠道逐项录入，
@@ -142,6 +151,29 @@ WORKER_TOKEN=替换
 
 ```bash
 bash -c 'set -a; source "$HOME/ka/autoflow/deploy/app.env"; psql -c "SELECT current_user, current_database();"'
+```
+
+### 5.1 自建 PostgreSQL 工作区
+
+自建 PostgreSQL 节点不会使用保存流程和运行记录的 `autoflow` 数据库。首次部署时，由
+PostgreSQL 管理员创建独立的 `autoflow_workspace` 数据库和仅用于自动开通用户私有
+schema 的管理员账号：
+
+```bash
+cd /home/devops/ka/autoflow
+export WORKSPACE_ADMIN_PASSWORD="$(openssl rand -hex 32)"
+./deploy/init-workspace-db.sh
+```
+
+将上面生成的密码安全写入 `WORKSPACE_ADMIN_DSN`，再生成并写入
+`WORKSPACE_ROLE_SECRET`。执行节点时系统会按 OA 邮箱自动创建受限数据库角色和同名私有
+schema；用户无法获得数据库地址或密码，也不能访问其他人的 schema 或 `autoflow`
+控制库。
+
+`WORKSPACE_ADMIN_DSN` 和 `WORKSPACE_ROLE_SECRET` 配置完成后重启 API 与 Worker：
+
+```bash
+sudo systemctl restart autoflow-api autoflow-worker
 ```
 
 ## 6. systemd
@@ -269,11 +301,11 @@ curl -s http://127.0.0.1:8791/whoami
 `https://athena.agoralab.co/autoflow/whoami`，预期：
 
 ```json
-{ "creator": "你的邮箱@agora.io", "source": "cookie", "note": null }
+{ "creator": "你的邮箱@agora.io", "source": "athena", "note": null }
 ```
 
-`source` 只能是 `cookie`。若为 `DATALEGO_USER` 或 `DEV_COOKIE`，说明生产环境
-错误地配了本地调试项——所有人都会以同一个人的权限查数，且界面上看不出来。
+`source` 对浏览器用户必须是 `athena`。`none` 表示 Athena 未能验证登录态，此时
+查询会使用机器人账号权限，不能作为已登录用户操作流程。
 
 OA 跳转检查：
 
