@@ -159,6 +159,16 @@ def _record_mapping(email: str, role: str, schema: str, used: int, exceeded: boo
         conn.commit()
 
 
+def _role_password_statement(action: str, role: str, password: str) -> sql.Composed:
+    """Build role DDL with identifiers and password safely quoted for PostgreSQL."""
+    if action not in {"CREATE ROLE", "ALTER ROLE"}:
+        raise ValueError(f"unsupported role action: {action}")
+    return sql.SQL(
+        "{} {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOREPLICATION PASSWORD {}"
+    ).format(sql.SQL(action), sql.Identifier(role), sql.Literal(password))
+
+
 def _ensure_user(email: str) -> Tuple[str, str, str, str]:
     email, role, schema = _identity(email)
     admin_dsn, secret = _require_config()
@@ -168,12 +178,8 @@ def _ensure_user(email: str) -> Tuple[str, str, str, str]:
             database = conn.execute("SELECT current_database()").fetchone()[0]
             exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
             if not exists:
-                conn.execute(
-                    sql.SQL("CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %s")
-                    .format(sql.Identifier(role)),
-                    (password,),
-                )
-            conn.execute(sql.SQL("ALTER ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %s").format(sql.Identifier(role)), (password,))
+                conn.execute(_role_password_statement("CREATE ROLE", role, password))
+            conn.execute(_role_password_statement("ALTER ROLE", role, password))
             conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {} AUTHORIZATION {}").format(sql.Identifier(schema), sql.Identifier(role)))
             conn.execute(sql.SQL("REVOKE ALL ON SCHEMA public FROM PUBLIC"))
             conn.execute(sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database)))
