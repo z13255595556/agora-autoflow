@@ -183,6 +183,17 @@ interface FlowState {
   activeRunId: string | null
   /** 手动运行面板中已输入、但尚未提交的流程入参。试运行节点也要用这份上下文。 */
   manualInputs: Record<string, string>
+  /**
+   * 由 App 注册的「把草稿存到服务端」。
+   *
+   * 手动运行跑的是**服务端上那份草稿**，所以点运行之前必须先把画布落过去。
+   * 但保存成功后要更新的 dirty / saveError / hasUnpublishedChanges 全是 App
+   * 的 state，store 够不着 —— 所以是 App 把能力注册进来，而不是 store 去
+   * import library（那样会出现"存过了但工具栏还标着未保存"）。
+   *
+   * 为 null 时（首页、测试）整段跳过，退化成不先保存的旧行为。
+   */
+  saveDraft: (() => Promise<{ ok: boolean; synced: boolean }>) | null
   running: boolean
   /** 双击节点打开的详情视图（n8n NDV） */
   ndvNodeId: string | null
@@ -272,6 +283,7 @@ interface FlowState {
   setRunPanelHeight: (height: number) => void
   setActiveRun: (id: string | null) => void
   setManualInputs: (inputs: Record<string, string>) => void
+  setSaveDraft: (fn: FlowState['saveDraft']) => void
   loadRegistry: () => Promise<void>
   /** 探一次当前流程有没有 webhook 地址。画布上那行警告靠它 */
   probeWebhook: () => Promise<void>
@@ -319,6 +331,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   runs: [],
   activeRunId: null,
   manualInputs: {},
+  saveDraft: null,
   running: false,
   ndvNodeId: null,
   runPanelOpen: false,
@@ -929,6 +942,7 @@ export const useFlow = create<FlowState>((set, get) => ({
   setRunPanelHeight: (runPanelHeight) => set({ runPanelHeight: Math.min(560, Math.max(180, runPanelHeight)) }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
   setManualInputs: (manualInputs) => set({ manualInputs }),
+  setSaveDraft: (saveDraft) => set({ saveDraft }),
 
   startRun: async (trigger) => {
     if (get().running) return
@@ -953,6 +967,16 @@ export const useFlow = create<FlowState>((set, get) => ({
     // 和"节点服务探不到就退回 mock"是同一条约定
     if (api.hasRemoteStorage()) {
       try {
+        // ★ 手动运行 = 调试，服务端跑的是**它那份草稿**。先把画布落过去，
+        //   否则跑的是上一次保存的内容 —— 而"我改了、点运行、结果没变"
+        //   恰恰是这个功能存在的全部理由。
+        //   无条件调、不看 dirty：dirty 是 App 的局部状态，而且上一次保存
+        //   可能只落到了本地（dirty 已清但服务端还是旧的）。一次幂等的 PUT
+        //   比一个判断可靠
+        const saved = await get().saveDraft?.()
+        if (saved && !saved.synced) {
+          throw new Error('草稿没能同步到服务端，运行的会是旧版本 —— 先解决保存问题')
+        }
         await startRemoteRun({
           flowId: get().flowId,
           inputs: trigger,

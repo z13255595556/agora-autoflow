@@ -9,6 +9,7 @@ proxy_read_timeout（nginx 默认 60s），而且每个慢查询占死一个 wor
 import os
 from typing import Any, Dict, List, Optional
 
+import psycopg
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -231,6 +232,10 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(409, str(exc))
     except webhooks.WebhookError as exc:
         raise HTTPException(exc.status, str(exc))
+    except psycopg.errors.ForeignKeyViolation as exc:
+        # 目前唯一走到这里的是 redrive 指定了一个不存在的版本号。
+        # 400 而不是 500：这是调用方给错了参数，不是服务端坏了
+        raise HTTPException(400, f"引用了不存在的记录：{exc}")
 
 
 @app.get("/api/flows")
@@ -469,6 +474,10 @@ def create_run(
     # 先按归属验一道：不是我的流程，"跑一次"和"读一次"一样不该成立
     viewer = _actor(request, x_forwarded_user)
     _guard(flowstore.get_flow, flow_id, viewer)
+    if body.version is not None and body.version <= 0:
+        # 负数是调试快照的内部编号。让它可以被指定，等于把一个符号约定
+        # 外泄成 API 语义，之后就再也改不动了
+        raise HTTPException(400, "version 必须是已发布的版本号（正整数）")
     return _guard(
         runstore.create_run,
         flow_id,
@@ -477,6 +486,8 @@ def create_run(
         trigger_kind=body.triggerKind,
         version=body.version,
         idempotency_key=idempotency_key,
+        # 调试快照记在点运行的这个人名下 —— worker 就以他的名义去数据平台查数
+        actor=viewer,
     )
 
 

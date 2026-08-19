@@ -187,13 +187,18 @@ def publish(flow_id: str, actor: Optional[str]) -> Dict[str, Any]:
 
         nxt = _one(
             conn,
-            "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM flow_versions WHERE flow_id = %s",
+            # **AND version > 0 不能少**：调试快照占的是负数域，不参与发布编号。
+            # 少了它，一条只调试过没发布过的流程 MAX 是负数，算出的"下一版"
+            # 会是 0 或负数 —— 而 active_version 指向 0 之后所有触发都取不到
+            # 定义，且全程没有任何报错。
+            "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM flow_versions"
+            " WHERE flow_id = %s AND version > 0",
             (flow_id,),
         )["v"]
         definition = flowdef.for_storage(row["draft"], flow_id, nxt)
         conn.execute(
-            "INSERT INTO flow_versions (flow_id, version, definition, created_by)"
-            " VALUES (%s, %s, %s, %s)",
+            "INSERT INTO flow_versions (flow_id, version, definition, created_by, kind)"
+            " VALUES (%s, %s, %s, %s, 'published')",
             (flow_id, nxt, Jsonb(definition), actor),
         )
         # 草稿也跟着更新版本号，这样导出的草稿能看出它对应第几版。
@@ -209,13 +214,74 @@ def publish(flow_id: str, actor: Optional[str]) -> Dict[str, Any]:
     return get_flow(flow_id)
 
 
+# 一份调试快照可以被复用多久。**必须明显短于 worker 的 RUN_RETENTION_DAYS（14 天）**：
+# 复用一份正要被清理器删掉的快照会撞外键。这道差值就是那个安全边界。
+DRAFT_SNAPSHOT_REUSE_DAYS = 7
+
+
+def snapshot_draft(conn, flow_id: str, actor: Optional[str]) -> int:
+    """把当前草稿钉成一份调试快照，返回它的**负数**版本号。**这不是发布。**
+
+    手动运行 = 调试，跑的必须是画布上那份草稿；而 runs.flow_version 的外键
+    要求执行的定义在 flow_versions 里有一行 —— 「运行记录钉住当时那份定义」
+    这条不能为了方便就破例。负数号的理由见 011 迁移。
+
+    **不动 active_version、不动 flows.draft、不认领 owner、不写审计。**
+    发布是唯一影响线上的动作，这是这个函数存在的全部意义。
+    （不写审计的理由同 save_draft：调试几秒一次，会把 audit 变成击键日志。）
+
+    收 conn 而不是自己开连接：调用方必须已经在同一个事务里拿到 flows 行的
+    FOR UPDATE，并且在同一个事务里插入引用这份快照的 runs 行 —— 分开提交
+    会给清理器留一个"快照已在、没人引用"的窗口，它会把快照删掉。
+    """
+    row = _one(conn, "SELECT draft FROM flows WHERE id = %s", (flow_id,))
+    if not row:
+        raise NotFound(f"流程 {flow_id} 不存在")
+    # 先按 0 号归一一次只为了做比较；_differs 会剔掉 version 这个 key
+    candidate = flowdef.for_storage(row["draft"], flow_id, 0)
+
+    last = _one(
+        conn,
+        # **按 created_at 排，不要按 version 排** —— 负数域里 -1 > -2，
+        # ORDER BY version DESC 取到的是最老的那份，方向正好反了。
+        # FOR SHARE：钉住这一行，免得清理器在我们插 runs 之前把它删了
+        "SELECT version, definition FROM flow_versions"
+        " WHERE flow_id = %s AND version < 0 AND created_at > now() - %s::interval"
+        " ORDER BY created_at DESC LIMIT 1 FOR SHARE",
+        (flow_id, f"{DRAFT_SNAPSHOT_REUSE_DAYS} days"),
+    )
+    # 连点十次运行、画布一动没动，不该产生十份快照。
+    # 复用 _differs：只比逻辑不比布局，和 hasUnpublishedChanges 用同一把尺子
+    if last and not _differs(candidate, last["definition"]):
+        return last["version"]
+
+    nxt = _one(
+        conn,
+        "SELECT COALESCE(MIN(version), 0) - 1 AS v FROM flow_versions"
+        " WHERE flow_id = %s AND version < 0",
+        (flow_id,),
+    )["v"]
+    conn.execute(
+        "INSERT INTO flow_versions (flow_id, version, definition, created_by, kind)"
+        " VALUES (%s, %s, %s, %s, 'draft')",
+        (flow_id, nxt, Jsonb(flowdef.for_storage(row["draft"], flow_id, nxt)), actor),
+    )
+    return nxt
+
+
 def list_versions(flow_id: str, viewer: Optional[str] = ANY) -> List[Dict[str, Any]]:
+    """已发布的版本历史。**不含调试快照**（负数版本）。
+
+    调试快照是"这次手动运行跑的是哪份草稿"的凭证，不是发布记录 ——
+    混进来会让「这条流程发布过几次」这个问题答不上来。按号仍然取得到
+    （见 get_version），排查一次运行时要能看见它当时跑的到底是什么。
+    """
     with db.pool().connection() as conn:
         _assert_visible(conn, flow_id, viewer)
         rows = _rows(
             conn,
             "SELECT version, created_at, created_by FROM flow_versions"
-            " WHERE flow_id = %s ORDER BY version DESC",
+            " WHERE flow_id = %s AND version > 0 ORDER BY version DESC",
             (flow_id,),
         )
     return [

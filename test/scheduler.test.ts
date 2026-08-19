@@ -44,6 +44,7 @@ before(async () => {
 after(async () => {
   if (SKIP) return
   await pool.query('DELETE FROM runs WHERE flow_id = $1', [flowId])
+  await pool.query('DELETE FROM flow_versions WHERE flow_id = $1 AND version < 0', [flowId])
   await pool.query('DELETE FROM schedules WHERE flow_id = $1', [flowId])
   await pool.query('DELETE FROM flows WHERE id = $1', [flowId])
   await pool.end()
@@ -144,4 +145,54 @@ test('停用的排程不触发', { skip: SKIP }, async () => {
   await runSchedulerTick(new Date())
   assert.equal(await runCount(), before)
   await pool.query('UPDATE schedules SET enabled = true WHERE flow_id = $1', [flowId])
+})
+
+test('★★ 改了草稿不发布：定时跑的仍是已发布那一版', { skip: SKIP }, async () => {
+  // 这是整件事的验收核心。手动运行改成跑草稿之后，最容易出的事故是
+  // 「调试快照被定时器也捡走了」—— 那等于不点发布就上线了。
+  //
+  // 定时是唯一绕过 runstore.create_run 直接 INSERT runs 的路径
+  // （scheduler.ts 的 enqueue），所以必须单独钉住。
+  const broken = { ...DEF(flowId), name: '这一版不该被定时跑到', nodes: [] }
+  await pool.query(
+    `INSERT INTO flow_versions (flow_id, version, definition, kind)
+     VALUES ($1, -1, $2, 'draft') ON CONFLICT DO NOTHING`,
+    [flowId, JSON.stringify(broken)],
+  )
+  // 草稿也一起改坏 —— 调度器读的必须是 active_version 的定义，不是 draft
+  await pool.query('UPDATE flows SET draft = $2 WHERE id = $1', [flowId, JSON.stringify(broken)])
+
+  const due = new Date('2026-03-02T01:00:00Z')
+  await syncSchedule(flowId, '0 9 * * *', 'Asia/Shanghai', new Date('2026-03-01T00:00:00Z'))
+  await pool.query('UPDATE schedules SET next_fire_at = $2 WHERE flow_id = $1', [flowId, due])
+  await runSchedulerTick(new Date(due.getTime() + 1000))
+
+  const { rows } = await pool.query(
+    `SELECT flow_version FROM runs WHERE flow_id = $1 AND trigger_kind = 'schedule'
+      ORDER BY created_at DESC LIMIT 1`,
+    [flowId],
+  )
+  assert.equal(rows[0].flow_version, 1, '★★ 定时钉的是 active_version，绝不碰任何调试快照')
+})
+
+test('★★ syncAllSchedules 只读已发布那一版的 trigger', { skip: SKIP }, async () => {
+  // 「改了 cron 但没发布」不该改变实际调度时刻 —— 否则草稿一存，
+  // 线上的触发时间就跟着变了，而用户根本没点发布
+  await syncSchedule(flowId, '0 9 * * *', 'Asia/Shanghai', new Date('2026-03-01T00:00:00Z'))
+  const before = (await nextFire()).next_fire_at
+
+  const rescheduled = { ...DEF(flowId), trigger: { kind: 'schedule' as const, mode: 'daily', at: '23:30' } }
+  await pool.query(
+    `INSERT INTO flow_versions (flow_id, version, definition, kind)
+     VALUES ($1, -2, $2, 'draft') ON CONFLICT DO NOTHING`,
+    [flowId, JSON.stringify(rescheduled)],
+  )
+  await pool.query('UPDATE flows SET draft = $2 WHERE id = $1', [flowId, JSON.stringify(rescheduled)])
+
+  const sched = await import('../worker/scheduler.ts')
+  await sched.syncAllSchedules()
+
+  const { rows } = await pool.query('SELECT cron, next_fire_at FROM schedules WHERE flow_id = $1', [flowId])
+  assert.equal(rows[0].cron, '0 9 * * *', '★★ 草稿里的新 cron 没有发布，不许生效')
+  assert.equal(rows[0].next_fire_at.getTime(), before.getTime(), '触发时刻纹丝不动')
 })

@@ -10,7 +10,8 @@ import type { FlowDefinition } from '../src/types.ts'
 import type { FNode } from '../src/store.ts'
 import {
   appendEvent, claimRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
-  pool, publisherOf, reapExpired, writeStep, LEASE_SECONDS, type RunRow,
+  pool, publisherOf, purgeExpiredRuns, purgeOrphanDraftVersions, reapExpired, writeStep,
+  LEASE_SECONDS, RUN_RETENTION_DAYS, type RunRow,
 } from './store.ts'
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
@@ -31,6 +32,30 @@ import { backoffMs, DEFAULT_RETRY, failureKindOf, isRetryable } from '../src/lib
 const API = process.env.NODE_SERVICE ?? 'http://localhost:8791'
 const WORKER_ID = `w-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 1000)
+
+/**
+ * 运行日志清理的节流。删除是幂等的，但没必要每秒对着 runs 表发一条
+ * DELETE —— 保留期以天计，一小时扫一次绰绰有余。这里的时间戳只是
+ * 节流器（和心跳的 setInterval 同类），不是执行状态，不违反
+ * 「decide 不留跨步内存状态」的约定。
+ */
+const PURGE_INTERVAL_MS = 60 * 60 * 1000
+let lastPurgeAt = 0
+
+/** 到点就清一次超过保留期（默认 14 天）的运行日志。失败只记日志不断 tick */
+async function purgeTick(): Promise<void> {
+  if (Date.now() - lastPurgeAt < PURGE_INTERVAL_MS) return
+  lastPurgeAt = Date.now()
+  try {
+    const purged = await purgeExpiredRuns()
+    if (purged > 0) console.log(`已清理 ${purged} 条超过 ${RUN_RETENTION_DAYS} 天保留期的运行日志`)
+    // 顺序不能反：runs 对 flow_versions 有外键，先收运行记录才轮得到它们引用的快照
+    const versions = await purgeOrphanDraftVersions()
+    if (versions > 0) console.log(`已清理 ${versions} 份没有运行记录引用的调试快照`)
+  } catch (err) {
+    console.error('清理过期运行日志失败：', msg(err))
+  }
+}
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -398,6 +423,8 @@ async function wakeDeferred(): Promise<number> {
 
 export async function tick(onlyFlowId?: string): Promise<{ ran: boolean }> {
   await reapExpired()
+  // 过期日志清理走同一个循环，和调度器一样不单开进程；节流见 purgeTick
+  await purgeTick()
   // 调度器跑在同一个循环里，靠 advisory lock 保证多 worker 时只有一个在扫表
   await syncAllSchedules()
   await beat(WORKER_ID)

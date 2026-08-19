@@ -43,26 +43,20 @@ def create_run(
     trigger_kind: str = "manual",
     version: Optional[int] = None,
     idempotency_key: Optional[str] = None,
+    actor: Optional[str] = None,
 ) -> Dict[str, Any]:
     """入队一条运行。**不执行** —— worker 会来认领。
 
-    version 不传时取已发布的那一版。**手动调试可以跑草稿，定时和 webhook 不行**
-    —— 草稿改坏了不该影响线上，这是 flows.active_version 存在的全部理由。
+    **手动 = 调试，跑的就是画布上那份草稿**（钉成一份负数版本的快照，见
+    flowstore.snapshot_draft）；定时和 webhook 只跑已发布的那一版。
+    草稿改坏了不该影响线上，这是 flows.active_version 存在的全部理由 ——
+    而"点一次运行顺手把线上也换掉"曾经正是它的反面。
+
+    显式传 version 是重跑历史上那一版（redrive），此时两条规则都不适用。
     """
     with db.pool().connection() as conn:
-        flow = _one(conn, "SELECT active_version, draft, archived_at FROM flows WHERE id = %s", (flow_id,))
-        if not flow:
-            raise NotFound(f"流程 {flow_id} 不存在")
-
-        v = version if version is not None else flow["active_version"]
-        if v is None:
-            if trigger_kind != "manual":
-                raise NotPublished(f"流程 {flow_id} 尚未发布，{trigger_kind} 触发只跑已发布的版本")
-            # 手动跑草稿：临时发一版，否则 runs.flow_version 没有可指向的快照，
-            # 而"运行记录钉住当时那份定义"这条不能为了方便就破例
-            flowstore.publish(flow_id, None)
-            v = _one(conn, "SELECT active_version FROM flows WHERE id = %s", (flow_id,))["active_version"]
-
+        # 幂等**排在最前面**。它原先排在版本解析之后，于是命中去重时已经
+        # 白发了一版 —— 而去重的全部意义正是"没有产生任何副作用"
         if idempotency_key:
             existing = _one(
                 conn,
@@ -71,6 +65,31 @@ def create_run(
             )
             if existing:
                 return {"runId": existing["id"], "status": existing["status"], "deduplicated": True}
+
+        # FOR UPDATE：调试快照的编号（MIN(version)-1）和发布的编号
+        # （MAX(version)+1）共用这把锁，两个人同时点运行不会算出同一个号
+        flow = _one(
+            conn,
+            "SELECT active_version, archived_at FROM flows WHERE id = %s FOR UPDATE",
+            (flow_id,),
+        )
+        if not flow:
+            raise NotFound(f"流程 {flow_id} 不存在")
+        if flow["archived_at"] is not None:
+            # 归档的流程定时和 webhook 都已经不跑了，手动却还能跑 ——
+            # 三条触发路径必须对"这条还能不能跑"给同一个答案
+            raise flowstore.FlowArchived(f"流程 {flow_id} 已归档，不能运行")
+
+        if version is not None:
+            v = version
+        elif trigger_kind != "manual":
+            v = flow["active_version"]
+            if v is None:
+                raise NotPublished(f"流程 {flow_id} 尚未发布，{trigger_kind} 触发只跑已发布的版本")
+        else:
+            # ★ 手动运行 = 调试 = 跑草稿。快照和下面那条 runs 行必须在同一个
+            #   事务里提交，否则清理器会看见一份没人引用的快照并删掉它
+            v = flowstore.snapshot_draft(conn, flow_id, actor)
 
         run_id = new_run_id()
         conn.execute(

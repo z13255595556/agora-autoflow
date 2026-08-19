@@ -23,6 +23,8 @@ if (SKIP) {
 
 let pool: import('pg').Pool
 let tick: (onlyFlowId?: string) => Promise<{ ran: boolean }>
+let purgeExpiredRuns: (days?: number) => Promise<number>
+let purgeOrphanDraftVersions: (days?: number) => Promise<number>
 let flowId: string
 
 const DEF = (id: string) => ({
@@ -46,6 +48,8 @@ before(async () => {
   const store = await import('../worker/store.ts')
   tick = mod.tick
   pool = store.pool
+  purgeExpiredRuns = store.purgeExpiredRuns
+  purgeOrphanDraftVersions = store.purgeOrphanDraftVersions
 
   flowId = `wtest_${Math.random().toString(36).slice(2, 10)}`
   const def = DEF(flowId)
@@ -60,6 +64,7 @@ before(async () => {
 after(async () => {
   if (SKIP) return
   await pool.query('DELETE FROM runs WHERE flow_id = $1', [flowId])
+  await pool.query('DELETE FROM flow_versions WHERE flow_id = $1 AND version < 0', [flowId])
   await pool.query('DELETE FROM flows WHERE id = $1', [flowId])
   await pool.end()
 })
@@ -176,4 +181,116 @@ test('★ 事件流按 seq 递增，可增量拉取', { skip: SKIP }, async () =
   assert.ok(rows.length > 0)
   assert.deepEqual(rows.map((r) => r.seq), rows.map((_, i) => i + 1), 'seq 连续无洞')
   assert.equal(rows.at(-1).type, 'run.finished')
+})
+
+test('★ 运行日志过了保留期被清掉，未到期和在跑的都不碰', { skip: SKIP }, async () => {
+  const oldRun = await enqueue()
+  const freshRun = await enqueue()
+  await drain()   // 两条都跑到 success，steps 里躺着每个节点的输入输出
+
+  // 把其中一条"拨老"到保留期之外。stuck 那条永远停在 running ——
+  // 清理器不许越权收尸，那是 reaper 的职责
+  await pool.query("UPDATE runs SET finished_at = now() - interval '15 days' WHERE id = $1", [oldRun])
+  const stuckRun = await enqueue()
+  await pool.query(
+    "UPDATE runs SET status='running', created_at = now() - interval '30 days' WHERE id = $1",
+    [stuckRun],
+  )
+
+  await purgeExpiredRuns(14)
+
+  assert.equal(await runRow(oldRun), undefined, '过期的 run 被删掉')
+  const { rows: orphans } = await pool.query(
+    'SELECT 1 FROM steps WHERE run_id = $1 UNION ALL SELECT 1 FROM run_events WHERE run_id = $1', [oldRun],
+  )
+  assert.equal(orphans.length, 0, '★ steps 和 run_events 跟着级联删，不留半截现场')
+  assert.equal((await runRow(freshRun)).status, 'success', '未到期的原样保留')
+  assert.ok((await stepRows(freshRun)).length > 0, '未到期的节点输入输出还在')
+  assert.equal((await runRow(stuckRun)).status, 'running', '非终态的即使很老也不删')
+  await pool.query("UPDATE runs SET status='canceled', finished_at=now() WHERE id=$1", [stuckRun])
+})
+
+test('★ 调试快照（负数版本）照常执行，worker 一行不用改', { skip: SKIP }, async () => {
+  // 手动运行跑的是草稿，钉成一份负数版本。loadFlowVersion 精确按
+  // runs.flow_version 查表，正负号对它没有意义 —— 这条就是在钉这一点
+  await pool.query(
+    `INSERT INTO flow_versions (flow_id, version, definition, created_by, kind)
+     VALUES ($1, -1, $2, 'alice@agora.io', 'draft') ON CONFLICT DO NOTHING`,
+    [flowId, JSON.stringify({ ...DEF(flowId), version: -1 })],
+  )
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    "INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,-1,'{}')",
+    [runId, flowId],
+  )
+  await drain()
+
+  const r = await runRow(runId)
+  assert.equal(r.status, 'success', r.error ?? '')
+  assert.deepEqual((await stepRows(runId)).map((s) => s.node_id), ['t', 'd', 'm'])
+})
+
+test('★ 清理调试快照：没人引用的删掉，被引用的和正数版本一律不碰', { skip: SKIP }, async () => {
+  // -2 有一条已过期的 run 引用它；-3 是无人引用的老快照；-4 是刚建的孤儿
+  const defJson = JSON.stringify({ ...DEF(flowId), version: -2 })
+  for (const [v, ageDays] of [[-2, 30], [-3, 30], [-4, 0]] as const) {
+    await pool.query(
+      `INSERT INTO flow_versions (flow_id, version, definition, kind, created_at)
+       VALUES ($1, $2, $3, 'draft', now() - ($4 || ' days')::interval)`,
+      [flowId, v, defJson, ageDays],
+    )
+  }
+  const kept = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    `INSERT INTO runs (id, flow_id, flow_version, trigger_input, status, finished_at)
+     VALUES ($1,$2,-2,'{}','success', now())`,
+    [kept, flowId],
+  )
+
+  await purgeOrphanDraftVersions(14)
+
+  const { rows } = await pool.query(
+    'SELECT version FROM flow_versions WHERE flow_id = $1 ORDER BY version', [flowId],
+  )
+  const versions = rows.map((r) => r.version)
+  assert.ok(!versions.includes(-3), '过期且无人引用的调试快照被清掉')
+  assert.ok(versions.includes(-2), '★ 还有运行记录引用它的不许删 —— 否则运行记录再也解释不了自己')
+  assert.ok(versions.includes(-4), '年龄没到保留期的不删')
+  assert.ok(versions.includes(1), '★ 正数版本一条都不许碰 —— 那是线上历史，没有保留期')
+
+  await pool.query('DELETE FROM runs WHERE id = $1', [kept])
+})
+
+test('★ webhook 投递记录不再挡住运行日志清理', { skip: SKIP }, async () => {
+  // webhook_deliveries.run_id 原先是 NO ACTION：批量 DELETE FROM runs 撞外键
+  // 整次清理失败，而 worker 把异常吞掉只打一行日志 —— 用了 webhook 的部署
+  // 保留期从来没生效过
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    `INSERT INTO runs (id, flow_id, flow_version, trigger_input, status, finished_at)
+     VALUES ($1,$2,1,'{}','success', now() - interval '30 days')`,
+    [runId, flowId],
+  )
+  const hookId = `wh_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    `INSERT INTO webhooks (id, flow_id, token) VALUES ($1,$2,$3)`,
+    [hookId, flowId, `tok_${hookId}`],
+  )
+  await pool.query(
+    `INSERT INTO webhook_deliveries (webhook_id, run_id, status_code, body_bytes, body_digest)
+     VALUES ($1,$2,202,0,'d')`,
+    [hookId, runId],
+  )
+
+  await purgeExpiredRuns(14)
+
+  assert.equal(await runRow(runId), undefined, '★ 过期的 run 真的被删掉了')
+  const { rows } = await pool.query(
+    'SELECT run_id FROM webhook_deliveries WHERE webhook_id = $1', [hookId],
+  )
+  assert.equal(rows.length, 1, '投递记录本身留着 —— 「上游说发了但没跑」的争议靠它')
+  assert.equal(rows[0].run_id, null, 'run_id 置空而不是级联删掉整条投递记录')
+
+  await pool.query('DELETE FROM webhook_deliveries WHERE webhook_id = $1', [hookId])
+  await pool.query('DELETE FROM webhooks WHERE id = $1', [hookId])
 })

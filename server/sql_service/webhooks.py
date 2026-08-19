@@ -496,6 +496,10 @@ def handle(
         inputs=inputs,
         mode="production",
         trigger_kind="webhook",
+        # 显式传上面刚校验过的那一版，**别让 create_run 再读一次 active_version**：
+        # 两次读之间发生一次发布的话，map_inputs 和 wait_for_result 用的是旧定义，
+        # 实际跑的却是新版本。窗口很窄，但它是真的
+        version=flow["active_version"],
         idempotency_key=idem,
     )
 

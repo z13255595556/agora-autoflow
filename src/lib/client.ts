@@ -1,4 +1,4 @@
-import type { NodeType } from '../types'
+import type { FlowDefinition, NodeType } from '../types'
 import { setSchedulerAlive } from './scheduler.ts'
 import { APP_BASE_PREFIX } from './basePath.ts'
 
@@ -240,6 +240,19 @@ export function listRemoteVersions(id: string) {
   return req<{ versions: FlowVersionMeta[] }>(`/api/flows/${encodeURIComponent(id)}/versions`).then((r) => r.versions)
 }
 
+/**
+ * 取某一版的定义。**查运行记录时用它把 nodeId 翻成节点名。**
+ *
+ * 必须按运行钉住的那一版取，不能拿当前草稿凑合：流程改过之后草稿里可能
+ * 已经没有这个节点了，或者同一个 id 换成了另一种节点 —— 那时界面上会给出
+ * 一个看着合理、实际错误的名字，而这正是查历史最不能出错的地方。
+ */
+export function getRemoteVersion(id: string, version: number) {
+  return req<{ version: number; definition: FlowDefinition; createdAt: string; createdBy: string | null }>(
+    `/api/flows/${encodeURIComponent(id)}/versions/${version}`,
+  )
+}
+
 export function archiveRemoteFlow(id: string) {
   return req<{ archived: boolean }>(`/api/flows/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
@@ -377,6 +390,21 @@ export function createRun(flowId: string, inputs: Record<string, unknown>) {
 
 export function getRun(runId: string) {
   return req<RemoteRun>(`/api/runs/${encodeURIComponent(runId)}`)
+}
+
+/**
+ * 某条流程的运行记录。**服务端那份才是历史。**
+ *
+ * 运行面板里那个「历史」只有本次会话跑过的、上限 20 条、刷新即失 ——
+ * 而库里那份带着每个节点的输入输出、保留 14 天。要查「昨天定时任务
+ * 为什么失败」，只有这个接口答得上来。
+ *
+ * 返回的行**不带 steps**（列表不搬结果集，那可能很大）；要看分步去调 getRun。
+ */
+export function listRuns(flowId: string, limit = 50) {
+  return req<{ runs: RemoteRun[] }>(
+    `/api/runs?flowId=${encodeURIComponent(flowId)}&limit=${limit}`,
+  ).then((r) => r.runs)
 }
 
 /** 中止。**不是停止轮询** —— 平台上的任务要真的撤掉，不撤会继续跑完白烧资源 */

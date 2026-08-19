@@ -243,4 +243,58 @@ export async function finishRun(runId: string, status: 'success' | 'error' | 'ca
   await appendEvent(runId, 'run.finished', { status, ...(error ? { error } : {}) })
 }
 
+/**
+ * 运行日志保留几天。**默认 14 天** —— steps 里装的是每个节点的输入输出
+ * （查询结果本身），既是排查依据也是敏感数据：留短了"上周那次为什么发错"
+ * 查不了，留长了等于永久囤着别人的查询结果，还让控制库单调膨胀。
+ */
+export const RUN_RETENTION_DAYS = Math.max(1, Number(process.env.RUN_RETENTION_DAYS ?? 14) || 14)
+
+/**
+ * 清掉超过保留期的运行日志。返回删了几条 run。
+ *
+ * 只删**终态**的 run（success/error/canceled），按 finished_at 计龄 ——
+ * 排队里或在跑的即使很老也不碰：那是 reaper 的职责，清理器越权收尸
+ * 会把"卡住待查"的现场直接销毁。steps 和 run_events 挂着 ON DELETE
+ * CASCADE，删 runs 一条就全干净，不需要也不允许分表各删（分开删会出现
+ * "run 还在、步骤没了"的半截现场）。
+ *
+ * 幂等且并发安全：多个 worker 同时跑最多互相白扫一遍，不需要锁。
+ */
+export async function purgeExpiredRuns(days: number = RUN_RETENTION_DAYS): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM runs
+     WHERE status IN ('success','error','canceled')
+       AND finished_at < now() - ($1 || ' days')::interval`,
+    [days],
+  )
+  return rowCount ?? 0
+}
+
+/**
+ * 清掉没有任何运行记录引用的调试快照（负数版本）。返回删了几行。
+ *
+ * **必须在 purgeExpiredRuns 之后跑** —— runs 对 flow_versions 有外键，
+ * 先把过期的运行记录收掉，才轮得到它们引用的快照。
+ *
+ * 只删负数的。**正数版本一行都不删** —— 那是线上跑过什么的历史，
+ * 和运行日志不是一类东西，没有保留期。这条不对称是有意的。
+ *
+ * 年龄阈值和运行日志保留期一致，而服务端复用快照的窗口
+ * （flowstore.DRAFT_SNAPSHOT_REUSE_DAYS）明显更短：这道差值是留给
+ * "服务端正准备复用某份快照"的安全边界。
+ */
+export async function purgeOrphanDraftVersions(days: number = RUN_RETENTION_DAYS): Promise<number> {
+  const { rowCount } = await pool.query(
+    `DELETE FROM flow_versions fv
+      WHERE fv.version < 0
+        AND fv.created_at < now() - ($1 || ' days')::interval
+        AND NOT EXISTS (
+          SELECT 1 FROM runs r
+           WHERE r.flow_id = fv.flow_id AND r.flow_version = fv.version)`,
+    [days],
+  )
+  return rowCount ?? 0
+}
+
 export const keyOf = stepKeyOf

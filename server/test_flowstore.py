@@ -213,6 +213,87 @@ raises("别人取不到事件流", runstore.NotFound, lambda: runstore.events_si
 raises("别人取消不了", runstore.NotFound, lambda: runstore.request_cancel(rid, "bob@agora.io"))
 ok("自己读得到", runstore.get_run(rid, "alice@agora.io")["id"], rid)
 
+# ---------------------------------------------------------------- 手动运行 = 调试 = 跑草稿
+#
+# 在此之前手动运行跑的是**已发布版本**：改完图点运行结果没变；而流程从未发布时
+# 第一次手动运行还会隐式发一版 —— 用户没点发布，线上就已经换了。
+
+
+def draft_count(flow_id):
+    with db.pool().connection() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM flow_versions WHERE flow_id = %s AND version < 0", (flow_id,)
+        ).fetchone()[0]
+
+
+d = new_id()
+flowstore.create_flow(d, definition("调试", "SELECT 1"), "alice@agora.io")
+
+r1 = runstore.create_run(d, inputs={}, actor="alice@agora.io")
+ok("★ 手动运行不再隐式发布", flowstore.get_flow(d)["activeVersion"], None)
+ok("★ 跑的是负数版本的调试快照", r1["flowVersion"], -1)
+ok("★ 快照记在点运行的人名下", flowstore.get_version(d, -1)["createdBy"], "alice@agora.io")
+ok("快照钉的是草稿内容",
+   flowstore.get_version(d, -1)["definition"]["nodes"][1]["params"]["sql"], "SELECT 1")
+
+r2 = runstore.create_run(d, inputs={}, actor="alice@agora.io")
+ok("★ 画布没动就复用同一份快照", r2["flowVersion"], -1)
+ok("连点两次只有一份快照", draft_count(d), 1)
+
+moved = definition("调试", "SELECT 1")
+moved["layout"]["n2"] = {"x": 999, "y": 999}
+flowstore.save_draft(d, moved, "alice@agora.io")
+ok("只挪了位置仍复用旧快照",
+   runstore.create_run(d, inputs={}, actor="alice@agora.io")["flowVersion"], -1)
+
+flowstore.save_draft(d, definition("调试", "SELECT 2"), "alice@agora.io")
+r3 = runstore.create_run(d, inputs={}, actor="alice@agora.io")
+ok("★ 改了草稿就是一份新快照", r3["flowVersion"], -2)
+ok("跑的是改后的草稿",
+   flowstore.get_version(d, -2)["definition"]["nodes"][1]["params"]["sql"], "SELECT 2")
+
+# ★★ 这条钉的是 publish 里那个 AND version > 0。没有它，MAX 是负数，
+#    算出来的"下一版"会是 0 或负数，而 active_version 指向 0 之后
+#    所有触发都取不到定义，全程没有任何报错
+ok("★★ 调试跑过之后，第一次发布仍然是 v1", flowstore.publish(d, "alice@agora.io")["activeVersion"], 1)
+
+flowstore.save_draft(d, definition("调试", "SELECT 3"), "alice@agora.io")
+runstore.create_run(d, inputs={}, actor="alice@agora.io")
+ok("★★ 调试运行不动 active_version", flowstore.get_flow(d)["activeVersion"], 1)
+ok("★★ 再发布接着在正数域递增", flowstore.publish(d, "alice@agora.io")["activeVersion"], 2)
+
+ok("版本历史里没有调试快照", [v["version"] for v in flowstore.list_versions(d)], [2, 1])
+ok("但按号取得到（排查一次运行时要看得见它跑的是什么）",
+   flowstore.get_version(d, -1)["version"], -1)
+
+# ---------------------------------------------------------------- 线上只认已发布的那一版
+flowstore.save_draft(d, definition("调试", "SELECT 999"), "alice@agora.io")
+before = draft_count(d)
+ok("★★ 定时跑的是 active_version，不是刚存的草稿",
+   runstore.create_run(d, inputs={}, mode="production", trigger_kind="schedule")["flowVersion"], 2)
+ok("★★ webhook 同理",
+   runstore.create_run(d, inputs={}, mode="production", trigger_kind="webhook")["flowVersion"], 2)
+ok("★★ 非手动触发不产生调试快照", draft_count(d), before)
+
+nev = new_id()
+flowstore.create_flow(nev, definition("没发布过"), "alice@agora.io")
+raises("★ 未发布的流程定时触发仍然拒绝", runstore.NotPublished,
+       lambda: runstore.create_run(nev, inputs={}, mode="production", trigger_kind="schedule"))
+ok("被拒之后也不留快照", draft_count(nev), 0)
+
+# ---------------------------------------------------------------- 归档 / 幂等
+flowstore.archive(d, "alice@agora.io")
+raises("★ 归档的流程手动也不能跑", flowstore.FlowArchived,
+       lambda: runstore.create_run(d, inputs={}, actor="alice@agora.io"))
+
+k = new_id()
+flowstore.create_flow(k, definition("幂等"), "alice@agora.io")
+runstore.create_run(k, inputs={}, actor="alice@agora.io", idempotency_key="same")
+again = runstore.create_run(k, inputs={}, actor="alice@agora.io", idempotency_key="same")
+ok("同一个幂等键只产生一条 run", again.get("deduplicated"), True)
+# 幂等原先排在版本解析之后，命中去重时已经白发了一版 —— 去重的意义正是没有副作用
+ok("★ 命中去重时不产生第二份快照", draft_count(k), 1)
+
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:
@@ -222,6 +303,7 @@ with db.pool().connection() as conn:
         conn.execute("DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (made,))
         conn.execute("DELETE FROM steps WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (made,))
         conn.execute("DELETE FROM runs WHERE flow_id = %s", (made,))
+        conn.execute("DELETE FROM flow_versions WHERE flow_id = %s", (made,))
         conn.execute("DELETE FROM flows WHERE id = %s", (made,))
     conn.commit()
 

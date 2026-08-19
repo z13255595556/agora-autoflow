@@ -197,6 +197,19 @@ test('★ 服务端写失败但本地成功：不算丢数据，但必须报出�
   assert.equal(r.ok, true)              // 数据没丢
   assert.match(r.error ?? '', /数据库不可用/)   // 但用户以为存到服务器了
   assert.equal(lib.listLocalFlows().length, 1)
+  // ★★ 而 ok 为真**不代表服务端拿到了**。发布和手动运行读的都是服务端上那份
+  // 草稿，只看 ok 会让它们静默地发出去 / 跑起来一份旧定义
+  assert.equal(lib.didSyncToServer(r), false, '★★ 服务端没收到就是没同步，哪怕数据没丢')
+})
+
+test('★ 同步判定：只有服务端真的写成功了才算', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { body: { id: 'f1' } }
+  assert.equal(lib.didSyncToServer(await lib.saveFlow(DEF as never)), true)
+
+  // 本地模式压根没有"服务端那份"，不能冒充同步过了
+  await mode(false)
+  assert.equal(lib.didSyncToServer(await lib.saveFlow(DEF as never)), false, '本地模式不算同步')
 })
 
 test('服务端上还没有这条时自动补建', async () => {

@@ -6,9 +6,9 @@ import {
 import { whoami } from '../lib/client'
 import { TEMPLATES, type Template } from '../lib/templates'
 import { formatDate } from '../lib/datefn'
-import { NODE_TYPE_MAP, CATEGORY_COLOR } from '../registry'
 import type { FlowDefinition } from '../types'
 import Icon from './Icon'
+import RunHistory from './RunHistory'
 import { normalizeFlowDefinition } from '../lib/flowImport'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
 
@@ -40,6 +40,8 @@ export default function Home({
   const [tick, setTick] = useState(0)
   const [q, setQ] = useState('')
   const [creating, setCreating] = useState(false)
+  /** 正在看谁的运行记录。null = 没打开 */
+  const [history, setHistory] = useState<SavedFlow | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [list, setList] = useState<FlowList>({ flows: [], mode: 'local', localOnly: [] })
@@ -220,6 +222,7 @@ export default function Home({
                   onDuplicate={() => duplicate(f)}
                   onExport={() => exportJson(f)}
                   onDelete={() => remove(f)}
+                  onHistory={() => setHistory(f)}
                 />
               ))}
             </div>
@@ -264,6 +267,8 @@ export default function Home({
           </div>
         </div>
       )}
+
+      {history && <RunHistory flow={history} onClose={() => setHistory(null)} />}
     </div>
   )
 }
@@ -274,12 +279,14 @@ function FlowCard({
   onDuplicate,
   onExport,
   onDelete,
+  onHistory,
 }: {
   flow: SavedFlow
   onOpen: () => void
   onDuplicate: () => void
   onExport: () => void
   onDelete: () => void
+  onHistory: () => void
 }) {
   const [menu, setMenu] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -299,19 +306,11 @@ function FlowCard({
   // webhook 流程以前也显示成「手动触发」—— 明明外部系统随时能打进来，
   // 列表页却说它只能手点。这一栏的用途正是一眼扫出哪些流程会自己动
   const hooked = kind === 'webhook'
-  // 卡片上标出用到了哪些节点 —— 一眼能认出"这条是发企微的"，比只写节点数有用
-  const kinds = useMemo(() => {
-    const seen = new Map<string, { icon: string; name: string; color: string }>()
-    for (const n of flow.def.nodes ?? []) {
-      const t = NODE_TYPE_MAP.get(n.type)
-      if (!t || t.category === '触发器' || seen.has(t.type)) continue
-      seen.set(t.type, { icon: t.icon, name: t.name, color: CATEGORY_COLOR[t.category] ?? '#64748b' })
-    }
-    return [...seen.values()].slice(0, 4)
-  }, [flow])
-
   return (
-    <div className="fcard">
+    // 菜单展开时把整张卡抬起来。.fcard:hover 的 transform 会造一个层叠上下文，
+    // 把菜单的 z-index 关在卡片内部 —— 于是下一行的卡片会盖住菜单下半截。
+    // 只提菜单自己的 z-index 没用，被困住的正是它
+    <div className={`fcard${menu ? ' fcard--menu' : ''}`}>
       <button className="fcard__hit" onClick={onOpen} title={`打开「${flow.name}」`}>
         <span className={`fcard__icon${scheduled ? ' fcard__icon--sched' : ''}`}>{scheduled ? '⏰' : hooked ? '🔗' : '▶'}</span>
         <span className="fcard__name">{flow.name}</span>
@@ -325,22 +324,8 @@ function FlowCard({
             ? (isSchedulerAlive() ? '定时触发' : '定时触发 · 未生效')
             : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
-        <span className="fcard__kinds">
-          {/* 归属功能上线之前建的流程还没有主，所有人都看得见。要说清楚怎么认领，
-              否则用户只会疑惑"这条为什么别人那儿也有" */}
-          {flow.origin === 'server' && flow.owner === null && (
-            <span className="fcard__kind fcard__kind--orphan" title="这条流程建于归属功能上线之前，还没有主。发布一次就归你，之后只有你看得到">
-              还没有归属
-            </span>
-          )}
-          {kinds.map((k) => (
-            <span className="fcard__kind" key={k.name} style={{ '--accent': k.color } as React.CSSProperties}>
-              {k.icon} {k.name}
-            </span>
-          ))}
-          {kinds.length === 0 && <span className="fcard__kind fcard__kind--none">只有触发器</span>}
-        </span>
         <span className="fcard__foot">
+          {flow.origin === 'server' && flow.owner === null && '还没有归属 · '}
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>
       </button>
@@ -351,6 +336,12 @@ function FlowCard({
         </button>
         {menu && (
           <div className="menu__pop menu__pop--right">
+            {/* 运行记录排第一：查「昨天为什么失败」比复制一份流程常用得多，
+                而在此之前它根本没有入口 —— 只能连库或者手搓 curl */}
+            <button className="menu__item" onClick={() => { setMenu(false); onHistory() }}>
+              运行记录
+            </button>
+            <i className="menu__sep" />
             <button className="menu__item" onClick={() => { setMenu(false); onDuplicate() }}>
               创建副本
             </button>

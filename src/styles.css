@@ -429,10 +429,12 @@ button { cursor: pointer; padding: 0; }
   transition: border-color .14s, box-shadow .14s, transform .14s;
 }
 .fcard:hover { border-color: var(--border-strong); box-shadow: var(--sh-md); transform: translateY(-2px); }
+/* 菜单展开时整张卡抬到同行/后续行卡片之上 —— 理由见 Home.tsx 的 fcard--menu */
+.fcard--menu { z-index: 60; }
 .fcard__hit {
   display: grid; width: 100%;
   grid-template-columns: 34px 1fr auto;
-  grid-template-areas: 'icon name tag' 'kinds kinds kinds' 'foot foot foot';
+  grid-template-areas: 'icon name tag' 'foot foot foot';
   gap: 4px 10px; align-items: center;
   background: none; border: none; border-radius: var(--r-lg);
   padding: 14px 15px 13px; text-align: left; cursor: pointer;
@@ -481,16 +483,6 @@ button { cursor: pointer; padding: 0; }
   border-style: dashed;
   border-color: color-mix(in srgb, var(--text-dim) 45%, var(--border));
 }
-.fcard__kinds { grid-area: kinds; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; min-height: 20px; }
-.fcard__kind {
-  display: inline-flex; align-items: center; gap: 3px;
-  padding: 1px 7px; border-radius: 20px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: color-mix(in srgb, var(--accent) 82%, var(--text));
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  font-size: 10.5px; white-space: nowrap;
-}
-.fcard__kind--none { background: none; border-color: var(--border); color: var(--text-faint); }
 .fcard__foot {
   grid-area: foot; margin-top: 10px; padding-top: 9px;
   border-top: 1px solid var(--border);
@@ -2073,4 +2065,77 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   .dock--wide ~ .dock--vars.is-shifted { right: 444px; }
   .ndv__col--input { flex: 0 0 240px; }
   .ndv__col--output { flex: 0 0 320px; }
+}
+
+/* ================================================================ 运行记录
+   首页流程卡「⋯ → 运行记录」。服务端那份历史（保留 14 天，含每个节点的
+   输入输出）唯一的入口 —— 在它之前只能连库或者手搓 curl。 */
+.modal--wide { width: min(1080px, 100%); }
+.rhist {
+  display: grid; grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: 14px; height: min(62vh, 560px);
+}
+.rhist__list {
+  overflow-y: auto; padding-right: 4px;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.rhist__run {
+  display: grid; grid-template-columns: 16px 1fr; gap: 2px 8px;
+  background: none; border: none; border-radius: var(--r-sm);
+  padding: 7px 9px; text-align: left; color: var(--text); width: 100%;
+}
+.rhist__run:hover { background: var(--surface-2); }
+.rhist__run.on { background: var(--surface-3); }
+.rhist__icon { grid-row: span 3; font-style: normal; text-align: center; }
+.rhist__run--success .rhist__icon { color: var(--ok); }
+.rhist__run--error .rhist__icon { color: var(--danger); }
+.rhist__run--running .rhist__icon { color: var(--primary); animation: pulse 1s ease-in-out infinite; }
+.rhist__run--skipped { color: var(--text-faint); }
+.rhist__when { font-size: 12px; font-weight: 500; }
+.rhist__meta { font-size: 10.5px; color: var(--text-faint); }
+.rhist__id { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+
+.rhist__detail { overflow-y: auto; padding-right: 4px; }
+.rhist__sum {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  font-size: 12px; color: var(--text-dim); margin-bottom: 10px;
+}
+.rhist__badge {
+  padding: 1px 8px; border-radius: 20px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border);
+}
+.rhist__badge--success { color: var(--ok); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.rhist__badge--error { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.rhist__badge--running { color: var(--primary); }
+
+.rhist__steps { display: flex; flex-direction: column; gap: 2px; }
+.rhist__step { border-radius: var(--r-sm); }
+.rhist__step .steprow { cursor: pointer; }
+.rhist__flag {
+  font-size: 10px; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 5px;
+  white-space: nowrap;
+}
+.rhist__caret { font-style: normal; color: var(--text-faint); flex: none; margin-left: 6px; }
+/* 运行面板里错误被压成一行（宽度有限）；查历史时要看全 */
+.rhist__steperr {
+  max-width: none; white-space: normal; overflow: visible;
+  padding: 0 9px 6px 32px; line-height: 1.6;
+}
+.rhist__io-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 4px 9px 10px 32px; }
+.rhist__io-title { font-size: 10.5px; color: var(--text-faint); margin-bottom: 4px; }
+.rhist__json {
+  margin: 0; max-height: 260px; overflow: auto;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 8px 10px; font-size: 11px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.rhist__cut { font-size: 10px; color: var(--warn); margin-top: 4px; }
+.rhist__io > summary { font-size: 11.5px; color: var(--text-dim); cursor: pointer; margin-bottom: 6px; }
+
+@media (max-width: 860px) {
+  .rhist { grid-template-columns: 1fr; height: auto; }
+  .rhist__list { border-right: none; border-bottom: 1px solid var(--border); max-height: 200px; }
+  .rhist__io-pair { grid-template-columns: 1fr; padding-left: 9px; }
 }

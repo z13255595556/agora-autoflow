@@ -165,7 +165,8 @@ export default function RunPanel() {
             title={
               missingRequired.length
                 ? `先填必填项：${missingRequired.map((f) => f.title || f.key).join('、')}`
-                : workflowProblems[0] ?? ''
+                : workflowProblems[0]
+                  ?? '运行画布上的当前草稿（调试）。不影响线上 —— 定时和 Webhook 跑的是已发布的那一版'
             }
             onClick={doRun}
           >

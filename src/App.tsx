@@ -7,7 +7,7 @@ import JsonDrawer from './components/JsonDrawer'
 import RunPanel from './components/RunPanel'
 import NodeDetailView from './components/NodeDetailView'
 import Home from './components/Home'
-import { createFlow, getFlow, publishFlow, saveFlow, saveFlowSync } from './lib/library'
+import { createFlow, didSyncToServer, getFlow, publishFlow, saveFlow, saveFlowSync } from './lib/library'
 import type { Template } from './lib/templates'
 import type { FlowDefinition } from './types'
 import { useFlow } from './store'
@@ -86,7 +86,16 @@ export default function App() {
   }, [])
   useDirtyWatch(route.kind === 'editor' && editorReady, markDirty)
 
-  const save = useCallback(async () => {
+  /**
+   * 存草稿。返回两位结果，两类调用方各取所需：
+   *
+   * - `ok` = 数据没丢（本地写成功就算）。自动保存和 goHome 看它 ——
+   *   服务端挂了不该把人锁在编辑器里。
+   * - `synced` = **服务端真的拿到了**。发布和调试运行必须看它：那两件事
+   *   读的都是服务端上那份草稿，服务端还是旧的时候，发出去的 / 跑起来的
+   *   都不是眼前这一份，而这件事本身没有任何迹象。
+   */
+  const save = useCallback(async (): Promise<{ ok: boolean; synced: boolean }> => {
     const result = await saveFlow(useFlow.getState().toDefinition())
     if (result.ok) {
       setDirty(false)
@@ -98,8 +107,16 @@ export default function App() {
     } else {
       setSaveError(result.error ?? '保存失败')
     }
-    return result.ok
+    return { ok: result.ok, synced: didSyncToServer(result) }
   }, [])
+
+  // 手动运行跑的是服务端上那份草稿，所以 startRun 要先存一次。
+  // 只在编辑器里注册、离开时撤掉 —— 否则在首页点运行会拿一个过期的 flowId 去存。
+  useEffect(() => {
+    if (route.kind !== 'editor' || !editorReady) return
+    useFlow.getState().setSaveDraft(save)
+    return () => useFlow.getState().setSaveDraft(null)
+  }, [route.kind, editorReady, save])
 
   // 每次真实流程改动后重新计时；连续输入只在停下 900ms 后写一次。
   useEffect(() => {
@@ -154,7 +171,9 @@ export default function App() {
    * 而用户以为发的是眼前看到的内容。这是最容易被漏掉的一步。
    */
   const doPublish = useCallback(async (): Promise<string | null> => {
-    if (dirty && !(await save())) return '草稿没保存成功，先解决保存问题再发布'
+    // 看 synced 而不是 ok：本地存住了但服务端没收到时，发出去的会是服务端上
+    // 那份**旧草稿** —— 而用户以为发的是眼前看到的内容，正是这一行要防的事
+    if (dirty && !(await save()).synced) return '草稿没保存成功，先解决保存问题再发布'
     const flowId = useFlow.getState().flowId
     const result = await publishFlow(flowId)
     if (!result.ok) return result.error ?? '发布失败'
@@ -178,7 +197,8 @@ export default function App() {
 
   const goHome = async () => {
     // 防抖还没到点时先保存；只有真的写失败才留在编辑器。
-    if (dirty && !(await save())) return
+    // 这里看 ok 不看 synced：服务端挂了不该把人锁在编辑器里
+    if (dirty && !(await save()).ok) return
     if (useFlow.getState().running) useFlow.getState().stopRun()
     window.location.assign(appHref())
   }
