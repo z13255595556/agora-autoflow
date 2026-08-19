@@ -133,6 +133,18 @@ def delegated_creator(request: Optional[Request]) -> Optional[str]:
     return email if EMAIL_RE.fullmatch(email) else None
 
 
+def is_admin(request: Optional[Request]) -> bool:
+    """Is this an AutoFlow administrator?
+
+    The flag comes from Athena's verified ``/api/me`` response, never from a
+    request header: a header would let anyone grant themselves every flow in
+    the system.  Worker delegation is deliberately excluded — a background run
+    has no browser session and must never widen its own visibility.
+    """
+    user = current_user_for(request)
+    return bool(user and user.is_admin)
+
+
 def user_for(request: Optional[Request], forwarded_user: Optional[str] = None) -> Optional[str]:
     """Return the verified user identity used for ownership and audit.
 

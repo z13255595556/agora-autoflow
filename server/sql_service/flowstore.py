@@ -24,6 +24,21 @@ VISIBLE = "(f.owner IS NOT DISTINCT FROM %s OR f.owner IS NULL)"
 # 写成显式哨兵而不是默认 None，是为了让"这里刻意不过滤"在调用点看得见。
 ANY = object()
 
+# 「视角就是操作者本人」。写成哨兵而不是默认 None，是因为 None 是一个**真实值**
+# （认不出身份 = 匿名，只看得见无主流程），拿它当"没传"会把匿名和管理员搅在一起。
+SELF = object()
+
+
+def _scope(actor: Optional[str], viewer: Any) -> Any:
+    """这次操作用谁的视角看。管理员传 ANY —— 越权检查整段跳过，但 actor
+    仍然是他本人：审计和归属记的必须是真的动手的那个人，不是"管理员"这个身份。"""
+    return actor if viewer is SELF else viewer
+
+
+def _visible(viewer: Any) -> tuple:
+    """(SQL 片段, 参数)。ANY = 不过滤（管理员、worker、webhook 这些没有"当前用户"的路径）。"""
+    return ("", ()) if viewer is ANY else (" AND " + VISIBLE, (viewer,))
+
 
 class FlowArchived(RuntimeError):
     pass
@@ -88,12 +103,14 @@ def _differs(draft: Any, published: Any) -> bool:
     return logic(draft) != logic(published)
 
 
-def list_flows(include_archived: bool = False, viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_flows(include_archived: bool = False, viewer: Any = None) -> List[Dict[str, Any]]:
     """我的工作台。**只有自己的流程，外加还没有主的那些。**
 
     viewer=None（认不出身份）时只看得到无主流程 —— 不是"看到全部"。
     退化成看到全部的话，SSO 出点问题就等于隔离整个不存在，而且没有任何迹象。
+    **ANY 是唯一的例外**，且只能由管理员那条路给出（见 main._viewer）。
     """
+    clause, args = _visible(viewer)
     with db.pool().connection() as conn:
         rows = _rows(
             conn,
@@ -102,10 +119,10 @@ def list_flows(include_archived: bool = False, viewer: Optional[str] = None) -> 
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
             "    ON v.flow_id = f.id AND v.version = f.active_version"
-            " WHERE " + VISIBLE
+            + (" WHERE " + VISIBLE if clause else " WHERE true")
             + ("" if include_archived else " AND f.archived_at IS NULL")
             + " ORDER BY f.updated_at DESC",
-            (viewer,),
+            args,
         )
     return [_summary(r) for r in rows]
 
@@ -145,18 +162,15 @@ def create_flow(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str
     return get_flow(flow_id)
 
 
-def save_draft(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str, Any]:
+def save_draft(flow_id: str, definition: Any, actor: Optional[str], viewer: Any = SELF) -> Dict[str, Any]:
     """存草稿。**不产生版本** —— 发布才产生。
 
     编辑器防抖自动保存打的就是这个接口，几秒一次；每次都记一条审计会把
     audit 表变成击键日志，所以这里不写审计（发布才写）。
     """
     with db.pool().connection() as conn:
-        row = _one(
-            conn,
-            "SELECT active_version FROM flows f WHERE id = %s AND " + VISIBLE,
-            (flow_id, actor),
-        )
+        clause, args = _visible(_scope(actor, viewer))
+        row = _one(conn, "SELECT active_version FROM flows f WHERE id = %s" + clause, (flow_id,) + args)
         if not row:
             raise NotFound(f"流程 {flow_id} 不存在")
         draft = flowdef.for_storage(definition, flow_id, row["active_version"] or 0)
@@ -168,17 +182,18 @@ def save_draft(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str,
     return get_flow(flow_id)
 
 
-def publish(flow_id: str, actor: Optional[str]) -> Dict[str, Any]:
+def publish(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> Dict[str, Any]:
     """草稿 → 新版本 → 设为生效。整件事在一个事务里。
 
     分两次提交的话，中间崩溃会留下一个"版本写进去了但没生效"或者更糟的
     "active_version 指向一个不存在的版本"——后者会让所有触发都取不到定义。
     """
     with db.pool().connection() as conn:
+        clause, args = _visible(_scope(actor, viewer))
         row = _one(
             conn,
-            "SELECT draft, archived_at FROM flows f WHERE id = %s AND " + VISIBLE + " FOR UPDATE",
-            (flow_id, actor),
+            "SELECT draft, archived_at FROM flows f WHERE id = %s" + clause + " FOR UPDATE",
+            (flow_id,) + args,
         )
         if not row:
             raise NotFound(f"流程 {flow_id} 不存在")
@@ -318,14 +333,15 @@ def get_version(flow_id: str, version: int, viewer: Optional[str] = ANY) -> Dict
     }
 
 
-def archive(flow_id: str, actor: Optional[str]) -> None:
+def archive(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> None:
     """归档，不物理删。
 
     运行记录会指向流程版本，删掉之后历史就没法解释了 —— 而"这条流程为什么
     昨天发了那个数"恰恰是最常被问到的问题。
     """
     with db.pool().connection() as conn:
-        if not _one(conn, "SELECT id FROM flows f WHERE id = %s AND " + VISIBLE, (flow_id, actor)):
+        clause, args = _visible(_scope(actor, viewer))
+        if not _one(conn, "SELECT id FROM flows f WHERE id = %s" + clause, (flow_id,) + args):
             raise NotFound(f"流程 {flow_id} 不存在")
         conn.execute("UPDATE flows SET archived_at = now() WHERE id = %s AND archived_at IS NULL", (flow_id,))
         _audit(conn, actor, "flow.archive", flow_id)

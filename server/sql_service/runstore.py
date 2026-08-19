@@ -137,17 +137,20 @@ def _assert_visible(conn, run_id: str, viewer: Optional[str]) -> None:
 
 
 def list_runs(flow_id: Optional[str] = None, limit: int = 50,
-              viewer: Optional[str] = None) -> List[Dict[str, Any]]:
+              viewer: Any = None) -> List[Dict[str, Any]]:
     """运行记录列表。**按流程归属过滤** —— steps 里装的是查询结果本身，
-    比流程定义更敏感：流程只泄露"我在查什么"，运行记录直接是那些数据。"""
+    比流程定义更敏感：流程只泄露"我在查什么"，运行记录直接是那些数据。
+
+    viewer=ANY（管理员）才不过滤，且那条路由自己已经验过身份。"""
+    clause, args = flowstore._visible(viewer)
     with db.pool().connection() as conn:
         rows = _rows(
             conn,
             "SELECT r.* FROM runs r JOIN flows f ON f.id = r.flow_id"
-            " WHERE " + flowstore.VISIBLE
+            + (" WHERE " + flowstore.VISIBLE if clause else " WHERE true")
             + (" AND r.flow_id = %s" if flow_id else "")
             + " ORDER BY r.created_at DESC LIMIT " + str(max(1, min(limit, 200))),
-            (viewer, flow_id) if flow_id else (viewer,),
+            args + ((flow_id,) if flow_id else ()),
         )
     return [_run_json(r) for r in rows]
 

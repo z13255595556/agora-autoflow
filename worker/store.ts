@@ -297,4 +297,67 @@ export async function purgeOrphanDraftVersions(days: number = RUN_RETENTION_DAYS
   return rowCount ?? 0
 }
 
+/**
+ * 按哪个时区切「一天」。日报是按人看的，UTC 切出来的天会让早上八点前的运行
+ * 算到前一天去 —— 统计对不上直觉就没人信。
+ */
+export const USAGE_TIMEZONE = process.env.USAGE_TIMEZONE?.trim() || 'Asia/Shanghai'
+
+/**
+ * 重算最近几天的用量并写进 usage_daily。
+ *
+ * **必须明显小于保留期**（默认 14 天，这里取 12）。一旦某一天的运行开始被
+ * purgeExpiredRuns 清掉，再去重算那一天就会把完整的统计覆盖成残缺的 ——
+ * 而那是不可逆的：明细已经没了，正确的数再也算不回来。
+ */
+export const USAGE_ROLLUP_DAYS = Math.max(1, RUN_RETENTION_DAYS - 2)
+
+/**
+ * 把最近若干天的运行汇总进 usage_daily。返回写了几行。
+ *
+ * 整天重算 + upsert，所以是幂等的：跑十遍和跑一遍结果一样，中途崩了下一轮补上。
+ * 超出窗口的那些天不参与重算，它们的行就此定格 —— 这正是「明细 14 天、
+ * 统计永久」成立的方式。
+ */
+export async function rollUpUsage(days: number = USAGE_ROLLUP_DAYS): Promise<number> {
+  const { rowCount } = await pool.query(
+    `INSERT INTO usage_daily (day, flow_id, trigger_kind, flow_name, owner,
+                              runs, succeeded, failed, canceled,
+                              duration_ms, timed_runs, steps, rolled_at)
+     SELECT (r.created_at AT TIME ZONE $2)::date,
+            r.flow_id, r.trigger_kind,
+            COALESCE(f.name, r.flow_id), f.owner,
+            count(*),
+            count(*) FILTER (WHERE r.status = 'success'),
+            count(*) FILTER (WHERE r.status = 'error'),
+            count(*) FILTER (WHERE r.status = 'canceled'),
+            COALESCE(sum(EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) * 1000)
+                       FILTER (WHERE r.started_at IS NOT NULL AND r.finished_at IS NOT NULL), 0)::bigint,
+            count(*) FILTER (WHERE r.started_at IS NOT NULL AND r.finished_at IS NOT NULL),
+            COALESCE(sum(st.n), 0)::int,
+            now()
+       FROM runs r
+       LEFT JOIN flows f ON f.id = r.flow_id
+       LEFT JOIN LATERAL (SELECT count(*) AS n FROM steps s WHERE s.run_id = r.id) st ON true
+      WHERE r.created_at >= (now() AT TIME ZONE $2)::date - ($1::int - 1)
+      GROUP BY 1, 2, 3, f.name, f.owner
+     ON CONFLICT (day, flow_id, trigger_kind) DO UPDATE SET
+       flow_name = EXCLUDED.flow_name,
+       owner = EXCLUDED.owner,
+       runs = EXCLUDED.runs,
+       succeeded = EXCLUDED.succeeded,
+       failed = EXCLUDED.failed,
+       canceled = EXCLUDED.canceled,
+       duration_ms = EXCLUDED.duration_ms,
+       timed_runs = EXCLUDED.timed_runs,
+       steps = EXCLUDED.steps,
+       rolled_at = now()
+     -- 兜底：重算出来比已存的少，说明明细已经被清掉一部分了，这一次不算数。
+     -- 没有这道闸，一次窗口配错就会把历史统计静默抹平
+     WHERE EXCLUDED.runs >= usage_daily.runs`,
+    [days, USAGE_TIMEZONE],
+  )
+  return rowCount ?? 0
+}
+
 export const keyOf = stepKeyOf

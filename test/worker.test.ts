@@ -25,6 +25,7 @@ let pool: import('pg').Pool
 let tick: (onlyFlowId?: string) => Promise<{ ran: boolean }>
 let purgeExpiredRuns: (days?: number) => Promise<number>
 let purgeOrphanDraftVersions: (days?: number) => Promise<number>
+let rollUpUsage: (days?: number) => Promise<number>
 let flowId: string
 
 const DEF = (id: string) => ({
@@ -50,6 +51,7 @@ before(async () => {
   pool = store.pool
   purgeExpiredRuns = store.purgeExpiredRuns
   purgeOrphanDraftVersions = store.purgeOrphanDraftVersions
+  rollUpUsage = store.rollUpUsage
 
   flowId = `wtest_${Math.random().toString(36).slice(2, 10)}`
   const def = DEF(flowId)
@@ -293,4 +295,36 @@ test('★ webhook 投递记录不再挡住运行日志清理', { skip: SKIP }, a
 
   await pool.query('DELETE FROM webhook_deliveries WHERE webhook_id = $1', [hookId])
   await pool.query('DELETE FROM webhooks WHERE id = $1', [hookId])
+})
+
+test('★ 用量汇总：幂等，且不会被残缺的重算覆盖', { skip: SKIP }, async () => {
+  const runId = await enqueue()
+  await drain()
+
+  const rolled = await rollUpUsage(12)
+  assert.ok(rolled > 0, '有运行记录就该汇总出行')
+
+  const read = async () => {
+    const { rows } = await pool.query(
+      'SELECT sum(runs)::int AS runs, sum(steps)::int AS steps FROM usage_daily WHERE flow_id = $1',
+      [flowId],
+    )
+    return rows[0]
+  }
+  const first = await read()
+  assert.ok(first.runs > 0 && first.steps > 0, '运行数和节点执行数都记下来了')
+
+  // 整天重算 + upsert：跑十遍和跑一遍一样。不幂等的话每小时一轮会让计数翻倍
+  await rollUpUsage(12)
+  assert.deepEqual(await read(), first, '再汇总一次，数字纹丝不动')
+
+  // ★★ 明细被清掉之后再重算那一天，只会算出更小的数 —— 那一次**必须不生效**。
+  //    没有这道闸，一次窗口配错就会把历史统计静默抹平，而且不可逆
+  await pool.query('DELETE FROM run_events WHERE run_id = $1', [runId])
+  await pool.query('DELETE FROM steps WHERE run_id = $1', [runId])
+  await pool.query('DELETE FROM runs WHERE id = $1', [runId])
+  await rollUpUsage(12)
+  assert.deepEqual(await read(), first, '★★ 明细少了之后重算不许把已有统计改小')
+
+  await pool.query('DELETE FROM usage_daily WHERE flow_id = $1', [flowId])
 })

@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, wecom, workspace
+from . import datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, usage, wecom, workspace
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -175,6 +175,10 @@ def whoami(request: Request) -> Dict[str, Any]:
     return {
         "creator": creator,
         "source": identity.source_of(request),
+        # 和每个接口用来放行的**是同一个函数**。前端如果自己去 user.isAdmin
+        # 里推，两边就有两条判定路径，将来只要有一条变了就会出现
+        # "界面上有按钮、点了 403" 或者更糟的反过来
+        "isAdmin": identity.is_admin(request),
         "user": None if user is None else {
             "id": user.id,
             "email": user.email,
@@ -208,6 +212,18 @@ def _actor(request: Request, header: Optional[str]) -> Optional[str]:
     都取不到 = 匿名。匿名不是一个人：它只看得见同样无主的流程（见 flowstore）。
     """
     return identity.user_for(request, header)
+
+
+def _viewer(request: Request, header: Optional[str] = None) -> Any:
+    """这次请求用谁的**视角**看数据。
+
+    和 _actor 是两件事，不能合并：管理员编辑别人的流程时，视角是"全部"，
+    但 actor 仍然是他本人 —— 审计和归属记的必须是真的动手的那个人。
+
+    管理员身份来自 athena 校验过的 /api/me，**不看任何请求头** ——
+    否则加一个头就能看到全公司的查询结果。
+    """
+    return flowstore.ANY if identity.is_admin(request) else _actor(request, header)
 
 
 def _guard(fn, *args, **kwargs):
@@ -245,7 +261,7 @@ def list_flows(
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
     """**我的**工作台。别人的流程在这里就不存在。"""
-    return {"flows": _guard(flowstore.list_flows, includeArchived, _actor(request, x_forwarded_user))}
+    return {"flows": _guard(flowstore.list_flows, includeArchived, _viewer(request, x_forwarded_user))}
 
 
 @app.post("/api/flows")
@@ -266,7 +282,7 @@ def get_flow(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(flowstore.get_flow, flow_id, _actor(request, x_forwarded_user))
+    return _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
 
 
 @app.put("/api/flows/{flow_id}")
@@ -276,7 +292,8 @@ def save_flow(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(flowstore.save_draft, flow_id, body.definition, _actor(request, x_forwarded_user))
+    return _guard(flowstore.save_draft, flow_id, body.definition,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
 
 
 @app.post("/api/flows/{flow_id}/publish")
@@ -287,7 +304,8 @@ def publish_flow(
 ) -> Dict[str, Any]:
     """发布。**无主流程由第一个发布的人认领** —— 谁发布的谁是 owner，
     定时和 webhook 触发也以这个人的名义去数据平台查数。"""
-    return _guard(flowstore.publish, flow_id, _actor(request, x_forwarded_user))
+    return _guard(flowstore.publish, flow_id,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
 
 
 @app.get("/api/flows/{flow_id}/versions")
@@ -296,7 +314,7 @@ def flow_versions(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return {"versions": _guard(flowstore.list_versions, flow_id, _actor(request, x_forwarded_user))}
+    return {"versions": _guard(flowstore.list_versions, flow_id, _viewer(request, x_forwarded_user))}
 
 
 @app.get("/api/flows/{flow_id}/versions/{version}")
@@ -306,7 +324,7 @@ def flow_version(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(flowstore.get_version, flow_id, version, _actor(request, x_forwarded_user))
+    return _guard(flowstore.get_version, flow_id, version, _viewer(request, x_forwarded_user))
 
 
 @app.delete("/api/flows/{flow_id}")
@@ -315,7 +333,8 @@ def archive_flow(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    _guard(flowstore.archive, flow_id, _actor(request, x_forwarded_user))
+    _guard(flowstore.archive, flow_id,
+           _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
     return {"archived": True}
 
 
@@ -471,9 +490,10 @@ def create_run(
     idempotency_key: Optional[str] = Header(default=None),
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    # 先按归属验一道：不是我的流程，"跑一次"和"读一次"一样不该成立
-    viewer = _actor(request, x_forwarded_user)
-    _guard(flowstore.get_flow, flow_id, viewer)
+    # 先按归属验一道：不是我的流程，"跑一次"和"读一次"一样不该成立。
+    # 管理员的视角是"全部"，但下面 actor 传的仍是他本人 —— 快照的 created_by
+    # 记的是真的按下运行的那个人，查数也以他的权限去
+    _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
     if body.version is not None and body.version <= 0:
         # 负数是调试快照的内部编号。让它可以被指定，等于把一个符号约定
         # 外泄成 API 语义，之后就再也改不动了
@@ -502,7 +522,7 @@ def list_runs(
     limit: int = 50,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return {"runs": _guard(runstore.list_runs, flowId, limit, _actor(request, x_forwarded_user))}
+    return {"runs": _guard(runstore.list_runs, flowId, limit, _viewer(request, x_forwarded_user))}
 
 
 @app.get("/api/runs/{run_id}")
@@ -511,7 +531,7 @@ def get_run(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(runstore.get_run, run_id, _actor(request, x_forwarded_user))
+    return _guard(runstore.get_run, run_id, _viewer(request, x_forwarded_user))
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -522,7 +542,26 @@ def run_events(
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
     """增量取事件。SSE 的轮询降级版：断线重连带上最后收到的 seq，不丢也不重。"""
-    return {"events": _guard(runstore.events_since, run_id, fromSeq, _actor(request, x_forwarded_user))}
+    return {"events": _guard(runstore.events_since, run_id, fromSeq, _viewer(request, x_forwarded_user))}
+
+
+# ---------------------------------------------------------------- 管理员
+#
+# 管理员身份来自 athena 校验过的 /api/me（identity.is_admin），**不看请求头**。
+# 越权返回 403 而不是 404：这里和流程不一样 —— 流程用 404 是为了不泄露"这条 id
+# 存在"，而"有没有管理台"本来就不是秘密，含糊其辞只会让人反复试。
+
+
+def _require_admin(request: Request) -> None:
+    if not identity.is_admin(request):
+        raise HTTPException(403, "需要管理员权限")
+
+
+@app.get("/api/admin/usage")
+def admin_usage(request: Request, days: int = 30, top: int = 20) -> Dict[str, Any]:
+    """用量看板。读的是按天聚合表，不是 runs —— 明细只留 14 天，统计永久。"""
+    _require_admin(request)
+    return _guard(usage.overview, days, top)
 
 
 @app.post("/api/runs/{run_id}/cancel")
@@ -531,7 +570,7 @@ def cancel_run(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(runstore.request_cancel, run_id, _actor(request, x_forwarded_user))
+    return _guard(runstore.request_cancel, run_id, _viewer(request, x_forwarded_user))
 
 
 # ---------------------------------------------------------------- Webhook
@@ -558,7 +597,7 @@ def get_webhook(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    _guard(flowstore.get_flow, flow_id, _actor(request, x_forwarded_user))
+    _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
     hook = _guard(webhooks.get, flow_id)
     return {
         "webhook": hook,
@@ -579,7 +618,7 @@ def create_webhook(
 
     认证方式和限流上限从画布上那个节点的参数带过来 —— 不带就用默认值。
     """
-    _guard(flowstore.get_flow, flow_id, _actor(request, x_forwarded_user))
+    _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
     b = body or WebhookSettings()
     return _guard(
         webhooks.ensure,
@@ -600,7 +639,7 @@ def update_webhook(
 ) -> Dict[str, Any]:
     """改认证方式 / 限流 / 启停。**改认证方式会让上游当前的调用立刻 401**，
     所以它是一次明确的动作，不跟着流程保存走。"""
-    _guard(flowstore.get_flow, flow_id, _actor(request, x_forwarded_user))
+    _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
     return _guard(
         webhooks.update,
         flow_id,
@@ -618,7 +657,7 @@ def rotate_webhook(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    _guard(flowstore.get_flow, flow_id, _actor(request, x_forwarded_user))
+    _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
     return _guard(webhooks.rotate, flow_id)
 
 

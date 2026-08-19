@@ -9,6 +9,7 @@ import { formatDate } from '../lib/datefn'
 import type { FlowDefinition } from '../types'
 import Icon from './Icon'
 import RunHistory from './RunHistory'
+import UsageDashboard from './UsageDashboard'
 import { normalizeFlowDefinition } from '../lib/flowImport'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
 
@@ -49,12 +50,21 @@ export default function Home({
   const [uploading, setUploading] = useState(false)
   /** 我是谁。服务端从登录 cookie 解出来的邮箱，认不出就是 null */
   const [me, setMe] = useState<string | null>(null)
+  /**
+   * 是不是管理员。**只决定界面显不显示，不是权限本身** ——
+   * 服务端每个接口自己再判一次（identity.is_admin 读的是 athena 校验过的
+   * /api/me）。前端能改的东西不能当权限用。
+   */
+  const [admin, setAdmin] = useState(false)
+  const [usageOpen, setUsageOpen] = useState(false)
 
   useEffect(() => {
     if (!ready) return
     // 认不出身份不是错误（本地开发就没有 cookie），静默就好 —— 该说的话
     // 由「无主」标签和 /whoami 去说
-    void whoami().then((who) => setMe(who.creator)).catch(() => setMe(null))
+    void whoami()
+      .then((who) => { setMe(who.creator); setAdmin(Boolean(who.isAdmin)) })
+      .catch(() => { setMe(null); setAdmin(false) })
   }, [ready])
 
   useEffect(() => {
@@ -134,6 +144,11 @@ export default function Home({
           onChange={(e) => setQ(e.target.value)}
           placeholder="搜索流程…"
         />
+        {admin && (
+          <button className="btn btn--admin" onClick={() => setUsageOpen(true)} title="全部用户的运行统计">
+            用量看板
+          </button>
+        )}
         <button className="btn" onClick={() => fileRef.current?.click()}>
           导入 JSON
         </button>
@@ -156,7 +171,10 @@ export default function Home({
       <div className="home__body">
         <div className="home__inner">
           <div className="home__head">
-            <h1 className="home__title">我的流程</h1>
+            {/* 管理员看到的是全部人的流程，标题还写「我的」会让人以为
+                别人也能看见自己那些 —— 这个误会的代价是有人把不该共享的
+                查询挪走，或者反过来以为已经共享了 */}
+            <h1 className="home__title">{admin ? '全部流程' : '我的流程'}</h1>
             <p className="home__sub">
               把 SQL、通知这些现成服务当积木搭起来。
               {saved.length > 0 && (
@@ -167,7 +185,9 @@ export default function Home({
               )}
               {/* 列表只有自己的流程。不说出来的话，"我的流程怎么少了"
                   会先变成一张工单，再变成"这系统把我数据搞丢了" */}
-              {list.mode === 'server' && me && <em> · 当前是 {me} 的工作台</em>}
+              {list.mode === 'server' && me && (
+                <em> · {admin ? `管理员视角（${me}）· 含全部人的流程` : `当前是 ${me} 的工作台`}</em>
+              )}
             </p>
           </div>
 
@@ -223,6 +243,7 @@ export default function Home({
                   onExport={() => exportJson(f)}
                   onDelete={() => remove(f)}
                   onHistory={() => setHistory(f)}
+                  showOwner={admin && !!f.owner && f.owner !== me}
                 />
               ))}
             </div>
@@ -269,6 +290,7 @@ export default function Home({
       )}
 
       {history && <RunHistory flow={history} onClose={() => setHistory(null)} />}
+      {usageOpen && <UsageDashboard onClose={() => setUsageOpen(false)} />}
     </div>
   )
 }
@@ -280,6 +302,7 @@ function FlowCard({
   onExport,
   onDelete,
   onHistory,
+  showOwner,
 }: {
   flow: SavedFlow
   onOpen: () => void
@@ -287,6 +310,8 @@ function FlowCard({
   onExport: () => void
   onDelete: () => void
   onHistory: () => void
+  /** 管理员视角下，别人的流程要标出是谁的 —— 否则一屏卡片分不清谁是谁 */
+  showOwner: boolean
 }) {
   const [menu, setMenu] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -325,6 +350,7 @@ function FlowCard({
             : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
         <span className="fcard__foot">
+          {showOwner && <b className="fcard__owner">{flow.owner}</b>}
           {flow.origin === 'server' && flow.owner === null && '还没有归属 · '}
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>

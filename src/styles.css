@@ -2139,3 +2139,61 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   .rhist__list { border-right: none; border-bottom: 1px solid var(--border); max-height: 200px; }
   .rhist__io-pair { grid-template-columns: 1fr; padding-left: 9px; }
 }
+
+/* ================================================================ 用量看板 / 管理员
+   只有管理员看得到入口。权限本身在服务端（identity.is_admin 读 athena 校验过的
+   /api/me）—— 这里的样式只是别让管理动作和日常动作长得一样。 */
+.btn--admin {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+}
+.fcard__owner { font-weight: 600; color: var(--text-dim); }
+.fcard__owner::after { content: ' · '; font-weight: 400; color: var(--text-faint); }
+
+.urange { display: flex; gap: 6px; margin-bottom: 14px; }
+.urange__btn {
+  padding: 4px 12px; border-radius: 20px; font-size: 12px;
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+}
+.urange__btn:hover { background: var(--surface-2); }
+.urange__btn.on { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); }
+
+.udash { max-height: min(66vh, 620px); overflow-y: auto; padding-right: 4px; }
+.ustats { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 10px; }
+.ustat {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-lg); padding: 12px 14px;
+}
+/* 数字用等宽，一列统计卡的位数才对得齐 */
+.ustat__value { font-family: var(--mono); font-size: 21px; font-weight: 650; color: var(--text); line-height: 1.2; }
+.ustat__label { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+
+.usection { margin-top: 20px; }
+.usection__title { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text); }
+.usection__title--sub { margin-top: 18px; }
+.ucols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 20px; align-items: start; }
+
+/* 单序列柱状图。图例是多余的 —— 标题已经说了它是什么 */
+.uchart { width: 100%; height: auto; display: block; }
+.uchart__bar { fill: var(--primary); }
+.uchart__bar:hover { fill: var(--primary-hover); }
+/* 网格是背景不是内容 */
+.uchart__grid { stroke: var(--border); stroke-width: 1; }
+.uchart__tick { fill: var(--text-faint); font-size: 9.5px; font-family: var(--mono); }
+
+.utable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.utable th {
+  text-align: left; font-weight: 600; font-size: 10.5px; color: var(--text-faint);
+  padding: 0 8px 6px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.utable td {
+  padding: 7px 8px; border-bottom: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; max-width: 220px; white-space: nowrap;
+}
+.utable tr:last-child td { border-bottom: none; }
+.utable .num { text-align: right; font-family: var(--mono); }
+.utable .dim { color: var(--text-faint); }
+
+@media (max-width: 860px) {
+  .ucols { grid-template-columns: 1fr; }
+}

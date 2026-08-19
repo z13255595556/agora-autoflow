@@ -294,6 +294,53 @@ ok("同一个幂等键只产生一条 run", again.get("deduplicated"), True)
 # 幂等原先排在版本解析之后，命中去重时已经白发了一版 —— 去重的意义正是没有副作用
 ok("★ 命中去重时不产生第二份快照", draft_count(k), 1)
 
+# ---------------------------------------------------------------- 管理员视角
+#
+# 管理员的"看得见全部"走的是 flowstore.ANY 这个哨兵。它和"认不出身份"
+# （viewer=None，只看得见无主流程）**必须泾渭分明** —— 混起来的话，SSO 抽风
+# 会静默变成"所有人看到所有人的查询结果"，而且没有任何迹象。
+
+adm_a = new_id()
+adm_b = new_id()
+flowstore.create_flow(adm_a, definition("alice 的"), "alice@agora.io")
+flowstore.create_flow(adm_b, definition("bob 的"), "bob@agora.io")
+
+mine = [f["id"] for f in flowstore.list_flows(viewer="alice@agora.io")]
+ok("★ 普通用户看不到别人的流程", adm_b in mine, False)
+ok("普通用户看得到自己的", adm_a in mine, True)
+
+allof = [f["id"] for f in flowstore.list_flows(viewer=flowstore.ANY)]
+ok("★ 管理员两条都看得到", (adm_a in allof, adm_b in allof), (True, True))
+ok("★ 管理员列表带得出归属", 
+   next(f["owner"] for f in flowstore.list_flows(viewer=flowstore.ANY) if f["id"] == adm_b),
+   "bob@agora.io")
+
+raises("★ 普通用户读不到别人的流程", flowstore.NotFound,
+       lambda: flowstore.get_flow(adm_b, "alice@agora.io"))
+ok("★ 管理员读得到", flowstore.get_flow(adm_b, flowstore.ANY)["id"], adm_b)
+
+# 认不出身份 ≠ 管理员。这一条是整段里最要紧的
+anon = [f["id"] for f in flowstore.list_flows(viewer=None)]
+ok("★★ 认不出身份时看不到任何有主的流程", (adm_a in anon, adm_b in anon), (False, False))
+
+# 写路径：actor 记的是真的动手的人，viewer 只决定能不能碰
+raises("★ 普通用户改不了别人的流程", flowstore.NotFound,
+       lambda: flowstore.save_draft(adm_b, definition("被改了"), "alice@agora.io"))
+flowstore.save_draft(adm_b, definition("bob 的", "SELECT 管理员改的"), "alice@agora.io", flowstore.ANY)
+ok("★ 管理员改得了别人的流程",
+   flowstore.get_flow(adm_b, flowstore.ANY)["draft"]["nodes"][1]["params"]["sql"], "SELECT 管理员改的")
+flowstore.publish(adm_b, "alice@agora.io", flowstore.ANY)
+ok("★ 管理员发布别人的流程，owner 不会被顶掉",
+   next(f["owner"] for f in flowstore.list_flows(viewer=flowstore.ANY) if f["id"] == adm_b),
+   "bob@agora.io")
+
+# 运行记录的可见性必须和流程完全同一条规则
+runstore.create_run(adm_b, inputs={}, actor="bob@agora.io")
+ok("★ 普通用户看不到别人的运行记录",
+   any(r["flowId"] == adm_b for r in runstore.list_runs(viewer="alice@agora.io")), False)
+ok("★ 管理员看得到",
+   any(r["flowId"] == adm_b for r in runstore.list_runs(viewer=flowstore.ANY)), True)
+
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:

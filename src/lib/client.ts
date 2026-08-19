@@ -189,8 +189,11 @@ export interface RemoteFlow {
   /**
    * 归属（邮箱）。null = 还没有主 —— 是 owner 那次迁移之前建的流程。
    *
-   * 列表里能出现的只有两种：我的，和无主的。**别人的流程根本不在返回里**，
-   * 所以前端不需要（也不该）拿这个字段做任何过滤 —— 它只用来提示"这条还没主"。
+   * 普通用户的列表里只有两种：我的，和无主的。**管理员例外** —— 服务端会把
+   * 全部流程都返回，此时这个字段是「这是谁的」的唯一来源。
+   *
+   * 即便如此也**不要拿它在前端做过滤**：能不能看见由服务端的视角决定，
+   * 前端再筛一遍只会在两边不一致时产生一个谁都解释不了的空列表。
    */
   owner: string | null
   draft?: Record<string, unknown>
@@ -201,10 +204,51 @@ export interface WhoAmI {
   creator: string | null
   source: 'athena' | 'worker' | 'none'
   note: string | null
+  /**
+   * 是不是管理员。**和服务端每个接口放行用的是同一个判定**（identity.is_admin）——
+   * 不要改成自己去 user.isAdmin 里推：两条路径迟早会分叉，症状是
+   * 界面上有按钮、点下去 403，或者更糟的反过来。
+   *
+   * 它只决定**显不显示**。权限本身在服务端，前端能改的东西不能当权限用。
+   */
+  isAdmin?: boolean
+  /** athena 校验过的登录用户。认不出身份时为 null */
+  user?: {
+    id: string
+    email: string
+    displayName: string
+    permissions: string[]
+    /** 管理员。**服务端每个接口自己再判一次** —— 这个字段只用来决定界面显不显示，
+     *  不是权限本身。前端能改的东西不能是权限 */
+    isAdmin: boolean
+  } | null
 }
 
 export function whoami() {
   return req<WhoAmI>('/whoami')
+}
+
+export interface UsageOverview {
+  days: number
+  /** 统计从哪天开始有数。看板要写出来，否则「最近 365 天」在一个上线两周的
+   *  系统上会让人以为前面 351 天真的没人用 */
+  since: string | null
+  totals: {
+    runs: number; succeeded: number; failed: number; canceled: number
+    steps: number; flows: number; owners: number; avgDurationMs: number | null
+  }
+  byDay: Array<{ day: string; runs: number; succeeded: number; failed: number }>
+  byFlow: Array<{
+    flowId: string; flowName: string; owner: string | null
+    runs: number; succeeded: number; failed: number; avgDurationMs: number | null
+  }>
+  byOwner: Array<{ owner: string | null; runs: number; flows: number; failed: number }>
+  byTrigger: Array<{ triggerKind: string; runs: number }>
+}
+
+/** 用量看板。只有管理员能调，服务端 403 —— 前端那个 isAdmin 只决定显不显示入口 */
+export function adminUsage(days = 30) {
+  return req<UsageOverview>(`/api/admin/usage?days=${days}`)
 }
 
 export interface FlowVersionMeta {

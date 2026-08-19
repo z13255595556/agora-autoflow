@@ -10,8 +10,8 @@ import type { FlowDefinition } from '../src/types.ts'
 import type { FNode } from '../src/store.ts'
 import {
   appendEvent, claimRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
-  pool, publisherOf, purgeExpiredRuns, purgeOrphanDraftVersions, reapExpired, writeStep,
-  LEASE_SECONDS, RUN_RETENTION_DAYS, type RunRow,
+  pool, publisherOf, purgeExpiredRuns, purgeOrphanDraftVersions, reapExpired, rollUpUsage,
+  writeStep, LEASE_SECONDS, RUN_RETENTION_DAYS, USAGE_ROLLUP_DAYS, type RunRow,
 } from './store.ts'
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
@@ -42,18 +42,25 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 1000)
 const PURGE_INTERVAL_MS = 60 * 60 * 1000
 let lastPurgeAt = 0
 
-/** 到点就清一次超过保留期（默认 14 天）的运行日志。失败只记日志不断 tick */
+/**
+ * 到点就滚一次用量统计、再清一次过期的运行日志。失败只记日志不断 tick。
+ *
+ * **汇总必须在清理之前** —— 反过来就是先把明细删了再去统计，那一天的数据
+ * 永久少一块，且事后无从发现。
+ */
 async function purgeTick(): Promise<void> {
   if (Date.now() - lastPurgeAt < PURGE_INTERVAL_MS) return
   lastPurgeAt = Date.now()
   try {
+    const rolled = await rollUpUsage()
+    if (rolled > 0) console.log(`已汇总 ${rolled} 行用量统计（最近 ${USAGE_ROLLUP_DAYS} 天）`)
     const purged = await purgeExpiredRuns()
     if (purged > 0) console.log(`已清理 ${purged} 条超过 ${RUN_RETENTION_DAYS} 天保留期的运行日志`)
     // 顺序不能反：runs 对 flow_versions 有外键，先收运行记录才轮得到它们引用的快照
     const versions = await purgeOrphanDraftVersions()
     if (versions > 0) console.log(`已清理 ${versions} 份没有运行记录引用的调试快照`)
   } catch (err) {
-    console.error('清理过期运行日志失败：', msg(err))
+    console.error('用量汇总 / 清理过期运行日志失败：', msg(err))
   }
 }
 
