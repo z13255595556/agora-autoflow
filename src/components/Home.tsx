@@ -173,7 +173,7 @@ export default function Home({
         if (r.code === 'flow_exists_other_owner') {
           const name = `${f.name} 副本`
           const go = confirm(
-            `「${f.name}」的 id 在服务器上被另一个人的流程占着 —— 你看不到它，` +
+            `「${f.name}」的 id 在服务器上被另一个人的流程占着 —— 它不在你的流程里，` +
             '这个 id 也要不回来了。\n\n' +
             `上传成一条新流程「${name}」（换一个 id），并清掉本机这条旧记录？`,
           )

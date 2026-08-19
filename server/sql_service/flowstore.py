@@ -62,7 +62,9 @@ class FlowExists(FileExistsError):
         if not visible:
             # 归属别人 → 这个 id 要不回来了，唯一的出路是换个 id
             self.code = "flow_exists_other_owner"
-            msg = f"流程 {flow_id} 已存在，但归属其他人，你看不到它"
+            # 说"不在你的流程列表里"而不是"你看不到" —— 管理员在管理台是看得到的，
+            # 但那不改变结论：id 被占着，要不回来
+            msg = f"流程 {flow_id} 已存在，但归属其他人，不在你的流程列表里"
         elif archived:
             self.code = "flow_exists_archived"
             msg = f"流程 {flow_id} 在服务器上已归档（不是不存在），可以恢复"

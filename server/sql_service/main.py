@@ -287,8 +287,15 @@ def create_flow(
     flow_id = (body.id or "").strip() or str(body.definition.get("id") or "").strip()
     if not flow_id:
         raise HTTPException(400, "缺少流程 id")
+    # **这里刻意不用 _viewer。**
+    #
+    # create_flow 的 viewer 只有一个用途：id 撞上时判断"你为什么在列表里看不到它"。
+    # 那个"列表"就是首页默认那一屏（scope=mine），而它用的是 _actor。
+    # 传 _viewer 的话管理员的视角是 ANY，于是"看得见"恒为真 ——
+    # 「归属其他人」那一支对管理员永远不触发，他拿到的是「刷新一下就看得到」，
+    # 而刷新一百次也不会看到。判定和被解释的那张列表必须用同一个视角。
     return _guard(flowstore.create_flow, flow_id, body.definition,
-                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
+                  _actor(request, x_forwarded_user))
 
 
 @app.get("/api/flows/{flow_id}")

@@ -384,7 +384,13 @@ ok("★★ id 被别人占着，报的是「归属其他人」",
 ok("★ 消息里不带别人的邮箱",
    "bob@agora.io" in code_of(lambda: str(flowstore.create_flow(adm_b, definition(), "alice@agora.io"))),
    False)
-ok("★ 管理员看得见它，所以报的不是「归属其他人」",
+# ★★ 判定必须和「被解释的那张列表」用同一个视角。
+#
+# create_flow 的 viewer 默认是 SELF（= actor 本人），路由**刻意不传 _viewer**：
+# 管理员的 _viewer 是 ANY，于是"看得见"恒为真，「归属其他人」这一支对他
+# 永远不触发 —— 他拿到的是"刷新一下就看得到"，而首页默认那屏也是 scope=mine，
+# 刷新一百次也不会看到。下面这条钉住的就是"传 ANY 会分不出来"这件事本身。
+ok("传 ANY 就分不出「归属其他人」了 —— 路由别这么干（理由见 main.py）",
    code_of(lambda: flowstore.create_flow(adm_b, definition(), "alice@agora.io", flowstore.ANY)),
    "flow_exists")
 
