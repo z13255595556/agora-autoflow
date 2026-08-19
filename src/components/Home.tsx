@@ -57,6 +57,12 @@ export default function Home({
    */
   const [admin, setAdmin] = useState(false)
   const [usageOpen, setUsageOpen] = useState(false)
+  /**
+   * 看哪一屏。**默认永远是「我的」** —— 管理员身份不该悄悄把他自己的工作台
+   * 换成全公司的流程：那样他每天真正在用的那一屏就再也回不去了。
+   * 管理台是**另开的一个标签**，进去才看得到别人的。
+   */
+  const [tab, setTab] = useState<'mine' | 'all'>('mine')
 
   useEffect(() => {
     if (!ready) return
@@ -67,23 +73,58 @@ export default function Home({
       .catch(() => { setMe(null); setAdmin(false) })
   }, [ready])
 
+  // 权限被撤掉时别把人卡在一个只会 403 的标签上
+  useEffect(() => { if (!admin) setTab('mine') }, [admin])
+
   useEffect(() => {
     if (!ready) return
     let cancelled = false
     setLoading(true)
-    void listFlows().then((got) => {
+    void listFlows(tab).then((got) => {
       if (cancelled) return
       setList(got)
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [tick, ready])
+  }, [tick, ready, tab])
 
   const saved = list.flows
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase()
     return kw ? saved.filter((f) => f.name.toLowerCase().includes(kw)) : saved
   }, [saved, q])
+
+  /**
+   * 管理台的分组。**我自己那组排在最前**，其余按流程数从多到少 ——
+   * 管理员进这一屏最常做的是"找某个人的"，而找自己是最高频的那次。
+   * 无主的排最后：它们是历史遗留，不是某个人的工作。
+   */
+  const grouped = useMemo(() => {
+    const by = new Map<string | null, SavedFlow[]>()
+    for (const f of shown) {
+      const key = f.owner ?? null
+      const got = by.get(key)
+      if (got) got.push(f)
+      else by.set(key, [f])
+    }
+    // ★ 必须先判 me 非空：认不出身份时 me 是 null，而"无主"那一组的键也是
+    //   null —— 不挡的话无主会被当成"我的"排到最前、还挂上"我的"标签
+    return [...by.entries()].sort(([a, xs], [b, ys]) => {
+      if (me && a === me) return -1
+      if (me && b === me) return 1
+      if (a === null) return 1
+      if (b === null) return -1
+      return ys.length - xs.length
+    })
+  }, [shown, me])
+
+  const cardProps = (f: SavedFlow) => ({
+    onOpen: () => onOpenSaved(f),
+    onDuplicate: () => duplicate(f),
+    onExport: () => exportJson(f),
+    onDelete: () => remove(f),
+    onHistory: () => setHistory(f),
+  })
 
   const remove = async (f: SavedFlow) => {
     const warn = list.mode === 'server'
@@ -170,13 +211,25 @@ export default function Home({
 
       <div className="home__body">
         <div className="home__inner">
+          {/* 管理台是**另一个标签**，不是把别人的流程堆进首页。
+              两屏的语义完全不同：一个是"我每天在用的东西"，一个是"我在管的东西" */}
+          {admin && (
+            <div className="htabs">
+              <button className={`htabs__t${tab === 'mine' ? ' on' : ''}`} onClick={() => setTab('mine')}>
+                我的流程
+              </button>
+              <button className={`htabs__t${tab === 'all' ? ' on' : ''}`} onClick={() => setTab('all')}>
+                全部用户
+              </button>
+            </div>
+          )}
+
           <div className="home__head">
-            {/* 管理员看到的是全部人的流程，标题还写「我的」会让人以为
-                别人也能看见自己那些 —— 这个误会的代价是有人把不该共享的
-                查询挪走，或者反过来以为已经共享了 */}
-            <h1 className="home__title">{admin ? '全部流程' : '我的流程'}</h1>
+            <h1 className="home__title">{tab === 'all' ? '全部用户的流程' : '我的流程'}</h1>
             <p className="home__sub">
-              把 SQL、通知这些现成服务当积木搭起来。
+              {tab === 'all'
+                ? '按归属分组。这里能看到、也能改所有人的流程 —— 动别人的东西之前先确认一下。'
+                : '把 SQL、通知这些现成服务当积木搭起来。'}
               {saved.length > 0 && (
                 <em>
                   {' '}共 {saved.length} 条 ·{' '}
@@ -185,9 +238,7 @@ export default function Home({
               )}
               {/* 列表只有自己的流程。不说出来的话，"我的流程怎么少了"
                   会先变成一张工单，再变成"这系统把我数据搞丢了" */}
-              {list.mode === 'server' && me && (
-                <em> · {admin ? `管理员视角（${me}）· 含全部人的流程` : `当前是 ${me} 的工作台`}</em>
-              )}
+              {tab === 'mine' && list.mode === 'server' && me && <em> · 当前是 {me} 的工作台</em>}
             </p>
           </div>
 
@@ -232,19 +283,29 @@ export default function Home({
             </div>
           ) : shown.length === 0 ? (
             <div className="empty">没有名字匹配「{q}」的流程。</div>
-          ) : (
+          ) : tab === 'mine' ? (
             <div className="grid">
               {shown.map((f) => (
-                <FlowCard
-                  key={f.id}
-                  flow={f}
-                  onOpen={() => onOpenSaved(f)}
-                  onDuplicate={() => duplicate(f)}
-                  onExport={() => exportJson(f)}
-                  onDelete={() => remove(f)}
-                  onHistory={() => setHistory(f)}
-                  showOwner={admin && !!f.owner && f.owner !== me}
-                />
+                <FlowCard key={f.id} flow={f} {...cardProps(f)} />
+              ))}
+            </div>
+          ) : (
+            // 管理台按归属分组。一屏一百条别人的流程平铺着，
+            // "这是谁的"要一张张卡去认 —— 分组之后这个问题在标题上就答完了
+            <div className="ugroups">
+              {grouped.map(([owner, flows]) => (
+                <section className="ugroup" key={owner ?? '__none__'}>
+                  <h2 className="ugroup__title">
+                    {owner ?? '还没有归属'}
+                    <em>{flows.length} 条</em>
+                    {!!me && owner === me && <b className="ugroup__me">我的</b>}
+                  </h2>
+                  <div className="grid">
+                    {flows.map((f) => (
+                      <FlowCard key={f.id} flow={f} {...cardProps(f)} />
+                    ))}
+                  </div>
+                </section>
               ))}
             </div>
           )}
@@ -302,7 +363,6 @@ function FlowCard({
   onExport,
   onDelete,
   onHistory,
-  showOwner,
 }: {
   flow: SavedFlow
   onOpen: () => void
@@ -310,8 +370,6 @@ function FlowCard({
   onExport: () => void
   onDelete: () => void
   onHistory: () => void
-  /** 管理员视角下，别人的流程要标出是谁的 —— 否则一屏卡片分不清谁是谁 */
-  showOwner: boolean
 }) {
   const [menu, setMenu] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -350,7 +408,6 @@ function FlowCard({
             : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
         <span className="fcard__foot">
-          {showOwner && <b className="fcard__owner">{flow.owner}</b>}
           {flow.origin === 'server' && flow.owner === null && '还没有归属 · '}
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>

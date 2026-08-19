@@ -2147,8 +2147,28 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
   color: color-mix(in srgb, var(--warn) 85%, var(--text));
 }
-.fcard__owner { font-weight: 600; color: var(--text-dim); }
-.fcard__owner::after { content: ' · '; font-weight: 400; color: var(--text-faint); }
+/* 首页标签：我的 / 全部用户。管理台是另一屏，不是把别人的流程堆进首页 */
+.htabs { display: flex; gap: 2px; margin-bottom: 18px; border-bottom: 1px solid var(--border); }
+.htabs__t {
+  padding: 8px 14px 9px; font-size: 13px; font-weight: 500;
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-faint); margin-bottom: -1px;
+}
+.htabs__t:hover { color: var(--text-dim); }
+.htabs__t.on { color: var(--text); border-bottom-color: var(--primary); font-weight: 600; }
+
+/* 管理台按归属分组 */
+.ugroups { display: flex; flex-direction: column; gap: 26px; }
+.ugroup__title {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 0 0 11px; font-size: 13px; font-weight: 650; color: var(--text);
+}
+.ugroup__title em { font-style: normal; font-weight: 400; font-size: 11.5px; color: var(--text-faint); }
+.ugroup__me {
+  font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 20px;
+  background: var(--primary-soft); color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
+}
 
 .urange { display: flex; gap: 6px; margin-bottom: 14px; }
 .urange__btn {

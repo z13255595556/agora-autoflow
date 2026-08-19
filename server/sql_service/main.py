@@ -258,10 +258,20 @@ def _guard(fn, *args, **kwargs):
 def list_flows(
     request: Request,
     includeArchived: bool = False,
+    scope: str = "mine",
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    """**我的**工作台。别人的流程在这里就不存在。"""
-    return {"flows": _guard(flowstore.list_flows, includeArchived, _viewer(request, x_forwarded_user))}
+    """流程列表。scope=mine（默认）是**我的**工作台，别人的流程在这里就不存在；
+    scope=all 是管理台，要管理员权限。"""
+    # scope 是**显式**的：管理员身份不会悄悄把默认列表撑大成全公司的流程。
+    # 隐式放大最难受的地方在于，管理员从此再也看不到"我自己的工作台"长什么样，
+    # 而那正是他每天真正在用的那一屏
+    if scope == "all":
+        _require_admin(request)
+        viewer = flowstore.ANY
+    else:
+        viewer = _actor(request, x_forwarded_user)
+    return {"flows": _guard(flowstore.list_flows, includeArchived, viewer)}
 
 
 @app.post("/api/flows")

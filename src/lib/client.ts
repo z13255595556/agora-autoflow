@@ -257,8 +257,17 @@ export interface FlowVersionMeta {
   createdBy: string | null
 }
 
-export function listRemoteFlows(includeArchived = false) {
-  return req<{ flows: RemoteFlow[] }>(`/api/flows?includeArchived=${includeArchived}`).then((r) => r.flows)
+/**
+ * 流程列表。
+ *
+ * `scope='all'` 是管理台，要管理员权限。**默认永远是 'mine'** ——
+ * 管理员身份不该悄悄把他自己的工作台换成全公司的流程：那样他就再也看不到
+ * 自己每天真正在用的那一屏了。
+ */
+export function listRemoteFlows(includeArchived = false, scope: 'mine' | 'all' = 'mine') {
+  return req<{ flows: RemoteFlow[] }>(
+    `/api/flows?includeArchived=${includeArchived}&scope=${scope}`,
+  ).then((r) => r.flows)
 }
 
 export function getRemoteFlow(id: string) {

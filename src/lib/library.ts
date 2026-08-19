@@ -38,8 +38,10 @@ export interface SavedFlow {
   /**
    * 归属（邮箱）。null = 还没有主，谁发布一次就归谁。
    *
-   * 列表里**不会**出现别人的流程 —— 服务端就没返回。这个字段只用来提示
-   * "这条还没主"，不做任何前端过滤：把权限判断放到前端等于没有权限判断。
+   * scope='mine' 的列表里**不会**出现别人的流程 —— 服务端就没返回。
+   * scope='all'（管理台）会，那时这个字段是分组的依据。
+   *
+   * 两种情况下都**不做前端过滤**：把权限判断放到前端等于没有权限判断。
    */
   owner?: string | null
   /**
@@ -148,19 +150,22 @@ export interface FlowList {
   error?: string
 }
 
-export async function listFlows(): Promise<FlowList> {
+export async function listFlows(scope: 'mine' | 'all' = 'mine'): Promise<FlowList> {
   const local = listLocalFlows()
   if (storageMode() === 'local') return { flows: local, mode: 'local', localOnly: [] }
 
   try {
-    const remote = await api.listRemoteFlows()
+    const remote = await api.listRemoteFlows(false, scope)
     const ids = new Set(remote.map((r) => r.id))
     // 列表页不需要每条的完整定义，用本地那份或一个壳撑住 nodeCount 之外的字段
     const flows = remote.map((r) => {
       const cached = local.find((f) => f.id === r.id)
       return fromRemote(r, cached?.def ?? ({ id: r.id, name: r.name, nodes: [], edges: [], layout: {} } as unknown as FlowDefinition))
     })
-    return { flows, mode: 'server', localOnly: local.filter((f) => !ids.has(f.id)) }
+    // 管理台不提示"只存在本地"：那是当前这台浏览器的事，混进全局视图只会让人
+    // 以为服务器上少了东西
+    const localOnly = scope === 'all' ? [] : local.filter((f) => !ids.has(f.id))
+    return { flows, mode: 'server', localOnly }
   } catch (err) {
     // 退回本地可以，但必须说出来 —— 静默退回会让用户以为服务端上就是这些
     return {
