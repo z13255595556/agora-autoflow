@@ -488,6 +488,12 @@ button { cursor: pointer; padding: 0; }
   border-top: 1px solid var(--border);
   font-size: 11px; color: var(--text-faint);
 }
+/* 「只在本机」：服务端上没有这条。删除的后果和别的卡片不一样，得看得见 */
+.fcard__local {
+  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 20px;
+  margin-right: 6px; background: var(--warn-soft); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+}
 .fcard__menu { position: absolute; top: 10px; right: 10px; }
 .fcard__more {
   width: 24px; height: 24px; display: grid; place-items: center;

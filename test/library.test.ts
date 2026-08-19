@@ -208,6 +208,27 @@ test('★ restore 成功但草稿只落到本地 → 算失败，不能报"上�
   assert.match(r.error ?? '', /数据库不可用/)
 })
 
+// ★★ 同一个 id 在服务端上可能是别人的流程。普通用户去归档会被可见性挡成 404，
+// 看不出问题；管理员的 viewer 是 ANY，归档会**成功** —— 于是"清掉我本机这份
+// 没用的缓存"会静默归档掉别人正在线上跑的流程
+test('★★ 删只在本机的那份，绝不能顺手归档服务端同 id 的流程', async () => {
+  await mode(true)
+  await lib.saveFlow({ ...DEF, id: 'f1' } as never)
+  calls = []
+  await lib.deleteFlow('f1', true)
+  assert.equal(lib.listLocalFlows().length, 0)
+  assert.equal(calls.filter((c) => c.method === 'DELETE').length, 0)
+})
+
+test('服务端上确实有的那条，删除仍然要归档', async () => {
+  await mode(true)
+  await lib.saveFlow({ ...DEF, id: 'f1' } as never)
+  routes['DELETE /api/flows/f1'] = { body: { archived: true } }
+  calls = []
+  await lib.deleteFlow('f1')
+  assert.equal(calls.filter((c) => c.method === 'DELETE').length, 1)
+})
+
 test('★ id 被别人占着 → 换新 id 上传副本，原 id 一次都不许再碰', async () => {
   await mode(true)
   routes['POST /api/flows'] = { body: { id: 'new' } }

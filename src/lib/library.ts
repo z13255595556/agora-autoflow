@@ -257,9 +257,20 @@ export async function createFlow(def: FlowDefinition): Promise<SaveResult> {
   }
 }
 
-export async function deleteFlow(id: string): Promise<void> {
+/**
+ * 删除。
+ *
+ * `localOnly` = 这条在服务端的列表里根本没出现过。**这时绝不能碰服务端。**
+ *
+ * 同一个 id 在服务端上可能是**别人的**流程（无主流程谁发布一次就归谁，
+ * 而你本地还留着以前打开时写下的那份缓存）。普通用户去归档它会被可见性挡成
+ * 404，看不出问题；但管理员的 viewer 是 ANY —— 归档会**成功**。
+ * 于是"清掉我本机这份没用的缓存"会静默归档掉别人正在线上跑的流程，
+ * 而确认框上写的是"它只存在这台机器上"。
+ */
+export async function deleteFlow(id: string, localOnly = false): Promise<void> {
   void write(listLocalFlows().filter((f) => f.id !== id))
-  if (storageMode() === 'server') {
+  if (storageMode() === 'server' && !localOnly) {
     // 服务端是归档不是物理删 —— 运行记录要靠版本快照解释历史
     try {
       await api.archiveRemoteFlow(id)

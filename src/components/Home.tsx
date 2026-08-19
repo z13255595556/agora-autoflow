@@ -89,7 +89,22 @@ export default function Home({
     return () => { cancelled = true }
   }, [tick, ready, tab])
 
-  const saved = list.flows
+  /**
+   * 首页显示的流程。**服务端模式下把「只在本机」那些也并进来。**
+   *
+   * 以前它们只在顶部那句提示里露一个名字 —— 打不开、导不出、也删不掉，
+   * 唯一的动作是「上传到服务器」。上传不成（id 被别人占了），或者你根本
+   * 不想传，就彻底没有出路了，那句提示会永远挂在那儿。
+   *
+   * 并进列表之后它们是正常的卡片，只是标着「只在本机」—— 想留就留，
+   * 想清掉就用卡片自己的删除。这也才对得上代码里那句
+   * 「只存在本地的流程绝不能从列表里消失」：以前它们确实是消失的。
+   */
+  const saved = useMemo(() => {
+    if (tab !== 'mine' || list.localOnly.length === 0) return list.flows
+    return [...list.flows, ...list.localOnly].sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [list, tab])
+
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase()
     return kw ? saved.filter((f) => f.name.toLowerCase().includes(kw)) : saved
@@ -128,11 +143,16 @@ export default function Home({
   })
 
   const remove = async (f: SavedFlow) => {
-    const warn = list.mode === 'server'
+    // 服务端上没有的那些，删掉就是真没了 —— 不能套用"服务端会归档"那句话
+    const warn = f.origin === 'local' && list.mode === 'server'
+      ? `删除「${f.name}」？它只存在这台机器上，服务端没有备份，删了就没了。\n想留个底的话先「导出 JSON」。`
+      : list.mode === 'server'
       ? `删除「${f.name}」？服务端会归档（运行历史还查得到），本地那份直接删掉。`
       : `删除「${f.name}」？删了就没了，本地存的没有回收站。`
     if (!confirm(warn)) return
-    await deleteFlow(f.id)
+    // ★ origin==='local' 必须传下去：服务端上同 id 那条可能是**别人的**流程，
+    //   而管理员的 viewer 是 ANY，去归档它会成功
+    await deleteFlow(f.id, f.origin === 'local')
     setTick((t) => t + 1)
   }
 
@@ -282,6 +302,8 @@ export default function Home({
                 <em>
                   {' '}共 {saved.length} 条 ·{' '}
                   {list.mode === 'server' ? '存在服务器上' : '存在这台机器的浏览器里'}
+                  {tab === 'mine' && list.localOnly.length > 0
+                    && `，其中 ${list.localOnly.length} 条只在本机`}
                 </em>
               )}
               {/* 列表只有自己的流程。不说出来的话，"我的流程怎么少了"
@@ -302,15 +324,16 @@ export default function Home({
 
               文案**不能写死"服务器上没有"**：这一栏是拿本地列表减去服务端列表
               算出来的，而服务端那份是过滤过的（归档的、归属别人的都不在里面）。
-              说满了的话，用户点下去撞上"已存在"就再也解释不通了 */}
-          {list.localOnly.length > 0 && (
+              说满了的话，用户点下去撞上"已存在"就再也解释不通了。
+
+              这条提示只是个汇总 + 批量上传。真正的出路在卡片上：它们现在就在
+              下面的列表里，标着「只在本机」，不想传的直接删掉就行 */}
+          {tab === 'mine' && list.localOnly.length > 0 && (
             <div className="home__notice">
-              还有 {list.localOnly.length} 条流程只存在这台机器上（
-              {list.localOnly.slice(0, 3).map((f) => f.name).join('、')}
-              {list.localOnly.length > 3 ? ' 等' : ''}），服务端的列表里没有它们 ——
-              可能从没上传过，也可能是已归档或者归属了别人。
+              有 {list.localOnly.length} 条流程只存在这台机器上（下面标了「只在本机」）——
+              可能从没上传过，也可能是已归档或者归属了别人。不想留的话，用卡片上的删除清掉。
               <button className="btn btn--sm" disabled={uploading} onClick={() => void upload()}>
-                {uploading ? '上传中…' : '上传到服务器'}
+                {uploading ? '上传中…' : '全部上传到服务器'}
               </button>
             </div>
           )}
@@ -461,6 +484,9 @@ function FlowCard({
             : hooked ? 'Webhook 触发' : '手动触发'}
         </span>
         <span className="fcard__foot">
+          {/* 服务端上没有它。不标出来的话，删除的后果和别的卡片完全不同
+              （那些是归档，这些是真没了），而卡片看着一模一样 */}
+          {flow.origin === 'local' && <b className="fcard__local">只在本机</b>}
           {flow.origin === 'server' && flow.owner === null && '还没有归属 · '}
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>
