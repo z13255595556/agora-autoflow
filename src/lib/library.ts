@@ -282,19 +282,64 @@ export async function publishFlow(id: string): Promise<{ ok: boolean; version?: 
   }
 }
 
-/** 把只存在本地的流程搬到服务端。返回成功搬上去几条 */
-export async function uploadLocalOnly(flows: SavedFlow[]): Promise<{ moved: number; errors: string[] }> {
-  const errors: string[] = []
-  let moved = 0
-  for (const f of flows) {
-    try {
-      await api.createRemoteFlow(f.id, f.def)
-      moved++
-    } catch (err) {
-      errors.push(`${f.name}：${err instanceof Error ? err.message : String(err)}`)
-    }
+const msgOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+export interface UploadResult {
+  ok: boolean
+  /**
+   * 服务端给的错误码，目前只有 409 那几个：
+   * `flow_exists_archived`（服务器上有，只是归档了）、
+   * `flow_exists_other_owner`（id 被别人的流程占着）、`flow_exists`（列表旧了）。
+   *
+   * **按 code 分支，不要按文案** —— 出路完全不同：一个是恢复，一个是换 id。
+   */
+  code?: string
+  error?: string
+}
+
+/**
+ * 把一条只存在本地的流程搬到服务端。
+ *
+ * **一条一条来，不做批量。** localOnly 里的每一条失败原因可能不同，
+ * 而每种原因要问用户的问题也不同（恢复归档？还是换个 id 建副本？），
+ * 批量跑完再一次性弹一堆错的话，用户拿到的是一段没法操作的文本。
+ */
+export async function uploadOne(f: SavedFlow): Promise<UploadResult> {
+  try {
+    await api.createRemoteFlow(f.id, f.def)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, code: (err as { code?: string }).code, error: msgOf(err) }
   }
-  return { moved, errors }
+}
+
+/**
+ * 恢复一条归档的流程，再用本机这份覆盖服务端的草稿。
+ *
+ * 顺序不能反：归档状态下 save_draft 是能写进去的，但写完流程仍然看不见，
+ * 用户会以为上传又失败了一次。
+ */
+export async function restoreAndUpload(f: SavedFlow): Promise<UploadResult> {
+  try {
+    await api.restoreRemoteFlow(f.id)
+  } catch (err) {
+    return { ok: false, error: msgOf(err) }
+  }
+  const saved = await saveFlow(f.def, f.updatedAt || Date.now())
+  // 用 didSyncToServer 而不是 .ok：本地写成功也会返回 ok，
+  // 而这里整件事的目的**就是**让服务端拿到它
+  return didSyncToServer(saved) ? { ok: true } : { ok: false, error: saved.error ?? '写入服务端失败' }
+}
+
+/** 换一个 id 上传成副本。id 被别人占着时这是唯一的出路 */
+export async function uploadAsCopy(f: SavedFlow, name: string): Promise<UploadResult> {
+  const result = await createFlow({ ...f.def, id: newFlowId(), name })
+  return didSyncToServer(result) ? { ok: true } : { ok: false, error: result.error ?? '写入服务端失败' }
+}
+
+/** 本地那份搬走之后就不该再留着，否则下次打开还会提示"只存在这台机器上" */
+export function forgetLocal(id: string): void {
+  void write(listLocalFlows().filter((f) => f.id !== id))
 }
 
 /** 每条流程一个新 id —— 不然新建出来的都叫 flow_draft，互相覆盖 */

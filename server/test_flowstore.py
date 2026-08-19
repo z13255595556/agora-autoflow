@@ -341,6 +341,62 @@ ok("★ 普通用户看不到别人的运行记录",
 ok("★ 管理员看得到",
    any(r["flowId"] == adm_b for r in runstore.list_runs(viewer=flowstore.ANY)), True)
 
+# ------------------------------------------------- id 被占用：得说清是哪一种
+#
+# 首页那句"只存在这台机器上"是**推断**出来的：本地列表减去服务端列表。
+# 而服务端那份列表是过滤过的 —— 归档的不在里面，归属别人的也不在里面。
+# 于是"服务器上没有"和"已存在"会同时成立，用户点上传撞一个 409 就走不下去了。
+# 409 必须带上原因，因为两种原因的出路完全不同：一个是恢复，一个是换 id。
+
+
+def code_of(fn):
+    try:
+        fn()
+    except flowstore.FlowExists as exc:
+        return exc.code
+    except Exception as exc:  # noqa: BLE001
+        return f"抛了 {type(exc).__name__}: {exc}"
+    return "没有抛错"
+
+
+ex_arch = new_id()
+flowstore.create_flow(ex_arch, definition("归档过的"), "alice@agora.io")
+flowstore.archive(ex_arch, "alice@agora.io")
+ok("★ 归档的流程不在列表里",
+   any(f["id"] == ex_arch for f in flowstore.list_flows(viewer="alice@agora.io")), False)
+ok("★★ 但同 id 重建撞得上，而且要说清是「归档了」不是「不存在」",
+   code_of(lambda: flowstore.create_flow(ex_arch, definition(), "alice@agora.io")),
+   "flow_exists_archived")
+
+# 归档可逆 —— 不可逆的话首页那个删除按钮就不是"归档"而是"删除"了
+flowstore.restore(ex_arch, "alice@agora.io")
+ok("★ 恢复之后回到列表里",
+   any(f["id"] == ex_arch for f in flowstore.list_flows(viewer="alice@agora.io")), True)
+ok("恢复之后 archivedAt 清空", flowstore.get_flow(ex_arch)["archivedAt"], None)
+ok("恢复之后再重建，报的是普通的「已存在」",
+   code_of(lambda: flowstore.create_flow(ex_arch, definition(), "alice@agora.io")), "flow_exists")
+
+# 归属别人 → 这个 id 要不回来了。**不能报「归档」**：那会让前端提示用户去恢复
+# 一条他根本碰不到的流程
+ok("★★ id 被别人占着，报的是「归属其他人」",
+   code_of(lambda: flowstore.create_flow(adm_b, definition(), "alice@agora.io")),
+   "flow_exists_other_owner")
+ok("★ 消息里不带别人的邮箱",
+   "bob@agora.io" in code_of(lambda: str(flowstore.create_flow(adm_b, definition(), "alice@agora.io"))),
+   False)
+ok("★ 管理员看得见它，所以报的不是「归属其他人」",
+   code_of(lambda: flowstore.create_flow(adm_b, definition(), "alice@agora.io", flowstore.ANY)),
+   "flow_exists")
+
+# 恢复走的是和归档同一条可见性规则
+ex_other = new_id()
+flowstore.create_flow(ex_other, definition("bob 的"), "bob@agora.io")
+flowstore.archive(ex_other, "bob@agora.io")
+raises("★ 普通用户恢复不了别人的流程", flowstore.NotFound,
+       lambda: flowstore.restore(ex_other, "alice@agora.io"))
+ok("★ 管理员恢复得了", flowstore.restore(ex_other, "alice@agora.io", flowstore.ANY)["archivedAt"], None)
+ok("★ 管理员恢复别人的流程，owner 不会被顶掉", flowstore.get_flow(ex_other)["owner"], "bob@agora.io")
+
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:

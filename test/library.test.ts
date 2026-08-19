@@ -160,12 +160,63 @@ test('★ 不自动上传本地流程 —— 往服务器搬数据是一次明�
   assert.equal(calls.filter((c) => c.method === 'POST').length, 0)
 })
 
+const localFlow = (id = 'f1', name = '日报') =>
+  ({ id, name, updatedAt: 0, nodeCount: 1, def: { ...DEF, id } } as never)
+
 test('显式上传才发 POST', async () => {
   await mode(true)
   routes['POST /api/flows'] = { body: { id: 'f1' } }
-  const r = await lib.uploadLocalOnly([{ id: 'f1', name: '日报', updatedAt: 0, nodeCount: 1, def: DEF as never }])
-  assert.equal(r.moved, 1)
+  const r = await lib.uploadOne(localFlow())
+  assert.equal(r.ok, true)
   assert.equal(calls.filter((c) => c.method === 'POST').length, 1)
+})
+
+// "只存在这台机器上"是**推断**出来的：本地列表减去服务端列表，而服务端那份
+// 是过滤过的（归档的、归属别人的都不在里面）。于是"服务器上没有"和"已存在"
+// 会同时成立 —— 出路必须能从 code 分出来，光看文案分不出来
+test('★ 上传撞上"已存在"时，要把服务端给的 code 带出来', async () => {
+  await mode(true)
+  routes['POST /api/flows'] = {
+    status: 409,
+    body: { detail: { code: 'flow_exists_archived', message: '流程 f1 在服务器上已归档（不是不存在），可以恢复' } },
+  }
+  const r = await lib.uploadOne(localFlow())
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'flow_exists_archived')
+  assert.match(r.error ?? '', /已归档/)
+})
+
+test('★ 恢复归档：先 restore 再写草稿 —— 顺序反了流程仍然看不见', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/restore'] = { body: { id: 'f1' } }
+  routes['PUT /api/flows/f1'] = { body: { id: 'f1' } }
+  calls = []
+  const r = await lib.restoreAndUpload(localFlow())
+  assert.equal(r.ok, true)
+  const posts = calls.filter((c) => c.method === 'POST' || c.method === 'PUT')
+  assert.equal(posts[0].url, '/api/flows/f1/restore')
+  assert.equal(posts[1].url, '/api/flows/f1')
+})
+
+test('★ restore 成功但草稿只落到本地 → 算失败，不能报"上传好了"', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/restore'] = { body: { id: 'f1' } }
+  routes['PUT /api/flows/f1'] = { status: 503, body: { detail: '数据库不可用' } }
+  const r = await lib.restoreAndUpload(localFlow())
+  // saveFlow 会返回 ok:true（本地写成功），但这件事的目的就是让服务端拿到它
+  assert.equal(r.ok, false)
+  assert.match(r.error ?? '', /数据库不可用/)
+})
+
+test('★ id 被别人占着 → 换新 id 上传副本，原 id 一次都不许再碰', async () => {
+  await mode(true)
+  routes['POST /api/flows'] = { body: { id: 'new' } }
+  calls = []
+  const r = await lib.uploadAsCopy(localFlow(), '日报 副本')
+  assert.equal(r.ok, true)
+  const sent = calls[0].body as { id: string; definition: { name: string } }
+  assert.notEqual(sent.id, 'f1')
+  assert.equal(sent.definition.name, '日报 副本')
 })
 
 test('★ 服务端读失败 → 退回本地，但把原因带出来', async () => {

@@ -238,6 +238,10 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(400, str(exc))
     except flowstore.NotFound as exc:
         raise HTTPException(404, str(exc))
+    except flowstore.FlowExists as exc:
+        # 带 code 的结构化 409：前端要据此分出"恢复归档"和"换个 id 建副本"
+        # 两条完全不同的出路，靠匹配文案迟早会漂
+        raise HTTPException(409, {"code": exc.code, "message": str(exc)})
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
     except flowstore.FlowArchived as exc:
@@ -283,7 +287,8 @@ def create_flow(
     flow_id = (body.id or "").strip() or str(body.definition.get("id") or "").strip()
     if not flow_id:
         raise HTTPException(400, "缺少流程 id")
-    return _guard(flowstore.create_flow, flow_id, body.definition, _actor(request, x_forwarded_user))
+    return _guard(flowstore.create_flow, flow_id, body.definition,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
 
 
 @app.get("/api/flows/{flow_id}")
@@ -335,6 +340,18 @@ def flow_version(
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
     return _guard(flowstore.get_version, flow_id, version, _viewer(request, x_forwarded_user))
+
+
+@app.post("/api/flows/{flow_id}/restore")
+def restore_flow(
+    flow_id: str,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """取消归档。归档过的流程在界面上是彻底消失的，却仍占着 id ——
+    没有这条路，"删掉了想找回来"和"同名重建"两件事都是死胡同。"""
+    return _guard(flowstore.restore, flow_id,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
 
 
 @app.delete("/api/flows/{flow_id}")

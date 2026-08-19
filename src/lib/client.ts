@@ -306,6 +306,11 @@ export function getRemoteVersion(id: string, version: number) {
   )
 }
 
+/** 取消归档。归档的流程在列表里是看不见的，但 id 仍然被它占着 */
+export function restoreRemoteFlow(id: string) {
+  return req<RemoteFlow>(`/api/flows/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+}
+
 export function archiveRemoteFlow(id: string) {
   return req<{ archived: boolean }>(`/api/flows/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

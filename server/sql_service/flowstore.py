@@ -44,6 +44,41 @@ class FlowArchived(RuntimeError):
     pass
 
 
+class FlowExists(FileExistsError):
+    """id 已经被占用。**必须带上原因。**
+
+    只回一句"已存在"会把人卡死：这条流程在列表里根本看不见（要么归档了，
+    要么归属别人），用户看到的是"服务器上没有"和"已存在"同时成立，
+    而两条消息都不告诉他下一步该干什么。
+
+    这里**刻意透出"id 被占用"这件事**，和 VISIBLE 那条"越权按不存在处理"
+    的取舍不同：那条防的是拿 id 去枚举别人的流程，而走到这里的调用方
+    手上已经有完整的流程定义了，藏也藏不住 —— 藏起来只剩下一个无解的报错。
+    归属人的邮箱仍然只对看得见它的人给出。
+    """
+
+    def __init__(self, flow_id: str, owner: Optional[str], archived: bool, visible: bool):
+        self.flow_id, self.owner, self.archived, self.visible = flow_id, owner, archived, visible
+        if not visible:
+            # 归属别人 → 这个 id 要不回来了，唯一的出路是换个 id
+            self.code = "flow_exists_other_owner"
+            msg = f"流程 {flow_id} 已存在，但归属其他人，你看不到它"
+        elif archived:
+            self.code = "flow_exists_archived"
+            msg = f"流程 {flow_id} 在服务器上已归档（不是不存在），可以恢复"
+        else:
+            # 看得见又没归档 —— 调用方的列表是旧的，重新读一次就有了
+            self.code = "flow_exists"
+            msg = f"流程 {flow_id} 已存在"
+        super().__init__(msg)
+
+
+def _owner_visible(owner: Optional[str], viewer: Any) -> bool:
+    """VISIBLE 那条规则的 Python 版。**改一处必须改两处** —— 只在无法用
+    SQL 表达时（比如已经把行读出来了、要据此分支）用它。"""
+    return viewer is ANY or owner is None or owner == viewer
+
+
 def _rows(conn, sql: str, args=()) -> List[Dict[str, Any]]:
     cur = conn.execute(sql, args)
     cols = [d[0] for d in cur.description]
@@ -146,13 +181,19 @@ def get_flow(flow_id: str, viewer: Optional[str] = ANY) -> Dict[str, Any]:
     return out
 
 
-def create_flow(flow_id: str, definition: Any, actor: Optional[str]) -> Dict[str, Any]:
+def create_flow(flow_id: str, definition: Any, actor: Optional[str],
+                viewer: Any = SELF) -> Dict[str, Any]:
     # 版本 0 = 还没发布过。发布后才有 1
     draft = flowdef.for_storage(definition, flow_id, 0)
     with db.pool().connection() as conn:
-        exists = _one(conn, "SELECT id FROM flows WHERE id = %s", (flow_id,))
+        # 这一句**不过滤可见性**：id 是主键，看不见的那条一样会撞。
+        # 过滤掉的话下面的 INSERT 会撞成 UniqueViolation，落到 500
+        exists = _one(conn, "SELECT owner, archived_at FROM flows WHERE id = %s", (flow_id,))
         if exists:
-            raise FileExistsError(f"流程 {flow_id} 已存在")
+            raise FlowExists(
+                flow_id, exists["owner"], exists["archived_at"] is not None,
+                visible=_owner_visible(exists["owner"], _scope(actor, viewer)),
+            )
         conn.execute(
             "INSERT INTO flows (id, name, draft, owner) VALUES (%s, %s, %s, %s)",
             (flow_id, draft["name"], Jsonb(draft), actor),
@@ -346,3 +387,28 @@ def archive(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> None:
         conn.execute("UPDATE flows SET archived_at = now() WHERE id = %s AND archived_at IS NULL", (flow_id,))
         _audit(conn, actor, "flow.archive", flow_id)
         conn.commit()
+
+
+def restore(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> Dict[str, Any]:
+    """取消归档。
+
+    归档必须可逆，否则它就是"删除"了 —— 而首页那个删除按钮的全部底气，
+    正是"服务端只是归档"。少了这条路，归档过的流程在界面上永远消失，
+    却又占着 id 让同名重建报"已存在"。
+
+    **会把定时重新接上**：scheduler 那两条查询都带 `archived_at IS NULL`，
+    恢复之后下一轮 syncAllSchedules 就会把它的 schedule 重新排上。
+    调用方要把这件事说给用户听。
+    """
+    with db.pool().connection() as conn:
+        clause, args = _visible(_scope(actor, viewer))
+        if not _one(conn, "SELECT id FROM flows f WHERE id = %s" + clause, (flow_id,) + args):
+            raise NotFound(f"流程 {flow_id} 不存在")
+        conn.execute(
+            "UPDATE flows SET archived_at = NULL, updated_at = now()"
+            " WHERE id = %s AND archived_at IS NOT NULL",
+            (flow_id,),
+        )
+        _audit(conn, actor, "flow.restore", flow_id)
+        conn.commit()
+    return get_flow(flow_id)

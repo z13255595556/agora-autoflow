@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createFlow, deleteFlow, listFlows, newFlowId, uploadLocalOnly,
+  createFlow, deleteFlow, forgetLocal, listFlows, newFlowId,
+  restoreAndUpload, uploadAsCopy, uploadOne,
   type FlowList, type SavedFlow,
 } from '../lib/library'
 import { whoami } from '../lib/client'
@@ -142,12 +143,59 @@ export default function Home({
     setTick((t) => t + 1)
   }
 
+  /**
+   * 把只存在本地的流程搬到服务端。
+   *
+   * **"服务器上没有"这句话是推断出来的，而且经常是错的** —— localOnly 是拿本地
+   * 列表减去服务端列表算的，而服务端那份列表**是过滤过的**：归档的不在里面，
+   * 归属别人的也不在里面。于是"服务器上没有"和"已存在"会同时成立，
+   * 用户拿到一个 409 就走不下去了。这里按服务端给的 code 分出真正的出路。
+   */
   const upload = async () => {
     setUploading(true)
-    const { moved, errors } = await uploadLocalOnly(list.localOnly)
-    setUploading(false)
-    if (errors.length) alert(`上传了 ${moved} 条，${errors.length} 条失败：\n${errors.join('\n')}`)
-    setTick((t) => t + 1)
+    try {
+      for (const f of list.localOnly) {
+        const r = await uploadOne(f)
+        if (r.ok) continue
+
+        if (r.code === 'flow_exists_archived') {
+          const go = confirm(
+            `「${f.name}」在服务器上其实是已归档，不是不存在。\n\n` +
+            '恢复它，并用本机这份覆盖服务器上的草稿？\n' +
+            '注意：它如果配了定时触发，恢复之后定时会重新开始跑。',
+          )
+          if (!go) continue
+          const done = await restoreAndUpload(f)
+          if (!done.ok) alert(`「${f.name}」恢复失败：${done.error}`)
+          continue
+        }
+
+        if (r.code === 'flow_exists_other_owner') {
+          const name = `${f.name} 副本`
+          const go = confirm(
+            `「${f.name}」的 id 在服务器上被另一个人的流程占着 —— 你看不到它，` +
+            '这个 id 也要不回来了。\n\n' +
+            `上传成一条新流程「${name}」（换一个 id），并清掉本机这条旧记录？`,
+          )
+          if (!go) continue
+          const done = await uploadAsCopy(f, name)
+          // 本机那条旧记录不清掉的话，它的 id 永远撞、永远提示"只存在这台机器上"
+          if (done.ok) forgetLocal(f.id)
+          else alert(`「${f.name}」上传副本失败：${done.error}`)
+          continue
+        }
+
+        if (r.code === 'flow_exists') {
+          alert(`「${f.name}」服务器上已经有了，本机这份列表是旧的 —— 刷新一下就看得到。`)
+          continue
+        }
+
+        alert(`「${f.name}」上传失败：${r.error}`)
+      }
+    } finally {
+      setUploading(false)
+      setTick((t) => t + 1)
+    }
   }
 
   const exportJson = (f: SavedFlow) => {
@@ -250,12 +298,17 @@ export default function Home({
           )}
 
           {/* 只存在本地的流程绝不能从列表里消失，但也不自动上传 ——
-              往服务器上搬数据应该是一次明确的动作 */}
+              往服务器上搬数据应该是一次明确的动作。
+
+              文案**不能写死"服务器上没有"**：这一栏是拿本地列表减去服务端列表
+              算出来的，而服务端那份是过滤过的（归档的、归属别人的都不在里面）。
+              说满了的话，用户点下去撞上"已存在"就再也解释不通了 */}
           {list.localOnly.length > 0 && (
             <div className="home__notice">
               还有 {list.localOnly.length} 条流程只存在这台机器上（
               {list.localOnly.slice(0, 3).map((f) => f.name).join('、')}
-              {list.localOnly.length > 3 ? ' 等' : ''}），服务器上没有。
+              {list.localOnly.length > 3 ? ' 等' : ''}），服务端的列表里没有它们 ——
+              可能从没上传过，也可能是已归档或者归属了别人。
               <button className="btn btn--sm" disabled={uploading} onClick={() => void upload()}>
                 {uploading ? '上传中…' : '上传到服务器'}
               </button>
