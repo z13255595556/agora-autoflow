@@ -552,11 +552,17 @@ export function resolveParams(
   for (const [k, v] of Object.entries(params)) {
     const field = schema?.properties?.[k]
     const ph = field?.['x-placeholders']
-    if (ph && typeof v === 'string') {
+    // 在线注册表短暂缺字段时，不能让 SQL 自动绑定静默失效。`sql` +
+    // `params` 是两个 SQL 节点共用的稳定契约；schema 元数据仍是首选。
+    const placeholderTarget = ph?.valuesFrom
+      ?? (k === 'sql' && typeof v === 'string' && Object.prototype.hasOwnProperty.call(params, 'params')
+        ? 'params'
+        : undefined)
+    if (placeholderTarget && typeof v === 'string') {
       out[k] = resolvePreservingPlaceholders(v, ctx)
       // 两种写法都要自动代入，用和表单、校验同一个解析器
       autoBind.push({
-        target: ph.valuesFrom,
+        target: placeholderTarget,
         names: extractSqlPlaceholders(String(out[k])).map((p) => p.name),
       })
     } else if (v && typeof v === 'object' && !Array.isArray(v)) {

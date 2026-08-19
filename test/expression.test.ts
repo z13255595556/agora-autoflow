@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MISSING_MARK, MissingValue, resolveTemplate } from '../src/lib/engine.ts'
+import { MISSING_MARK, MissingValue, resolveParams, resolveTemplate } from '../src/lib/engine.ts'
 
 /**
  * 表达式求值的回归测试。
@@ -26,6 +26,24 @@ const ctx = {
     },
   },
 }
+
+test('SQL 自动绑定不依赖运行时注册表元数据', () => {
+  assert.deepEqual(
+    resolveParams(
+      {
+        sql: 'SELECT app_id FROM app_sign_key_cache WHERE app_id = :appid;',
+        limit: 1000,
+        params: {},
+      },
+      { ...ctx, trigger: { appid: 'ca9927a769de46e4' } },
+    ),
+    {
+      sql: 'SELECT app_id FROM app_sign_key_cache WHERE app_id = :appid;',
+      limit: 1000,
+      params: { appid: 'ca9927a769de46e4' },
+    },
+  )
+})
 
 // ---------------------------------------------------------------- 缺值必须炸
 
