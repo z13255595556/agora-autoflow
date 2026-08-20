@@ -23,6 +23,7 @@ if (SKIP) {
 
 let pool: import('pg').Pool
 let tick: (onlyFlowId?: string) => Promise<{ ran: boolean }>
+let reapExpired: (maxAttempts?: number) => Promise<number>
 let purgeExpiredRuns: (days?: number) => Promise<number>
 let purgeOrphanDraftVersions: (days?: number) => Promise<number>
 let rollUpUsage: (days?: number) => Promise<number>
@@ -49,6 +50,7 @@ before(async () => {
   const store = await import('../worker/store.ts')
   tick = mod.tick
   pool = store.pool
+  reapExpired = store.reapExpired
   purgeExpiredRuns = store.purgeExpiredRuns
   purgeOrphanDraftVersions = store.purgeOrphanDraftVersions
   rollUpUsage = store.rollUpUsage
@@ -327,4 +329,49 @@ test('★ 用量汇总：幂等，且不会被残缺的重算覆盖', { skip: SK
   assert.deepEqual(await read(), first, '★★ 明细少了之后重算不许把已有统计改小')
 
   await pool.query('DELETE FROM usage_daily WHERE flow_id = $1', [flowId])
+})
+
+// ─────────────────────────────────── 等外部系统的 run 不能被当成失联的 worker
+//
+// 异步节点（Hive/Spark 查询）提交之后置 waiting 就把 worker 让出来，一条五分钟
+// 的查询不该占住 worker。但"让出来"必须是显式交接：只 return 的话 runs 还是
+// running、租约 60 秒后到期、心跳已经停了 —— reaper 会把"正在等结果"误判成
+// "worker 失联"，重排三次后判死。**线上真发生过**：所有跑过 3 分钟的定时 SQL
+// 全军覆没，错误写的是"worker 反复失联"。
+
+test('★★ 提交给外部系统之后，run 不会被回收器当成失联的 worker', { skip: SKIP }, async () => {
+  const runId = await enqueue()
+  // 造出"提交完了正在等结果"的现场：t 跑完了，d 挂在轮询上。
+  // **不直接调 deferRun** —— 原来的 bug 正是 driveRun 没调它，
+  // 单测 deferRun 本身一样会绿
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, status, seq) VALUES ($1, 't', 'success', 1)`, [runId])
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, status, wait_kind, next_wake_at, seq)
+     VALUES ($1, 'd', 'waiting', 'poll', now() + interval '3 seconds', 2)`, [runId])
+
+  await tick(flowId)   // 认领 → decide 发现没活可干 → 交接
+
+  const { rows } = await pool.query(
+    `SELECT status, lease_owner, lease_expires > now() + interval '10 minutes' AS 远期
+       FROM runs WHERE id = $1`, [runId],
+  )
+  assert.equal(rows[0].status, 'running', '仍是 running —— 置回 queued 会被每秒认领一次')
+  assert.equal(rows[0].lease_owner, null, '★ worker 已经放手了（原来的 bug：它还攥着一个不再续期的租约）')
+  assert.equal(rows[0].远期, true, '租约续到远期，reaper 不会误伤')
+
+  // 关键：把时钟推到"三个租约之后"，回收器一次都不许碰它
+  await pool.query("UPDATE runs SET created_at = now() - interval '10 minutes' WHERE id = $1", [runId])
+  await reapExpired()
+  const after = await runRow(runId)
+  assert.equal(after.status, 'running', '★★ 三分钟之后它还活着')
+  assert.equal(after.error, null)
+
+  // 反证：租约真的过期了（唤醒循环也坏了），reaper 照原样兜底
+  await pool.query("UPDATE runs SET lease_expires = now() - interval '1 second' WHERE id = $1", [runId])
+  await reapExpired()
+  assert.equal((await runRow(runId)).status, 'queued', '真过期了还是要回收 —— 不能永远卡住')
+
+  await pool.query('DELETE FROM steps WHERE run_id = $1', [runId])
+  await pool.query('DELETE FROM runs WHERE id = $1', [runId])
 })

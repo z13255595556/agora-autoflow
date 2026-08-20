@@ -9,7 +9,7 @@ import { NODE_TYPE_MAP, applyBackendNodes } from '../src/registry.ts'
 import type { FlowDefinition } from '../src/types.ts'
 import type { FNode } from '../src/store.ts'
 import {
-  appendEvent, claimRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
+  appendEvent, claimRun, deferRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
   pool, publisherOf, purgeExpiredRuns, purgeOrphanDraftVersions, reapExpired, rollUpUsage,
   writeStep, LEASE_SECONDS, RUN_RETENTION_DAYS, USAGE_ROLLUP_DAYS, type RunRow,
 } from './store.ts'
@@ -168,7 +168,11 @@ async function driveRun(run: RunRow): Promise<void> {
           await recordRunAlert(run.id).catch(() => {})
           return
         }
-        return  // waiting：交回队列，由唤醒循环在到期时重新认领
+        // waiting：有行在等外部系统（异步查询轮询 / 退避重试）。
+        // **必须显式交接,不能只是 return** —— 光 return 的话租约会在 60 秒后
+        // 过期,reaper 把"正在等 Hive 出结果"误判成"worker 失联"。见 deferRun
+        await deferRun(run.id, WORKER_ID)
+        return
       }
 
       // 一次只跑一个再重新 decide。批量执行等于偷偷引入并行，

@@ -73,6 +73,39 @@ export async function claimRun(workerId: string, onlyFlowId?: string): Promise<R
   return rows[0] ?? null
 }
 
+/**
+ * 交给唤醒循环。**异步节点提交之后走这条路,不是直接 return。**
+ *
+ * driveRun 遇到"没有节点可跑、但有 waiting 的行"时会返回,把 worker 让出来 ——
+ * 一条五分钟的 Hive 查询不该把 worker 占住。但**返回不等于交接**:
+ * 光 return 的话 runs 那一行还是 running、租约还是 60 秒后到期,而心跳已经
+ * 随 driveRun 一起停了。于是 60 秒后 reapExpired 看到"running + 租约过期",
+ * 判定 worker 失联,重排;再认领、再返回、再 60 秒 —— 三次之后这条 run 被
+ * 判死,错误写的是"worker 反复失联"。
+ *
+ * **实际后果:任何异步查询只要跑过 3 分钟就必然失败**,和 SQL 本身无关。
+ * 而且判死之后 wakeDeferred 的 `r.status IN ('running','queued')` 不再匹配,
+ * 轮询停止 —— 数据平台上那个查询没人管了,handle 就这么漏掉。
+ *
+ * 所以这里把租约续到一个**远期**时刻再放手:
+ * - reaper 扫的是租约过期的行,续了就不会误伤
+ * - claimRun 只找 queued,status 仍是 running 就不会被反复认领
+ *   （置回 queued 的话每秒会被认领一次,attempt 一路涨,run.started 刷满事件表）
+ * - wakeDeferred 在**真有进展时**（轮询完成 / 退避到期）负责把它置回 queued
+ * - 唤醒循环自己坏掉的话,远期租约到期后 reaper 照原样兜底 —— 不会永久卡住
+ */
+export const DEFERRED_LEASE_SECONDS = Number(process.env.WORKER_DEFERRED_LEASE_SECONDS ?? 3600)
+
+export async function deferRun(runId: string, workerId: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE runs SET lease_owner = NULL,
+       lease_expires = now() + ($3 || ' seconds')::interval
+     WHERE id = $1 AND lease_owner = $2 AND status = 'running'`,
+    [runId, workerId, DEFERRED_LEASE_SECONDS],
+  )
+  return (rowCount ?? 0) > 0
+}
+
 /** 续租。返回 false 表示租约已经被别人抢走了 —— 此时必须立刻停手 */
 export async function heartbeat(runId: string, workerId: string): Promise<boolean> {
   const { rowCount } = await pool.query(
