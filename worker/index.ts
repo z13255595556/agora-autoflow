@@ -387,7 +387,11 @@ function timeoutMinutesOf(t: NodeType, input: Record<string, unknown>): number {
   const raw = Number(input.timeoutMinutes ?? t.runtime?.defaultTimeoutMinutes ?? FALLBACK_TIMEOUT_MINUTES)
   // 填了 0 / 负数 / 非数字都退回默认值，**不当成"不超时"** ——
   // 那会让一次手滑变成一条永远挂在那里的 run
-  return Number.isFinite(raw) && raw > 0 ? raw : FALLBACK_TIMEOUT_MINUTES
+  const wanted = Number.isFinite(raw) && raw > 0 ? raw : FALLBACK_TIMEOUT_MINUTES
+  // 上限在这里**真的**夹一次。manifest 里的 maximum 只管到表单控件，
+  // 导入的流程 JSON、老版本前端、手改的定义都绕得过去；而超过判死线
+  // （3 × DEFERRED_LEASE_SECONDS）的超时等于没有超时
+  return Math.min(wanted, t.runtime?.maxTimeoutMinutes ?? Infinity)
 }
 
 /**

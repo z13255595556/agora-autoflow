@@ -304,7 +304,17 @@ def get_flow(
     request: Request,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
-    return _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
+    out = _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
+    # 这条在**默认列表**（scope=mine）里看得到吗。
+    #
+    # 管理员用 ANY 视角**读得到**别人的流程（从管理台点进去要能打开），
+    # 但那份定义不该被浏览器当成"我的"缓存下来 —— 列表用的是 _actor，
+    # 缓存下来的东西永远不会出现在列表里，于是变成一条**删了又回来**的
+    # 「只在本机」：删掉本地缓存 → 再打开一次 → 又写回去。
+    #
+    # 判定放在服务端：VISIBLE 那条规则已经有两处实现了，前端再抄一份必漂。
+    out["mine"] = flowstore.owner_visible(out.get("owner"), _actor(request, x_forwarded_user))
+    return out
 
 
 @app.put("/api/flows/{flow_id}")

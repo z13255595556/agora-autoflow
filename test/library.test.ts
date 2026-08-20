@@ -240,6 +240,48 @@ test('★ id 被别人占着 → 换新 id 上传副本，原 id 一次都不许
   assert.equal(sent.definition.name, '日报 副本')
 })
 
+// ★★ 管理员从管理台点得开别人的流程，但那份**不能进本地缓存**：
+// 首页列表用的是 scope=mine，里面永远没有它 —— 缓存下来就是一张删了又回来的
+// 「只在本机」卡片（删掉 → 再打开一次 → 又写回去）。线上真发生过
+test('★★ 不是我的流程，读得到但不写进本地缓存', async () => {
+  await mode(true)
+  routes['GET /api/flows/other1'] = {
+    body: { id: 'other1', name: '别人的日报', owner: 'someone@agora.io', mine: false,
+            activeVersion: 1, updatedAt: null, archivedAt: null, nodeCount: 1,
+            nodeTypes: [], triggerKind: 'schedule', hasUnpublishedChanges: false,
+            draft: { ...DEF, id: 'other1' } },
+  }
+  const got = await lib.getFlow('other1')
+  assert.equal(got?.name, '别人的日报', '读得到 —— 管理台点进去要能打开')
+  assert.equal(lib.listLocalFlows().find((f) => f.id === 'other1'), undefined, '★ 但没落到本地')
+})
+
+test('是我的流程照旧写穿缓存 —— 服务端挂了还打得开', async () => {
+  await mode(true)
+  routes['GET /api/flows/mine1'] = {
+    body: { id: 'mine1', name: '我的日报', owner: null, mine: true,
+            activeVersion: 1, updatedAt: null, archivedAt: null, nodeCount: 1,
+            nodeTypes: [], triggerKind: 'manual', hasUnpublishedChanges: false,
+            draft: { ...DEF, id: 'mine1' } },
+  }
+  await lib.getFlow('mine1')
+  assert.ok(lib.listLocalFlows().some((f) => f.id === 'mine1'))
+})
+
+// 老服务端不返回 mine。按 true 处理，否则升级顺序一反（前端先上）
+// 所有人的离线兜底都会静默失效
+test('老服务端没有 mine 字段：当成我的，行为和以前一致', async () => {
+  await mode(true)
+  routes['GET /api/flows/legacy1'] = {
+    body: { id: 'legacy1', name: '老服务端', owner: null,
+            activeVersion: null, updatedAt: null, archivedAt: null, nodeCount: 1,
+            nodeTypes: [], triggerKind: 'manual', hasUnpublishedChanges: false,
+            draft: { ...DEF, id: 'legacy1' } },
+  }
+  await lib.getFlow('legacy1')
+  assert.ok(lib.listLocalFlows().some((f) => f.id === 'legacy1'))
+})
+
 test('★ 服务端读失败 → 退回本地，但把原因带出来', async () => {
   await mode(false)
   await lib.saveFlow(DEF as never)

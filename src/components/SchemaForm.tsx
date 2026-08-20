@@ -3,6 +3,7 @@ import type { JsonSchema } from '../types'
 import { cachedOptions } from '../registry'
 import type { VarEntry } from '../lib/vars'
 import { tokenizeRefs } from '../lib/blocks'
+import { commitNumber, displayNumber } from '../lib/numberInput'
 import { describeBlock, type LabelCtx } from '../lib/refLabel'
 import { isFieldVisible } from '../lib/display'
 import { extractSqlPlaceholders } from '../lib/placeholders'
@@ -186,13 +187,16 @@ export default function SchemaForm({
             )}
 
             {(sub.type === 'integer' || sub.type === 'number') && (
-              <input
-                type="number"
-                value={value === undefined || value === null ? '' : Number(value)}
+              // key 带上 nodeId：换节点时强制换一个实例，免得上一个节点
+              // 没来得及失焦的草稿文本被下一个节点原样显示出来
+              <NumberField
+                key={`${nodeId ?? ''}:${key}`}
+                value={value as number | undefined}
                 min={sub.minimum}
                 max={sub.maximum}
-                aria-invalid={fieldErrors.length > 0}
-                onChange={(e) => onChange(key, e.target.value === '' ? undefined : Number(e.target.value))}
+                integer={sub.type === 'integer'}
+                invalid={fieldErrors.length > 0}
+                onChange={(next) => onChange(key, next)}
               />
             )}
 
@@ -427,5 +431,55 @@ function KvEditor({
         + 添加一项
       </button>
     </div>
+  )
+}
+
+/**
+ * 数字输入框。**编辑期间显示的是本地草稿，不是从 props 推出来的值。**
+ *
+ * 直接用受控 input 的话，清空输入框会把值置成 undefined，而上面那句
+ * `values[key] === undefined ? sub.default : values[key]` 立刻又把默认值填回来 ——
+ * 于是「把 15 删掉改成 20」这件事**根本做不到**：退格两下，15 自己回来了。
+ * 有 default 的数字字段全都中招（超时时间、行数上限、HTTP 超时……）。
+ *
+ * 所以：编辑时输入框跟着草稿走，允许它一时是空的；失焦时才归位 ——
+ * 空了就退回默认值，超出范围就夹到边界。
+ */
+function NumberField({
+  value, min, max, integer, invalid, onChange,
+}: {
+  value: number | undefined
+  min?: number
+  max?: number
+  integer?: boolean
+  invalid?: boolean
+  onChange: (next: number | undefined) => void
+}) {
+  /** null = 没在编辑，显示 props 的值 */
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = displayNumber(draft, value)
+
+  return (
+    <input
+      type="number"
+      value={shown}
+      min={min}
+      max={max}
+      aria-invalid={invalid}
+      onChange={(e) => {
+        const text = e.target.value
+        setDraft(text)                                  // 先让输入框跟手，哪怕现在是空的
+        // 空着不往上抛：抛了就会被默认值顶回来，正是这个组件要解决的问题。
+        // 中间态（比如 min=1 时打出的 0）照抛，实时预览要跟着动，失焦时再夹
+        if (text === '') return
+        const n = Number(text)
+        if (Number.isFinite(n)) onChange(integer ? Math.round(n) : n)
+      }}
+      onBlur={() => {
+        const text = draft
+        setDraft(null)                                  // 把显示权交回 props
+        if (text !== null) onChange(commitNumber(text, { min, max, integer }))
+      }}
+    />
   )
 }

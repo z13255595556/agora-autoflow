@@ -394,7 +394,7 @@ test('★★ 查询超过设定时间：撤销平台任务并判失败，而不�
     runtime: {
       kind: 'http-async', submit: 'POST /nodes/sql.query/submit',
       poll: 'GET /nodes/sql.query/poll', cancel: 'POST /nodes/sql.query/cancel',
-      pollIntervalMs: 3000, defaultTimeoutMinutes: 15,
+      pollIntervalMs: 3000, defaultTimeoutMinutes: 15, maxTimeoutMinutes: 120,
     },
   } as never])
 

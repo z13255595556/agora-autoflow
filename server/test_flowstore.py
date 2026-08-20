@@ -403,6 +403,23 @@ raises("★ 普通用户恢复不了别人的流程", flowstore.NotFound,
 ok("★ 管理员恢复得了", flowstore.restore(ex_other, "alice@agora.io", flowstore.ANY)["archivedAt"], None)
 ok("★ 管理员恢复别人的流程，owner 不会被顶掉", flowstore.get_flow(ex_other)["owner"], "bob@agora.io")
 
+# ------------------------------------------------- 单条读的视角不能比列表宽
+#
+# 管理员用 ANY 视角**读得到**别人的流程（管理台点进去要能打开），但首页列表
+# 用的是 actor 视角。前端拿单条读的结果写本地缓存时，必须知道"这条会不会
+# 出现在我的列表里" —— 不知道的话，缓存下来的就是一张删了又回来的
+# 「只在本机」卡片：删掉本地那份 → 再打开一次 → 又写回去。线上真发生过。
+#
+# 判定只有 owner_visible 这一个出处，前端不自己抄一份。
+ok("★★ 别人的流程：读得到，但不在我的默认列表里",
+   (flowstore.get_flow(adm_b, flowstore.ANY)["id"],
+    flowstore.owner_visible("bob@agora.io", "alice@agora.io")),
+   (adm_b, False))
+ok("我自己的在", flowstore.owner_visible("alice@agora.io", "alice@agora.io"), True)
+ok("无主的对谁都在", flowstore.owner_visible(None, "alice@agora.io"), True)
+ok("★ 认不出身份时，有主的一律不算我的",
+   flowstore.owner_visible("alice@agora.io", None), False)
+
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:

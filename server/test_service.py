@@ -187,6 +187,9 @@ ok("★ 给 worker 的兜底和字段默认值是同一个数",
 # 上限压在 worker 判死（3 × DEFERRED_LEASE_SECONDS = 3 小时）之内，
 # 保证用户看到的是"查询超时，可以调大"而不是"worker 反复失联"
 ok("★ 超时上限留在 worker 判死之前", _sql_timeout["maximum"] <= 120, True)
+# 上限也要给 worker：表单里的 maximum 只管到控件，导入的流程 JSON 绕得过去
+ok("★ 上限同时下发给 worker，执行侧才夹得住",
+   by_type["sql.query"]["runtime"]["maxTimeoutMinutes"], _sql_timeout["maximum"])
 ok("自建 PostgreSQL 是同步节点", by_type["postgres.workspace"]["runtime"]["kind"], "http")
 ok("自建 PostgreSQL 不接受连接参数",
    sorted(by_type["postgres.workspace"]["input"]["properties"]), ["limit", "params", "sql"])

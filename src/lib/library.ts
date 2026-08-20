@@ -183,8 +183,13 @@ export async function getFlow(id: string): Promise<SavedFlow | null> {
       const r = await api.getRemoteFlow(id)
       if (r.draft) {
         const def = normalizeFlowDefinition(r.draft, id)
-        // 服务端那份也写进本地：下次服务端挂了还打得开
-        saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
+        // 服务端那份也写进本地：下次服务端挂了还打得开。
+        //
+        // **但只缓存"我的工作台"里的那些。** 管理员从管理台点开别人的流程时
+        // 读得到它，可首页列表用的是 scope=mine，那条永远不会出现在里面 ——
+        // 缓存下来就是一张「只在本机」的卡片：删掉、再打开一次、它又回来了。
+        // 老服务端不返回 mine，按 true 处理，行为和以前一致
+        if (r.mine !== false) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
         return fromRemote(r, def)
       }
     } catch {

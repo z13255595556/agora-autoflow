@@ -124,6 +124,9 @@ SQL_QUERY: Dict[str, Any] = {
         # 没填 timeoutMinutes 的老流程用它。放在 runtime 里而不是在 worker 里
         # 硬编码一个 15 —— 那样改默认值要改两个仓库的两个数字
         "defaultTimeoutMinutes": SQL_TIMEOUT_MINUTES,
+        # 上限也给 worker —— 界面上的 maximum 只是个提示，导入的流程 JSON、
+        # 老版本前端、手改的定义都能绕过它。真正兜底的必须是执行侧
+        "maxTimeoutMinutes": SQL_TIMEOUT_MAX_MINUTES,
     },
     "policy": {
         "idempotent": True,

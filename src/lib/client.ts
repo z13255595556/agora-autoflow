@@ -196,6 +196,14 @@ export interface RemoteFlow {
    * 前端再筛一遍只会在两边不一致时产生一个谁都解释不了的空列表。
    */
   owner: string | null
+  /**
+   * 这条在**默认列表**（scope=mine）里看得到吗。服务端算的，只有单条读会带。
+   *
+   * 管理员从管理台点得开别人的流程，但那份**不能写进本地缓存** ——
+   * 首页列表用的是 scope=mine，里面永远没有它，缓存下来就是一条
+   * 删了又回来的「只在本机」。老服务端不返回这个字段，按 true 处理。
+   */
+  mine?: boolean
   draft?: Record<string, unknown>
 }
 

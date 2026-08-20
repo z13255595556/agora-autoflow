@@ -75,7 +75,7 @@ class FlowExists(FileExistsError):
         super().__init__(msg)
 
 
-def _owner_visible(owner: Optional[str], viewer: Any) -> bool:
+def owner_visible(owner: Optional[str], viewer: Any) -> bool:
     """VISIBLE 那条规则的 Python 版。**改一处必须改两处** —— 只在无法用
     SQL 表达时（比如已经把行读出来了、要据此分支）用它。"""
     return viewer is ANY or owner is None or owner == viewer
@@ -194,7 +194,7 @@ def create_flow(flow_id: str, definition: Any, actor: Optional[str],
         if exists:
             raise FlowExists(
                 flow_id, exists["owner"], exists["archived_at"] is not None,
-                visible=_owner_visible(exists["owner"], _scope(actor, viewer)),
+                visible=owner_visible(exists["owner"], _scope(actor, viewer)),
             )
         conn.execute(
             "INSERT INTO flows (id, name, draft, owner) VALUES (%s, %s, %s, %s)",

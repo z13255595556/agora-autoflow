@@ -148,6 +148,8 @@ export interface NodeRuntime {
   timeoutMs?: number
   /** 没填 timeoutMinutes 的老流程,轮询多久就放弃。见 manifest.SQL_TIMEOUT_MINUTES */
   defaultTimeoutMinutes?: number
+  /** 超时最多能设到多少。界面上的 maximum 挡不住导入的 JSON,执行侧要自己夹 */
+  maxTimeoutMinutes?: number
 }
 
 export interface NodeType {
