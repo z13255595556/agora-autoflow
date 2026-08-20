@@ -551,7 +551,7 @@ def create_run(
         version=body.version,
         idempotency_key=idempotency_key,
         # 调试快照记在点运行的这个人名下 —— worker 就以他的名义去数据平台查数
-        actor=viewer,
+        actor=_actor(request, x_forwarded_user),
     )
 
 
