@@ -14,6 +14,16 @@ from typing import Any, Dict
 from . import wecom
 from .datalego import ENGINES
 
+# 查询跑多久算超时。**这是默认值的唯一出处** —— 输入字段的 default 和
+# runtime 里给 worker 的兜底都引用它（前端 src/registry.ts 那份镜像要跟着改）。
+SQL_TIMEOUT_MINUTES = 15
+
+# 上限和 worker 的 DEFERRED_LEASE_SECONDS（默认 1 小时）绑在一起：
+# 租约到期 reaper 会把 run 重排一次（attempt+1），三次之后判死 —— 也就是 3 小时。
+# 上限压到 2 小时，保证**超时一定先于判死触发**，用户看到的是"查询超时，可以
+# 调大这个值"，而不是一句无从下手的"worker 反复失联"。
+SQL_TIMEOUT_MAX_MINUTES = 120
+
 SQL_QUERY: Dict[str, Any] = {
     "type": "sql.query",
     "typeVersion": "2.0.0",
@@ -60,6 +70,14 @@ SQL_QUERY: Dict[str, Any] = {
                 "maximum": 100000,
                 "description": "外面套一层 LIMIT，防止 SELECT * 打满引擎",
             },
+            "timeoutMinutes": {
+                "type": "integer",
+                "title": "超时时间（分钟）",
+                "default": SQL_TIMEOUT_MINUTES,
+                "minimum": 1,
+                "maximum": SQL_TIMEOUT_MAX_MINUTES,
+                "description": "跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源",
+            },
             "queue": {
                 "type": "string",
                 "title": "队列",
@@ -103,6 +121,9 @@ SQL_QUERY: Dict[str, Any] = {
         "cancel": "POST /nodes/sql.query/cancel",
         "probe": "POST /nodes/sql.query/probe",
         "pollIntervalMs": 3000,
+        # 没填 timeoutMinutes 的老流程用它。放在 runtime 里而不是在 worker 里
+        # 硬编码一个 15 —— 那样改默认值要改两个仓库的两个数字
+        "defaultTimeoutMinutes": SQL_TIMEOUT_MINUTES,
     },
     "policy": {
         "idempotent": True,

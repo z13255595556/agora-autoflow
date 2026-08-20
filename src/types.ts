@@ -146,6 +146,8 @@ export interface NodeRuntime {
   probe?: string
   pollIntervalMs?: number
   timeoutMs?: number
+  /** 没填 timeoutMinutes 的老流程,轮询多久就放弃。见 manifest.SQL_TIMEOUT_MINUTES */
+  defaultTimeoutMinutes?: number
 }
 
 export interface NodeType {

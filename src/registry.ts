@@ -222,6 +222,14 @@ export const NODE_TYPES: NodeType[] = [
           maximum: 100000,
           description: '外面套一层 LIMIT，防止 SELECT * 打满引擎',
         },
+        timeoutMinutes: {
+          type: 'integer',
+          title: '超时时间（分钟）',
+          default: 15,
+          minimum: 1,
+          maximum: 120,
+          description: '跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源',
+        },
         queue: { type: 'string', title: '队列', default: 'share', 'x-show': { engine: ['hive'] }, 'x-ui': { widget: 'text' } },
         // 这里曾经有个「记账邮箱」(creator)。**故意删掉的**：数据平台按 creator
         // 裁决查询权限，而节点参数是编流程的人随手填的字符串，留着它等于谁都能

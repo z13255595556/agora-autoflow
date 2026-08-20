@@ -375,3 +375,78 @@ test('★★ 提交给外部系统之后，run 不会被回收器当成失联的
   await pool.query('DELETE FROM steps WHERE run_id = $1', [runId])
   await pool.query('DELETE FROM runs WHERE id = $1', [runId])
 })
+
+// ─────────────────────────────────── 异步查询的超时
+//
+// 超时**在轮询循环里判**，不在提交那一刻等 —— 提交完 worker 就走了。
+// 截止时刻在提交时算成绝对时间写进 progress，之后每轮只做一次比较。
+
+test('★★ 查询超过设定时间：撤销平台任务并判失败，而不是无限等下去', { skip: SKIP }, async () => {
+  // 生产里 worker 启动时会 loadRegistry() 把后端 manifest 整个装进来，
+  // 而 tick() 不会 —— 测试里只导入了 tick，所以这里手动装一份**形状和后端
+  // 一致**的 sql.query。前端 src/registry.ts 那份兜底定义故意没有 runtime
+  //（离线时这个节点走 mock，连不上 DataLego），不能拿它当依据
+  const { applyBackendNodes } = await import('../src/registry.ts')
+  applyBackendNodes([{
+    type: 'sql.query', typeVersion: '2.0.0', name: 'DataLego SQL',
+    category: '数据查询', icon: '▤', description: '',
+    input: { type: 'object', properties: {} }, output: { type: 'object', properties: {} },
+    runtime: {
+      kind: 'http-async', submit: 'POST /nodes/sql.query/submit',
+      poll: 'GET /nodes/sql.query/poll', cancel: 'POST /nodes/sql.query/cancel',
+      pollIntervalMs: 3000, defaultTimeoutMinutes: 15,
+    },
+  } as never])
+
+  const toFlow = `wtest_to_${Math.random().toString(36).slice(2, 8)}`
+  const def = {
+    id: toFlow, version: 1, name: '超时', inputs: { type: 'object', properties: {} },
+    trigger: { kind: 'manual' },
+    nodes: [
+      { id: 't', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' },
+      { id: 'q', type: 'sql.query', typeVersion: '2.0.0', name: '查询', params: { engine: 'hive', sql: 'SELECT 1', timeoutMinutes: 15 }, onError: 'fail' },
+    ],
+    edges: [{ from: 't', to: 'q' }],
+    layout: { t: { x: 0, y: 0 }, q: { x: 1, y: 0 } },
+  }
+  await pool.query('INSERT INTO flows (id, name, draft, active_version) VALUES ($1,$2,$3,1)',
+    [toFlow, def.name, JSON.stringify(def)])
+  await pool.query('INSERT INTO flow_versions (flow_id, version, definition) VALUES ($1,1,$2)',
+    [toFlow, JSON.stringify(def)])
+
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    "INSERT INTO runs (id, flow_id, flow_version, trigger_input, status) VALUES ($1,$2,1,'{}','running')",
+    [runId, toFlow])
+  await pool.query("INSERT INTO steps (run_id, node_id, status, seq) VALUES ($1,'t','success',1)", [runId])
+  // 提交出去了，handle 在手，截止时刻已经过了
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, status, wait_kind, progress, next_wake_at, seq)
+     VALUES ($1,'q','waiting','poll',$2, now() - interval '1 second', 2)`,
+    [runId, JSON.stringify({ handle: 'job_20260820_000001', deadlineAt: new Date(Date.now() - 1000).toISOString(), timeoutMinutes: 15 })])
+
+  // finally：断言挂了也要收拾干净。不然每失败一次就往开发库里留一条
+  // wtest_to_* 的垃圾流程，下次跑测试的人得先猜它们是哪来的
+  try {
+    await tick(toFlow)
+
+    const { rows } = await pool.query(
+      'SELECT status, error, failure_kind FROM steps WHERE run_id=$1 AND node_id=$2', [runId, 'q'])
+    assert.equal(rows[0].status, 'failed', '★ 超时要判失败，不能一直 waiting')
+    assert.match(rows[0].error, /超过 15 分钟/, '错误里要写清是超时、超了多久')
+    assert.match(rows[0].error, /超时时间/, '还要说清怎么改 —— 否则用户只知道失败了')
+    // infra 会走退避重试，而重试一次同样会超时；能改的是 SQL 或这个设置
+    assert.equal(rows[0].failure_kind, 'business')
+
+    // run 要被放回队列，否则它停在 running 等一个永远不会来的唤醒
+    const after = await runRow(runId)
+    assert.ok(['queued', 'error'].includes(after.status), `run 要能继续推进，实际 ${after.status}`)
+  } finally {
+    await pool.query('DELETE FROM run_events WHERE run_id=$1', [runId])
+    await pool.query('DELETE FROM steps WHERE run_id=$1', [runId])
+    await pool.query('DELETE FROM runs WHERE id=$1', [runId])
+    await pool.query('DELETE FROM flow_versions WHERE flow_id=$1', [toFlow])
+    await pool.query('DELETE FROM flows WHERE id=$1', [toFlow])
+  }
+})
+

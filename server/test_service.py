@@ -177,6 +177,16 @@ by_type = {n["type"]: n for n in nodes}
 ok("注册表上报四个节点", sorted(by_type), ["http.request", "notify.wecom", "postgres.workspace", "sql.query"])
 ok("SQL 是异步节点", by_type["sql.query"]["runtime"]["kind"], "http-async")
 ok("DataLego SQL 保留旧 type", by_type["sql.query"]["name"], "DataLego SQL")
+# 超时的默认值只能有一个出处：输入字段的 default 和给 worker 的 runtime 兜底
+# 必须是同一个数。两处各写一个的话，"改了默认值但老流程没变"会非常难查
+_sql_timeout = by_type["sql.query"]["input"]["properties"]["timeoutMinutes"]
+ok("★ 查询超时可配", _sql_timeout["default"], manifest.SQL_TIMEOUT_MINUTES)
+ok("★ 默认 15 分钟", _sql_timeout["default"], 15)
+ok("★ 给 worker 的兜底和字段默认值是同一个数",
+   by_type["sql.query"]["runtime"]["defaultTimeoutMinutes"], _sql_timeout["default"])
+# 上限压在 worker 判死（3 × DEFERRED_LEASE_SECONDS = 3 小时）之内，
+# 保证用户看到的是"查询超时，可以调大"而不是"worker 反复失联"
+ok("★ 超时上限留在 worker 判死之前", _sql_timeout["maximum"] <= 120, True)
 ok("自建 PostgreSQL 是同步节点", by_type["postgres.workspace"]["runtime"]["kind"], "http")
 ok("自建 PostgreSQL 不接受连接参数",
    sorted(by_type["postgres.workspace"]["input"]["properties"]), ["limit", "params", "sql"])

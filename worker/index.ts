@@ -6,7 +6,7 @@ import { toGraph } from '../src/lib/flowGraph.ts'
 import { mockOutput, resolveParams, resolveTemplate } from '../src/lib/engine.ts'
 import { validateNode } from '../src/lib/vars.ts'
 import { NODE_TYPE_MAP, applyBackendNodes } from '../src/registry.ts'
-import type { FlowDefinition } from '../src/types.ts'
+import type { FlowDefinition, NodeType } from '../src/types.ts'
 import type { FNode } from '../src/store.ts'
 import {
   appendEvent, claimRun, deferRun, finishRun, heartbeat, loadFlowVersion, loadSteps,
@@ -340,11 +340,16 @@ async function runOneStep(
   // 也不能释放；而且崩了之后 handle 就丢了，只能重新 submit ——
   // 那意味着平台上多一个大查询，第一个还在跑且没人持有它的 handle。
   const submitKey = `${run.id}:${target.nodeId}:${target.loopPath.join('.')}:${cur.attempt}`
+  // ★ 截止时刻在**提交那一刻**就算成绝对时间存下来，不在每次轮询时重算：
+  //   中途改流程定义、或者 reaper 把 run 重排一次，都不该让一条已经在跑的
+  //   查询悄悄拿到一个新的截止时间
+  const timeoutMinutes = timeoutMinutesOf(t, input)
+  const deadlineAt = new Date(Date.now() + timeoutMinutes * 60_000).toISOString()
   // ★ 先落"我即将 submit"再打请求：那一刻还没有 handle，但必须已经有痕迹，
   //   否则崩在 submit 返回之前和"刚认领还没发请求"完全同形，reaper 会重跑
   await writeStep(run.id, {
     ...target, status: 'waiting', input, waitKind: 'poll',
-    progress: { submitKey },
+    progress: { submitKey, deadlineAt, timeoutMinutes },
   })
   try {
     const r = await fetch(`${API}/nodes/${t.type}/submit`, {
@@ -360,13 +365,29 @@ async function runOneStep(
     }
     await writeStep(run.id, {
       ...target, status: 'waiting', waitKind: 'poll',
-      progress: { submitKey, handle: body.handle },
+      progress: { submitKey, handle: body.handle, deadlineAt, timeoutMinutes },
       nextWakeAt: new Date(Date.now() + (t.runtime.pollIntervalMs ?? 3000)),
     })
     await appendEvent(run.id, 'node.deferred', { handle: body.handle }, target.nodeId, target.loopPath)
   } catch (err) {
     await fail(msg(err), 'infra')
   }
+}
+
+/**
+ * 这个异步节点最多跑多久（分钟）。
+ *
+ * 优先级：节点参数 > manifest 的 runtime 兜底 > 15。
+ * 最后那个 15 只是"注册表都拉不到"时的保险，正常永远走不到 —— 真正的默认值
+ * 在 server/sql_service/manifest.py 的 SQL_TIMEOUT_MINUTES，单一出处。
+ */
+const FALLBACK_TIMEOUT_MINUTES = 15
+
+function timeoutMinutesOf(t: NodeType, input: Record<string, unknown>): number {
+  const raw = Number(input.timeoutMinutes ?? t.runtime?.defaultTimeoutMinutes ?? FALLBACK_TIMEOUT_MINUTES)
+  // 填了 0 / 负数 / 非数字都退回默认值，**不当成"不超时"** ——
+  // 那会让一次手滑变成一条永远挂在那里的 run
+  return Number.isFinite(raw) && raw > 0 ? raw : FALLBACK_TIMEOUT_MINUTES
 }
 
 /**
@@ -402,6 +423,27 @@ async function wakeDeferred(): Promise<number> {
     const t = nodeDef && NODE_TYPE_MAP.get(nodeDef.type)
     if (!t?.runtime?.kind) continue
     const target = { nodeId: row.node_id, loopPath: row.loop_path as number[] }
+
+    // ── 超时：撤掉平台上的任务，再判失败
+    //
+    // 顺序不能反 —— 先写失败再撤的话，中间崩一次这个 job 就永远没人撤了，
+    // 它会在集群上一直跑到自己结束。撤销失败不影响判失败（catch 吞掉）：
+    // 撤不掉最多浪费资源，而让一条已经超时的 run 无限等下去更糟。
+    const deadlineAt = (row.progress as { deadlineAt?: string })?.deadlineAt
+    if (deadlineAt && Date.parse(deadlineAt) <= Date.now()) {
+      const mins = (row.progress as { timeoutMinutes?: number })?.timeoutMinutes
+      await fetch(`${API}/nodes/${t.type}/cancel`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle }),
+      }).catch(() => {})
+      const why = `查询超过 ${mins ?? '设定'} 分钟还没结束，已向平台撤销任务。要跑更久就把节点的「超时时间」调大`
+      // business 而不是 infra：重试一次同样会超时，能改的是 SQL 或这个设置
+      await writeStep(row.run_id, { ...target, status: 'failed', error: why, failureKind: 'business' })
+      await appendEvent(row.run_id, 'node.failed', { error: why, timeout: true }, target.nodeId, target.loopPath)
+      await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
+      continue
+    }
+
     try {
       const r = await fetch(
         `${API}/nodes/${t.type}/poll?handle=${encodeURIComponent(handle)}&limit=1000`,
@@ -411,7 +453,9 @@ async function wakeDeferred(): Promise<number> {
       if (!body.done) {
         await writeStep(row.run_id, {
           ...target, status: 'waiting', waitKind: 'poll',
-          progress: { handle, lastProgress: body.progress },
+          // deadlineAt 必须原样带着走 —— 每轮 writeStep 都是整行覆盖 progress，
+          // 漏掉它等于每轮把超时重置成"永不超时"
+          progress: { ...(row.progress ?? {}), handle, lastProgress: body.progress },
           nextWakeAt: new Date(Date.now() + (t.runtime.pollIntervalMs ?? 3000)),
         })
         continue
