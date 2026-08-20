@@ -1,5 +1,5 @@
 import type { Edge } from '@xyflow/react'
-import { NODE_TYPE_MAP } from '../registry.ts'
+import { NODE_TYPE_MAP, portsOf } from '../registry.ts'
 import type { FNode } from '../store'
 
 export interface GraphProblem {
@@ -81,6 +81,30 @@ export function graphProblems(nodes: FNode[], edges: Edge[]): GraphProblem[] {
       continue
     }
     signatures.add(signature)
+
+    // 出边必须挂在源节点**声明过的**口上。
+    //
+    // 挂错口不会报错，只会静默改变行为：一条从 flow.if 拉出但落在 'out' 上的边，
+    // portOf 得到 'out'，既不匹配 true 也不匹配 false，branchKill 两侧都杀不掉它
+    // —— 条件分支彻底失效，而画布上看不出任何异常（节点根本没渲染 'out' 这个
+    // Handle，线会画在默认位置，和真分支那条重叠）。重复连线那条规则也拦不住：
+    // 两条边的 signature 一个是 'out' 一个是 'true'，不算重复。
+    const sourceType = NODE_TYPE_MAP.get(
+      nodes.find((node) => node.id === edge.source)?.data.typeId ?? '',
+    )
+    if (sourceType) {
+      const allowed = portsOf(sourceType).map((port) => port.id)
+      const used = edge.sourceHandle ?? 'out'
+      if (!allowed.includes(used)) {
+        problems.push({
+          nodeId: edge.source,
+          message: allowed.length
+            ? `连线挂在不存在的出口「${used}」上，可用的是 ${allowed.join(' / ')}`
+            : '这是终点节点，没有出口，不能再往下连',
+        })
+      }
+    }
+
     validEdges.push(edge)
   }
 

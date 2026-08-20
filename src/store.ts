@@ -705,6 +705,16 @@ export const useFlow = create<FlowState>((set, get) => ({
     const gap = target.position.x - source.position.x
     const moving = gap < shift * 2 ? descendants(target.id, get().edges) : new Set<string>()
 
+    // 插进来的节点接下游时用它**自己声明的第一个出口**，不能写死 'out'。
+    // flow.if 的口是 true/false、foreach 是 each/done —— 挂在 'out' 上的边
+    // 画布上没有对应的 Handle（看不见它存在），而引擎里 portOf 得到 'out'
+    // 既不匹配 true 也不匹配 false，branchKill 永远杀不掉它：
+    // **条件分支静默失效，且校验全绿**。
+    // 没有出口的节点（notify.wecom、flow.end）就不建这条出边，下游会显示
+    // 「没有连接上游」—— 让人看见，比留一条挂在不存在端口上的边强。
+    const t = NODE_TYPE_MAP.get(typeId)
+    const outPort = t ? portsOf(t)[0]?.id : 'out'
+
     set({
       ...historyCommit(get()),
       seq: get().seq + 1,
@@ -721,7 +731,9 @@ export const useFlow = create<FlowState>((set, get) => ({
       edges: [
         ...get().edges.filter((e) => e.id !== edgeId),
         { id: `e_${node.id}_in`, source: edge.source, sourceHandle: edge.sourceHandle, target: node.id, type: 'flowEdge' },
-        { id: `e_${node.id}_out`, source: node.id, sourceHandle: 'out', target: edge.target, type: 'flowEdge' },
+        ...(outPort
+          ? [{ id: `e_${node.id}_out`, source: node.id, sourceHandle: outPort, target: edge.target, type: 'flowEdge' }]
+          : []),
       ],
     })
     return node.id
