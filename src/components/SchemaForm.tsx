@@ -85,10 +85,18 @@ export default function SchemaForm({
   })
   if (entries.length === 0) return <div className="empty">这个节点没有参数</div>
 
-  return (
-    <div className="form">
-      {isHttpRequest && showCurlImport && <CurlImport onChange={onChange} />}
-      {entries.map(([key, sub]) => {
+  // 「配一次不再动」的字段折进高级设置。这不是新发明 —— http.request 的专属
+  // 表单早就这么干了（超时、重试各一个 details，摘要里写着当前值），只是当时
+  // 写死在那一个组件里，别的节点享受不到。改成 schema 驱动之后，任何节点在
+  // 注册表里标一个 group: 'advanced' 就有同样的收纳。
+  const advanced = ([, sub]: [string, JsonSchema]) => sub['x-ui']?.group === 'advanced'
+  const mainEntries = entries.filter((entry) => !advanced(entry))
+  const advEntries = entries.filter(advanced)
+  const advHasError = advEntries.some(([key]) =>
+    validationErrors.some((error) => validationFieldKey(error, schema) === key),
+  )
+
+  const renderField = ([key, sub]: [string, JsonSchema]) => {
         const ui = sub['x-ui'] ?? {}
         const value = values[key] === undefined ? sub.default : values[key]
         const inserters = ui.inserters ?? []
@@ -258,13 +266,54 @@ export default function SchemaForm({
             {sub['x-large'] && <div className="field__note">大字段：节点间走 $ref 引用传递</div>}
           </div>
         )
-      })}
+  }
+
+  return (
+    <div className="form">
+      {isHttpRequest && showCurlImport && <CurlImport onChange={onChange} />}
+      {mainEntries.map(renderField)}
+
+      {/* 折叠区里有报错就强制展开，且这期间收不起来 —— 把一条"必填项未填"
+          折进「高级设置」里，用户看到的就是"哪都没红，就是跑不了" */}
+      {advEntries.length > 0 && (
+        <details className="form__adv" open={advHasError || undefined}>
+          <summary>
+            <span>高级设置</span>
+            <em>{advSummary(advEntries, values)}</em>
+          </summary>
+          <div>{advEntries.map(renderField)}</div>
+        </details>
+      )}
 
       {/* 整个表单的实时预览。挂在 schema 上而不是某个字段上 —— 它算的是所有
           字段合起来的结果，位置也该在最后 */}
       {schema['x-ui']?.preview === 'date' && <DatePreview values={values} nodeId={nodeId} />}
     </div>
   )
+}
+
+/**
+ * 折叠条右侧那行摘要 —— 收起时也得知道里面是什么。
+ *
+ * 不写它的话「高级设置」就是个黑盒：想确认超时改没改过，只能点开看一眼再
+ * 收起来。所以只列**和默认值不同**的项，全是默认就直说，这样绝大多数节点
+ * 收起状态下就已经把话说完了。
+ */
+function advSummary(entries: Array<[string, JsonSchema]>, values: Record<string, unknown>): string {
+  const changed = entries.filter(([key, sub]) => {
+    const v = values[key]
+    if (v === undefined || v === '' || v === null) return false
+    return JSON.stringify(v) !== JSON.stringify(sub.default)
+  })
+  if (changed.length === 0) return '全部默认'
+  const text = (v: unknown): string => {
+    if (typeof v === 'boolean') return v ? '开' : '关'
+    if (v !== null && typeof v === 'object') return '已设置'
+    const raw = String(v)
+    return raw.length > 12 ? raw.slice(0, 12) + '…' : raw
+  }
+  const head = changed.slice(0, 2).map(([key, sub]) => `${sub.title ?? key} ${text(values[key])}`)
+  return changed.length > 2 ? `${head.join(' · ')} 等 ${changed.length} 项` : head.join(' · ')
 }
 
 /**

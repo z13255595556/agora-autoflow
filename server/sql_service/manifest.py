@@ -69,6 +69,9 @@ SQL_QUERY: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": 100000,
                 "description": "外面套一层 LIMIT，防止 SELECT * 打满引擎",
+                # 配一次就不再动，折进「高级设置」。前端注册表里那份也要同步
+                # 改 —— manifest 会整份覆盖同名节点，只改一边等于没改
+                "x-ui": {"group": "advanced"},
             },
             "timeoutMinutes": {
                 "type": "integer",
@@ -77,12 +80,13 @@ SQL_QUERY: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": SQL_TIMEOUT_MAX_MINUTES,
                 "description": "跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源",
+                "x-ui": {"group": "advanced"},
             },
             "queue": {
                 "type": "string",
                 "title": "队列",
                 "default": "share",
-                "x-ui": {"widget": "text"},
+                "x-ui": {"widget": "text", "group": "advanced"},
                 # Hive 才有队列概念，另外两个引擎不用显示这个字段
                 "x-show": {"engine": ["hive"]},
             },
@@ -353,7 +357,10 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
                            "placeholder": "CREATE TABLE report (id bigint, name text)"},
             },
             "params": {"type": "object", "title": "占位符参数", "additionalProperties": True, "x-ui": {"widget": "kv"}},
-            "limit": {"type": "integer", "title": "返回行数上限", "default": 1000, "minimum": 1, "maximum": 1000},
+            "limit": {
+                "type": "integer", "title": "返回行数上限", "default": 1000,
+                "minimum": 1, "maximum": 1000, "x-ui": {"group": "advanced"},
+            },
         },
     },
     "output": {

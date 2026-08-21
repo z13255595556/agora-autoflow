@@ -7,6 +7,19 @@ export type UiWidget = 'text' | 'textarea' | 'code' | 'select' | 'number' | 'kv'
 
 export interface UiHint {
   widget?: UiWidget
+  /**
+   * 字段分组。'advanced' = 折进「高级设置」，默认收起。
+   *
+   * 判据是**改不改**，不是重不重要：超时、行数上限、重试次数这类配一次就
+   * 不再动的，和 URL、SQL 这类每次都要看的，不该在表单里平起平坐 —— 一个
+   * http.request 节点 14 个可见字段平铺下来，每次找 URL 都要先扫过一堆
+   * 这辈子只填过一次的东西。
+   *
+   * 名字和 x-output-ui.group 对齐：那边早就有 'advanced'，只是管的是输出侧
+   * 的取值面板。输入侧一直没有，于是每个想收纳的节点只能像 http.request
+   * 那样手写一份专属表单。
+   */
+  group?: 'advanced'
   /** widget=code 时的语法高亮语言（空壳期只作占位提示用） */
   language?: string
   /** 动态下拉：运行时向 GET /options/{key} 拉取候选项 */

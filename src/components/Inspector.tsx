@@ -109,14 +109,24 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
 
   return (
     <>
-      <div className="dock__head">
+      {/* 标题栏和元信息合成一块。以前是 48px 的标题栏下面再压一条 33px 的
+          灰底元信息条 —— 133px 常驻 chrome，而那条灰底里三样东西（类型、
+          版本、引用名）都是看一眼就够的，不值得占一整行还自带底色 */}
+      <div className="dock__head dock__head--node">
         <span className="ins__icon" style={{ background: color }}>{t.icon}</span>
-        <input
-          className="ins__name"
-          value={node.data.label}
-          onChange={(e) => renameNode(node.id, e.target.value)}
-          title="点击重命名这个节点"
-        />
+        <div className="ins__title">
+          <input
+            className="ins__name"
+            value={node.data.label}
+            onChange={(e) => renameNode(node.id, e.target.value)}
+            title="点击重命名这个节点"
+          />
+          <div className="ins__meta">
+            <code title={`节点类型 ${t.type} · v${t.typeVersion}`}>{t.type}</code>
+            <i />
+            <code title="下游引用这个节点时用的名字">{node.id}</code>
+          </div>
+        </div>
         <button className="iconbtn" onClick={() => openNdv(node.id)} title="详情视图：输入 / 参数 / 输出（双击画布节点同效）">
           <Icon name="expand" />
         </button>
@@ -125,16 +135,9 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
             <Icon name="trash" />
           </button>
         )}
-        <i className="dock__sep" />
         <button className="iconbtn" onClick={clearSelection} title="收起面板">
           <Icon name="close" />
         </button>
-      </div>
-
-      <div className="ins__sub">
-        <code>{t.type}</code>
-        <span className="ins__ver">v{t.typeVersion}</span>
-        <span className="ins__nid">引用名 {node.id}</span>
       </div>
 
       <div className="dock__body">
@@ -167,8 +170,8 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
         )}
 
         <div className="section">
-          <button className="section__head" onClick={() => setShowOutput(!open)}>
-            <span>{open ? '▾' : '▸'}</span> 输出结构
+          <button className="section__head" aria-expanded={open} onClick={() => setShowOutput(!open)}>
+            <i className="section__caret" /> 输出结构
             {columns.length > 0 && <em>{columns.length} 列</em>}
             {responseFields.length > 0 && <em>{responseFields.length} 字段</em>}
             {columns.length === 0 && responseFields.length === 0 && dynamicMode && <em>动态</em>}

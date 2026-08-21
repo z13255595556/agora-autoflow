@@ -64,7 +64,7 @@ export const NODE_TYPES: NodeType[] = [
           default: 'Asia/Shanghai',
           enum: ['Asia/Shanghai'],
           description: '所有定时表达式按北京时间（UTC+8）计算',
-          'x-ui': { widget: 'select', labels: { 'Asia/Shanghai': '北京时间（UTC+8）' } },
+          'x-ui': { widget: 'select', labels: { 'Asia/Shanghai': '北京时间（UTC+8）' }, group: 'advanced' },
         },
         minute: {
           type: 'integer',
@@ -151,6 +151,7 @@ export const NODE_TYPES: NodeType[] = [
           maximum: 1800,
           description: '超过后返回 202 和运行 ID，工作流仍会继续执行',
           'x-show': { responseMode: ['lastNode'] },
+          'x-ui': { group: 'advanced' },
         },
         rateLimitPerMin: {
           type: 'integer',
@@ -159,6 +160,7 @@ export const NODE_TYPES: NodeType[] = [
           minimum: 1,
           maximum: 600,
           description: '任何能 POST 的人都能触发一条 Hive 查询，这道闸不能不设',
+          'x-ui': { group: 'advanced' },
         },
       },
     },
@@ -221,6 +223,7 @@ export const NODE_TYPES: NodeType[] = [
           minimum: 1,
           maximum: 100000,
           description: '外面套一层 LIMIT，防止 SELECT * 打满引擎',
+          'x-ui': { group: 'advanced' },
         },
         timeoutMinutes: {
           type: 'integer',
@@ -229,8 +232,9 @@ export const NODE_TYPES: NodeType[] = [
           minimum: 1,
           maximum: 120,
           description: '跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源',
+          'x-ui': { group: 'advanced' },
         },
-        queue: { type: 'string', title: '队列', default: 'share', 'x-show': { engine: ['hive'] }, 'x-ui': { widget: 'text' } },
+        queue: { type: 'string', title: '队列', default: 'share', 'x-show': { engine: ['hive'] }, 'x-ui': { widget: 'text', group: 'advanced' } },
         // 这里曾经有个「记账邮箱」(creator)。**故意删掉的**：数据平台按 creator
         // 裁决查询权限，而节点参数是编流程的人随手填的字符串，留着它等于谁都能
         // 以别人的权限查数。现在由服务端从登录 cookie 解出来（identity.py），
@@ -276,7 +280,7 @@ export const NODE_TYPES: NodeType[] = [
           'x-ui': { widget: 'code', language: 'sql', rows: 8, placeholder: 'CREATE TABLE report (id bigint, name text)' },
         },
         params: { type: 'object', title: '占位符参数', additionalProperties: true, 'x-ui': { widget: 'kv' } },
-        limit: { type: 'integer', title: '返回行数上限', default: 1000, minimum: 1, maximum: 1000 },
+        limit: { type: 'integer', title: '返回行数上限', default: 1000, minimum: 1, maximum: 1000, 'x-ui': { group: 'advanced' } },
       },
     },
     output: {
@@ -349,9 +353,9 @@ export const NODE_TYPES: NodeType[] = [
           title: '遍历对象',
           'x-ui': { widget: 'text', placeholder: '{{ $.nodes.n1.output.rows }}' },
         },
-        concurrency: { type: 'integer', title: '并发上限', default: 5, minimum: 1, maximum: 50 },
-        batchSize: { type: 'integer', title: '批大小', default: 1, minimum: 1 },
-        continueOnItemError: { type: 'boolean', title: '单项失败继续', default: true, 'x-ui': { widget: 'switch' } },
+        concurrency: { type: 'integer', title: '并发上限', default: 5, minimum: 1, maximum: 50, 'x-ui': { group: 'advanced' } },
+        batchSize: { type: 'integer', title: '批大小', default: 1, minimum: 1, 'x-ui': { group: 'advanced' } },
+        continueOnItemError: { type: 'boolean', title: '单项失败继续', default: true, 'x-ui': { widget: 'switch', group: 'advanced' } },
       },
     },
     output: {
