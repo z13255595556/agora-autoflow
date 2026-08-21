@@ -10,16 +10,20 @@
 
 跑完会把自己造的数据删掉，但它建的表会留下（就是正常的迁移结果）。
 """
-import os
 import sys
 import uuid
 
-if not os.getenv("DATABASE_URL", "").strip():
-    print("跳过：没有 DATABASE_URL。这些用例需要真的 Postgres —— docker compose up -d")
-    sys.exit(0)
-
 from sql_service import db, flowstore  # noqa: E402
 from sql_service.flowdef import FlowDefError  # noqa: E402
+
+# **判据用 db.configured()，不是只看 DATABASE_URL。** 生产那台用的是 libpq
+# 那套 PG* 环境（见 db.configured），只认 DATABASE_URL 的话它会打印"跳过"
+# 然后 exit 0 —— 而这个文件开头那句"不能让『没跑』看起来像『跑过了』"
+# 说的正是这件事，结果自己先踩了一次。
+if not db.configured():
+    print("跳过：没配数据库。这些用例需要真的 Postgres —— docker compose up -d，")
+    print("      或 libpq 那套 PGHOST/PGUSER/PGPASSWORD（宿主机部署在 deploy/app.env）。")
+    sys.exit(0)
 
 PASS, FAIL = [], []
 MADE = []

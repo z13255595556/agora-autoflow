@@ -23,22 +23,33 @@ flow_versions。版本行还被引用着就删不掉，而不删就没法让编�
     而那是没人要求过的副作用。它们第一次发布时自然就是 v1。
   · 已归档（用户删掉）的流程 —— 界面上本来就看不见，不值得为它们冒风险。
 
-**跑法**（默认只看不改）：
+**跑法**（默认只看不改，加 --yes 才动手）：
 
+    # 宿主机部署：凭证在 deploy/app.env（libpq 那套 PG* 环境）
+    cd ~/ka/autoflow/server
+    bash -c 'set -a; source ~/ka/autoflow/deploy/app.env; .venv/bin/python reset_versions_to_v1.py'
+    bash -c 'set -a; source ~/ka/autoflow/deploy/app.env; .venv/bin/python reset_versions_to_v1.py --yes'
+
+    # 本地 / docker compose：一条 DATABASE_URL 就够
     cd server
     DATABASE_URL=postgresql://... .venv/bin/python reset_versions_to_v1.py
-    DATABASE_URL=postgresql://... .venv/bin/python reset_versions_to_v1.py --yes
 
 重复跑是安全的：已经是"只有一个 v1 且它生效中"的流程会被跳过。
 """
 import os
 import sys
 
-if not os.getenv("DATABASE_URL", "").strip():
-    print("需要 DATABASE_URL —— 这个脚本直接改库，不能猜连的是哪个环境。")
-    sys.exit(1)
-
 from sql_service import db, flowdef  # noqa: E402
+
+# **判据要和服务端自己用的那个一样。** 生产用的是 libpq 那套 PG* 环境
+# （密码由部署脚本放进 PGPASSWORD），只认 DATABASE_URL 的话，
+# 在真正要跑它的那台机器上永远跑不起来 —— 这个脚本第一次上线就栽在这。
+if not db.configured():
+    print("没配数据库 —— 需要 DATABASE_URL，或 libpq 那套 PGHOST/PGUSER/PGPASSWORD。")
+    print("宿主机部署里它们在 deploy/app.env：")
+    print("  bash -c 'set -a; source ~/ka/autoflow/deploy/app.env; "
+          "server/.venv/bin/python server/reset_versions_to_v1.py'")
+    sys.exit(1)
 from sql_service.flowstore import _audit, _one, _rows  # noqa: E402
 
 try:
