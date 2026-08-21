@@ -155,16 +155,27 @@ export async function listFlows(scope: 'mine' | 'all' = 'mine'): Promise<FlowLis
   if (storageMode() === 'local') return { flows: local, mode: 'local', localOnly: [] }
 
   try {
-    const remote = await api.listRemoteFlows(false, scope)
-    const ids = new Set(remote.map((r) => r.id))
+    // **scope=mine 时连归档的一起要。** 不是为了显示它们 —— 而是"哪些是我删过的"
+    // 只有服务端知道：服务端只归档不物理删（运行记录要靠版本快照解释历史），
+    // 而本地缓存不跟着清的话，删掉的流程会以「只在本机」的样子回到列表里，
+    // 删一次、回来一次。管理台那一屏不合并本地缓存，不需要这一步
+    const remote = await api.listRemoteFlows(scope === 'mine', scope)
+    const deleted = new Set(remote.filter((r) => r.archivedAt).map((r) => r.id))
+    const live = remote.filter((r) => !r.archivedAt)
+    const ids = new Set(live.map((r) => r.id))
     // 列表页不需要每条的完整定义，用本地那份或一个壳撑住 nodeCount 之外的字段
-    const flows = remote.map((r) => {
+    const flows = live.map((r) => {
       const cached = local.find((f) => f.id === r.id)
       return fromRemote(r, cached?.def ?? ({ id: r.id, name: r.name, nodes: [], edges: [], layout: {} } as unknown as FlowDefinition))
     })
+    // 服务端说已经删了的，本地那份跟着清掉。**这里是唯一会自愈的地方** ——
+    // 修好之前留下的那些幽灵卡片，打开一次首页就没了，不用用户自己再删一遍
+    if (local.some((f) => deleted.has(f.id))) void write(local.filter((f) => !deleted.has(f.id)))
     // 管理台不提示"只存在本地"：那是当前这台浏览器的事，混进全局视图只会让人
     // 以为服务器上少了东西
-    const localOnly = scope === 'all' ? [] : local.filter((f) => !ids.has(f.id))
+    const localOnly = scope === 'all'
+      ? []
+      : local.filter((f) => !ids.has(f.id) && !deleted.has(f.id))
     return { flows, mode: 'server', localOnly }
   } catch (err) {
     // 退回本地可以，但必须说出来 —— 静默退回会让用户以为服务端上就是这些
@@ -181,6 +192,14 @@ export async function getFlow(id: string): Promise<SavedFlow | null> {
   if (storageMode() === 'server') {
     try {
       const r = await api.getRemoteFlow(id)
+      // 已归档 = 用户删过它。**当作不存在** —— 读得到不等于该出现在界面上：
+      // 归档的流程不在任何列表里，缓存下来就是一张删了又回来的「只在本机」。
+      // 后退键、书签、另一个标签页刷新，走的都是这条路。
+      // 本地那份也一并清掉，然后返回 null，让编辑器退回首页
+      if (r.archivedAt) {
+        forgetLocal(id)
+        return null
+      }
       if (r.draft) {
         const def = normalizeFlowDefinition(r.draft, id)
         // 服务端那份也写进本地：下次服务端挂了还打得开。
@@ -204,6 +223,12 @@ export interface SaveResult {
   mode: StorageMode
   /** 服务端拒绝或不可达的原因。本地写成功时它只是降级提示，不是失败 */
   error?: string
+  /**
+   * 服务端给的错误码。目前只关心 `flow_archived` —— 这条已经被删了，
+   * 和"服务端暂时不可达"是完全相反的两件事：一个不该重试也不该留本地缓存，
+   * 另一个正好相反。**按 code 分支，不要按文案。**
+   */
+  code?: string
 }
 
 /**
@@ -236,6 +261,14 @@ export async function saveFlow(def: FlowDefinition, at: number = Date.now()): Pr
     return { ok: true, mode: 'server' }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    // 服务端说这条已经被删了（多半是另一个标签页删的，而这一页还开着编辑器）。
+    // **本地那份必须跟着清掉** —— 上面第一行刚写过它，留着就是下一张
+    // 「只在本机」的卡片，回首页又要重新解释一遍"这是什么、要不要传"。
+    // 和"服务端暂时不可达"相反：那种情况下本地那份正是唯一的救命稻草
+    if ((err as { code?: string }).code === 'flow_archived') {
+      forgetLocal(def.id)
+      return { ok: false, mode: 'server', code: 'flow_archived', error: msg }
+    }
     // 404 = 服务端还没有这条，补建一次。编辑器里新建流程走的就是这条路
     if (msg.includes('不存在')) {
       try {
@@ -332,8 +365,8 @@ export async function uploadOne(f: SavedFlow): Promise<UploadResult> {
 /**
  * 恢复一条归档的流程，再用本机这份覆盖服务端的草稿。
  *
- * 顺序不能反：归档状态下 save_draft 是能写进去的，但写完流程仍然看不见，
- * 用户会以为上传又失败了一次。
+ * 顺序不能反：归档状态下 save_draft 会被服务端直接拒掉（409 flow_archived），
+ * 而且前端拿到那个 code 会把本机这份也清掉 —— 先 restore 才有得写。
  */
 export async function restoreAndUpload(f: SavedFlow): Promise<UploadResult> {
   try {

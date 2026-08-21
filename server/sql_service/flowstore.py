@@ -213,9 +213,16 @@ def save_draft(flow_id: str, definition: Any, actor: Optional[str], viewer: Any 
     """
     with db.pool().connection() as conn:
         clause, args = _visible(_scope(actor, viewer))
-        row = _one(conn, "SELECT active_version FROM flows f WHERE id = %s" + clause, (flow_id,) + args)
+        row = _one(conn, "SELECT active_version, archived_at FROM flows f WHERE id = %s" + clause,
+                   (flow_id,) + args)
         if not row:
             raise NotFound(f"流程 {flow_id} 不存在")
+        # 归档 = 用户把它删了。**写得进去比写不进去糟得多**：草稿更新了、
+        # updated_at 也动了，保存也报成功，可它在任何人的列表里都不出现 ——
+        # 而浏览器那边会留下一份本地缓存，于是它以「只在本机」的样子回到首页，
+        # 删一次回来一次。publish 和 create_run 早就拦了，这是最后一个没拦的写入口。
+        if row["archived_at"] is not None:
+            raise FlowArchived(f"流程 {flow_id} 已删除（已归档），不能保存")
         draft = flowdef.for_storage(definition, flow_id, row["active_version"] or 0)
         conn.execute(
             "UPDATE flows SET draft = %s, name = %s, updated_at = now() WHERE id = %s",

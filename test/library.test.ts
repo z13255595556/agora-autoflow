@@ -282,6 +282,58 @@ test('老服务端没有 mine 字段：当成我的，行为和以前一致', as
   assert.ok(lib.listLocalFlows().some((f) => f.id === 'legacy1'))
 })
 
+// ---------------------------------------------------------------- 删掉的就该消失
+//
+// 服务端的"删除"是归档（运行记录要靠版本快照解释历史），**但归档的流程一条都
+// 不该再出现在用户面前**。难点在于它仍然读得到：单条读不带归档过滤，
+// 而前端会把读到的草稿写进本地缓存 —— 于是删掉的流程以「只在本机」的样子
+// 回到首页，删一次、回来一次。线上真发生过（后退键、书签、另一个标签页刷新）
+
+test('★★ 已归档 = 用户删过它：当作不存在，本地那份一并清掉', async () => {
+  await mode(false)
+  await lib.saveFlow({ ...DEF, id: 'gone1', name: '删掉的日报' } as never)
+  await mode(true)
+  routes['GET /api/flows/gone1'] = {
+    body: { id: 'gone1', name: '删掉的日报', owner: null, mine: true, activeVersion: 1,
+            updatedAt: null, archivedAt: '2026-08-20T00:00:00Z', nodeCount: 1,
+            nodeTypes: [], triggerKind: 'manual', hasUnpublishedChanges: false,
+            draft: { ...DEF, id: 'gone1' } },
+  }
+  assert.equal(await lib.getFlow('gone1'), null, '返回 null，编辑器据此退回首页')
+  assert.equal(lib.listLocalFlows().length, 0, '★ 本地那份也没了 —— 否则下一秒它就在首页上')
+})
+
+test('★★ 首页列表：服务端说已归档的，本地缓存跟着清掉', async () => {
+  await mode(false)
+  await lib.saveFlow({ ...DEF, id: 'ghost', name: '删掉的日报' } as never)
+  await mode(true)
+  routes['GET /api/flows'] = {
+    body: { flows: [{ id: 'ghost', name: '删掉的日报', activeVersion: 1, updatedAt: null,
+      archivedAt: '2026-08-20T00:00:00Z', nodeCount: 1, nodeTypes: [], triggerKind: 'manual',
+      hasUnpublishedChanges: false }] },
+  }
+  calls = []
+  const list = await lib.listFlows()
+  // 归档的要一起拉回来才知道"哪些是我删过的" —— 只有服务端知道这件事
+  assert.ok(calls.some((c) => c.url.includes('includeArchived=true')))
+  assert.equal(list.flows.length, 0, '归档的不进列表')
+  assert.equal(list.localOnly.length, 0, '★ 也不算「只在本机」')
+  assert.equal(lib.listLocalFlows().length, 0, '★ 自愈：修好之前留下的幽灵卡片，打开一次首页就没了')
+})
+
+test('★★ 保存撞上「已删除」：本地那份不留，也不报"已存到本地"', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = {
+    status: 409,
+    body: { detail: { code: 'flow_archived', message: '流程 f1 已删除（已归档），不能保存' } },
+  }
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.ok, false)
+  // 按 code 分支：和"服务端暂时不可达"完全相反 —— 那种情况下本地那份是救命稻草
+  assert.equal(r.code, 'flow_archived')
+  assert.equal(lib.listLocalFlows().length, 0, '★ saveFlow 开头写的那份要被撤掉')
+})
+
 test('★ 服务端读失败 → 退回本地，但把原因带出来', async () => {
   await mode(false)
   await lib.saveFlow(DEF as never)

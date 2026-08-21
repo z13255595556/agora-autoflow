@@ -245,7 +245,10 @@ def _guard(fn, *args, **kwargs):
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
     except flowstore.FlowArchived as exc:
-        raise HTTPException(409, str(exc))
+        # 结构化 409：前端要据此**清掉本地那份缓存**（这条已经被删了），
+        # 而不是当成一次普通的保存失败留着重试 —— 留着就是下一张「只在本机」。
+        # 靠匹配文案分支迟早会漂，所以给 code
+        raise HTTPException(409, {"code": "flow_archived", "message": str(exc)})
     except runstore.NotFound as exc:
         raise HTTPException(404, str(exc))
     except runstore.NotPublished as exc:

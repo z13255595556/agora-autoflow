@@ -135,6 +135,12 @@ ok("归档后默认列表里不出现", fid in {f["id"] for f in flowstore.list_
 ok("显式要归档的能看到", fid in {f["id"] for f in flowstore.list_flows(True, viewer="alice")}, True)
 ok("归档后仍然读得到（运行记录要靠它解释历史）", flowstore.get_flow(fid)["id"], fid)
 raises("归档后不能发布", flowstore.FlowArchived, lambda: flowstore.publish(fid, "alice"))
+# ★ 写得进去比写不进去糟得多：草稿更新了、updated_at 也动了、保存报成功，
+#   可它在任何人的列表里都不出现 —— 而浏览器那边会留下一份本地缓存，
+#   于是它以「只在本机」的样子回到首页，删一次、回来一次
+raises("★ 归档后不能存草稿", flowstore.FlowArchived,
+       lambda: flowstore.save_draft(fid, definition("删了还改"), "alice"))
+ok("★ 草稿真的没被改动", flowstore.get_flow(fid)["draft"]["name"] != "删了还改", True)
 
 # ---------------------------------------------------------------- 审计
 

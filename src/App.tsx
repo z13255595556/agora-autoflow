@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 import Toolbar, { type DockPanel } from './components/Toolbar'
 import Canvas from './components/Canvas'
@@ -75,6 +75,20 @@ export default function App() {
     return () => { cancelled = true }
   }, [route.kind, editorFlowId, backendProbed])
 
+  /**
+   * 服务端说这条流程已经被删了（归档）。
+   *
+   * 另一个标签页删掉了它、而这一页还开着编辑器 —— 这时**必须停掉所有写入**：
+   * 防抖自动保存和 beforeunload 都会写 localStorage，写一次就是一张
+   * 「只在本机」的卡片回到首页，删一次、回来一次。
+   *
+   * 不自动跳走：画布上是用户正在改的东西，直接 replace 到首页等于替他扔掉。
+   * 说清楚 + 停止保存，导不导出由他决定。
+   */
+  const [gone, setGone] = useState(false)
+  /** 说过一次就够了。用 ref 而不是 gone：save 的依赖必须保持空，它被注册进了 store */
+  const toldGone = useRef(false)
+
   // dirty 表示还有等待自动保存的持久化改动；临时 UI 状态不进入这里。
   const [dirty, setDirty] = useState(false)
   const [editRevision, setEditRevision] = useState(0)
@@ -106,6 +120,16 @@ export default function App() {
       setFlowMeta((m) => (m.activeVersion === null ? m : { ...m, hasUnpublishedChanges: true }))
     } else {
       setSaveError(result.error ?? '保存失败')
+      // 这条已经被删了。saveFlow 已经把本机那份清掉了，这里负责让这一页
+      // 停止再写回去 —— 否则下一次防抖或关标签页又把它写回 localStorage
+      if (result.code === 'flow_archived' && !toldGone.current) {
+        toldGone.current = true
+        setGone(true)
+        window.alert(
+          `「${useFlow.getState().flowName}」已经被删除了，这一页是旧的 —— 之后的改动不会再保存。\n\n` +
+          '想留下它的话，先用工具栏的「流程 JSON」导出一份，再新建一条流程贴回去。',
+        )
+      }
     }
     return { ok: result.ok, synced: didSyncToServer(result) }
   }, [])
@@ -120,10 +144,10 @@ export default function App() {
 
   // 每次真实流程改动后重新计时；连续输入只在停下 900ms 后写一次。
   useEffect(() => {
-    if (route.kind !== 'editor' || !editorReady || !dirty) return
+    if (route.kind !== 'editor' || !editorReady || !dirty || gone) return
     const timer = window.setTimeout(() => { void save() }, 900)
     return () => window.clearTimeout(timer)
-  }, [route.kind, editorReady, dirty, editRevision, save])
+  }, [route.kind, editorReady, dirty, editRevision, gone, save])
 
   // 保存 + 画布撤销/重做。输入控件保留浏览器自己的文本历史，
   // 只有焦点不在编辑器里时才接管 ⌘/Ctrl+Z。
@@ -156,13 +180,15 @@ export default function App() {
   // 服务端那份靠防抖自动保存和离开编辑器时的 goHome 兜住；真在这里丢了同步，
   // 下次打开这条流程会从本地读到较新的那份（getFlow 服务端读失败也回落本地）。
   useEffect(() => {
-    if (!dirty) return
+    // gone：这条流程在服务端已经被删了。关标签页时**不能**再写本地 ——
+    // 那一下写完，它就以「只在本机」的样子回到首页了
+    if (!dirty || gone) return
     const onLeave = (event: BeforeUnloadEvent) => {
       if (!saveFlowSync(useFlow.getState().toDefinition())) event.preventDefault()
     }
     window.addEventListener('beforeunload', onLeave)
     return () => window.removeEventListener('beforeunload', onLeave)
-  }, [dirty])
+  }, [dirty, gone])
 
   /**
    * 发布：草稿 → 新版本 → 设为生效。
