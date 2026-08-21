@@ -7,7 +7,7 @@ import JsonDrawer from './components/JsonDrawer'
 import RunPanel from './components/RunPanel'
 import NodeDetailView from './components/NodeDetailView'
 import Home from './components/Home'
-import { createFlow, didSyncToServer, getFlow, publishFlow, saveFlow, saveFlowSync } from './lib/library'
+import { createFlow, didSyncToServer, getFlow, publishFlow, rollbackFlow, saveFlow, saveFlowSync } from './lib/library'
 import type { Template } from './lib/templates'
 import type { FlowDefinition } from './types'
 import { useFlow } from './store'
@@ -116,8 +116,13 @@ export default function App() {
       // 服务端写失败但本地写成功：数据没丢，但必须说出来 ——
       // 用户以为存到服务器了，实际只在这台机器上
       setSaveError(result.error ? `已存到本地，但同步到服务端失败：${result.error}` : null)
-      // 存了草稿就意味着和已发布那版可能不一致了
-      setFlowMeta((m) => (m.activeVersion === null ? m : { ...m, hasUnpublishedChanges: true }))
+      // 和已发布那一版还差多少，**以服务端算的为准**：那把尺子只比逻辑不比布局。
+      // 以前这里一律置 true，于是拖一下节点位置也会点亮「发布 v4」——
+      // 点下去服务端认定没有实际改动、不生新版本，按钮却刚承诺过一个 v4。
+      // 服务端没答上来（本地兜底）时退回 true：少提示一次比谎报"已经是最新"强
+      setFlowMeta((m) => (m.activeVersion === null
+        ? m
+        : { ...m, hasUnpublishedChanges: result.hasUnpublishedChanges ?? true }))
     } else {
       setSaveError(result.error ?? '保存失败')
       // 这条已经被删了。saveFlow 已经把本机那份清掉了，这里负责让这一页
@@ -196,16 +201,36 @@ export default function App() {
    * 发布前先把草稿存下去 —— 否则发布出去的是服务端上那份**旧草稿**，
    * 而用户以为发的是眼前看到的内容。这是最容易被漏掉的一步。
    */
-  const doPublish = useCallback(async (): Promise<string | null> => {
+  const doPublish = useCallback(async (note: string): Promise<string | null> => {
     // 看 synced 而不是 ok：本地存住了但服务端没收到时，发出去的会是服务端上
     // 那份**旧草稿** —— 而用户以为发的是眼前看到的内容，正是这一行要防的事
     if (dirty && !(await save()).synced) return '草稿没保存成功，先解决保存问题再发布'
     const flowId = useFlow.getState().flowId
-    const result = await publishFlow(flowId)
+    const result = await publishFlow(flowId, note)
     if (!result.ok) return result.error ?? '发布失败'
     setFlowMeta({ activeVersion: result.version ?? null, hasUnpublishedChanges: false })
     return null
   }, [dirty, save])
+
+  /**
+   * 切回某个历史版本。
+   *
+   * **画布也要跟着换** —— 服务端那边草稿已经被覆盖成那一版了（见
+   * flowstore.rollback），屏幕上还留着切换前的内容的话，下一次自动保存
+   * 就把刚切掉的东西又写回服务端了。
+   */
+  const doRollback = useCallback(async (version: number): Promise<string | null> => {
+    const flowId = useFlow.getState().flowId
+    const result = await rollbackFlow(flowId, version)
+    if (!result.ok || !result.def) return result.error ?? '切换版本失败'
+    useFlow.getState().loadDefinition(result.def)
+    // loadDefinition 会触发 dirty 监听，紧接着按下去 —— 画布刚换成服务端那份，
+    // 这不是"未保存的改动"。顺序和编辑器初次加载那段一致
+    setFlowMeta({ activeVersion: result.version ?? null, hasUnpublishedChanges: false })
+    setDirty(false)
+    setSaveError(null)
+    return null
+  }, [])
 
   const openFlowPage = (flowId: string) => {
     window.location.assign(appHref(`/workflows/${encodeURIComponent(flowId)}`))
@@ -257,6 +282,7 @@ export default function App() {
         saveError={saveError}
         publish={flowMeta}
         onPublish={doPublish}
+        onRollback={doRollback}
       />
       <ReactFlowProvider>
         <ReferencePickerProvider>

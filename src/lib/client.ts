@@ -263,6 +263,13 @@ export interface FlowVersionMeta {
   version: number
   createdAt: string
   createdBy: string | null
+  /**
+   * 这一版改了什么。**选填，null = 发布时没填**。
+   *
+   * 不要在前端兜底成"无说明"这类字样：界面要能把"没填"和"填了"区分开，
+   * 而 013 之前发布的那些版本一律是 null —— 它们是基线，不是有人偷懒。
+   */
+  note: string | null
 }
 
 /**
@@ -293,8 +300,25 @@ export function saveRemoteFlow(id: string, definition: unknown) {
   })
 }
 
-export function publishRemoteFlow(id: string) {
-  return req<RemoteFlow>(`/api/flows/${encodeURIComponent(id)}/publish`, { method: 'POST' })
+/** 发布。note 是这一版的变更说明，选填 —— 不传就是没填 */
+export function publishRemoteFlow(id: string, note?: string) {
+  return req<RemoteFlow>(`/api/flows/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ note: note ?? null }),
+  })
+}
+
+/**
+ * 把线上切回某一个历史版本。**不产生新版本，而且会覆盖编辑器里的草稿。**
+ *
+ * 定时和 webhook 下一次触发就跑这一版 —— 和恢复归档一样，是个有外部后果
+ * 的动作，调用方必须先跟用户确认。
+ */
+export function activateRemoteVersion(id: string, version: number) {
+  return req<RemoteFlow>(
+    `/api/flows/${encodeURIComponent(id)}/versions/${version}/activate`,
+    { method: 'POST' },
+  )
 }
 
 export function listRemoteVersions(id: string) {

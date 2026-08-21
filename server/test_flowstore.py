@@ -120,13 +120,68 @@ moved["layout"]["n2"] = {"x": 400, "y": 80}
 flowstore.save_draft(fid, moved, "alice")
 ok("只改布局不算未发布改动", flowstore.get_flow(fid)["hasUnpublishedChanges"], False)
 
+# ★ 版本号是"线上跑的是哪一份"，不是"这个按钮被点过几次"。连点五下发布
+#   产生五个内容相同的版本之后，版本列表和运行记录里的版本号就不说明任何事了
+same = flowstore.publish(fid, "alice")
+ok("★★ 没有实际改动，发布不生新版本", same["activeVersion"], 2)
+ok("★ 版本列表也没多出一条", len(flowstore.list_versions(fid)), 2)
+ok("★ 只挪了节点位置同样不生版本（和 hasUnpublishedChanges 同一把尺子）",
+   flowstore.publish(fid, "alice")["activeVersion"], 2)
+with db.pool().connection() as conn:
+    n_pub = conn.execute(
+        "SELECT count(*) FROM audit WHERE target_id = %s AND action = 'flow.publish'", (fid,)
+    ).fetchone()[0]
+ok("★ 空发布不写审计 —— 审计记的是真的发生过的事", n_pub, 2)
+
+# 改回真有内容的改动，后面的用例照旧
+flowstore.save_draft(fid, definition(sql="SELECT 4"), "alice")
+ok("再有真改动时又能发了", flowstore.publish(fid, "alice")["activeVersion"], 3)
+
+# ---------------------------------------------------------------- 变更说明
+
+flowstore.save_draft(fid, definition(sql="SELECT 5"), "alice")
+flowstore.publish(fid, "alice", note="  改成按天分区，之前扫全表超时  ")
+v4 = flowstore.list_versions(fid)[0]
+ok("变更说明记在那一版上", (v4["version"], v4["note"]), (4, "改成按天分区，之前扫全表超时"))
+ok("★ 老版本的说明是 None，不是空串 —— 界面要能分出「没填」和「填了」",
+   flowstore.list_versions(fid)[1]["note"], None)
+
+flowstore.save_draft(fid, definition(sql="SELECT 6"), "alice")
+flowstore.publish(fid, "alice", note="   ")
+ok("★ 只填空白等于没填", flowstore.list_versions(fid)[0]["note"], None)
+
+flowstore.save_draft(fid, definition(sql="SELECT 7"), "alice")
+flowstore.publish(fid, "alice", note="唠" * 800)
+ok("超长说明截断到上限", len(flowstore.list_versions(fid)[0]["note"]), flowstore.NOTE_MAX)
+
+# ---------------------------------------------------------------- 切回历史版本
+
+ok("当前生效的是 v6", flowstore.get_flow(fid)["activeVersion"], 6)
+back = flowstore.rollback(fid, 2, "alice")
+ok("★★ 切回 v2：线上就是 v2 了", back["activeVersion"], 2)
+ok("★★ 草稿也被覆盖成 v2 —— 只切线上不动草稿的话，下一次发布就原路发回去了",
+   flowstore.get_flow(fid)["draft"]["nodes"][1]["params"]["sql"], "SELECT 3")
+ok("★ 切换不生新版本：版本列表还是那 6 条", len(flowstore.list_versions(fid)), 6)
+ok("★ 切完草稿和线上一致，不该显示有未发布改动",
+   flowstore.get_flow(fid)["hasUnpublishedChanges"], False)
+ok("★ 切回去之后再点发布也不生版本（内容没变）",
+   flowstore.publish(fid, "alice")["activeVersion"], 2)
+
+raises("★★ 切不到调试快照（负数）—— 那不是发布过的版本，而且随时会被保留期清掉",
+       flowstore.NotFound, lambda: flowstore.rollback(fid, -1, "alice"))
+raises("切不到不存在的版本", flowstore.NotFound, lambda: flowstore.rollback(fid, 99, "alice"))
+
+# 切回最新那一版，后面的用例照旧
+flowstore.rollback(fid, 6, "alice")
+ok("切回 v6", flowstore.get_flow(fid)["activeVersion"], 6)
+
 raises("读不存在的版本报 NotFound", flowstore.NotFound, lambda: flowstore.get_version(fid, 99))
 
 # ---------------------------------------------------------------- 列表
 
 listed = {f["id"]: f for f in flowstore.list_flows(viewer="alice")}
 ok("列表里有它", fid in listed, True)
-ok("列表带生效版本号", listed[fid]["activeVersion"], 2)
+ok("列表带生效版本号", listed[fid]["activeVersion"], 6)
 
 # ---------------------------------------------------------------- 归档
 
@@ -148,9 +203,10 @@ with db.pool().connection() as conn:
     got = conn.execute(
         "SELECT action, actor FROM audit WHERE target_id = %s ORDER BY id", (fid,)
     ).fetchall()
-ok("审计记下了建/发布/发布/归档",
-   [r[0] for r in got], ["flow.create", "flow.publish", "flow.publish", "flow.archive"])
-ok("审计记下了是谁", [r[1] for r in got], ["alice", "alice", "alice", "alice"])
+ok("审计记下了建 / 六次发布 / 两次切版本 / 归档",
+   [r[0] for r in got],
+   ["flow.create"] + ["flow.publish"] * 6 + ["flow.rollback"] * 2 + ["flow.archive"])
+ok("审计记下了是谁", [r[1] for r in got], ["alice"] * 10)
 # 编辑器防抖自动保存几秒一次，每次记一条会把审计表变成击键日志
 ok("存草稿不进审计", "flow.save" in [r[0] for r in got], False)
 

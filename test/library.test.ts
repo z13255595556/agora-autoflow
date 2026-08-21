@@ -334,6 +334,48 @@ test('★★ 保存撞上「已删除」：本地那份不留，也不报"已存
   assert.equal(lib.listLocalFlows().length, 0, '★ saveFlow 开头写的那份要被撤掉')
 })
 
+// ---------------------------------------------------------------- 版本
+
+test('★ 发布把变更说明一起送上去', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/publish'] = { body: { id: 'f1', activeVersion: 4 } }
+  calls = []
+  const r = await lib.publishFlow('f1', '改成按天分区')
+  assert.equal(r.ok, true)
+  assert.equal(r.version, 4)
+  assert.deepEqual(calls[0].body, { note: '改成按天分区' })
+})
+
+test('不填说明也能发 —— note 是 null，不是空串', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/publish'] = { body: { id: 'f1', activeVersion: 4 } }
+  calls = []
+  await lib.publishFlow('f1')
+  assert.deepEqual(calls[0].body, { note: null })
+})
+
+// ★★ 只切线上不动草稿的话，编辑器里还是切换前那份 —— 下一次自动保存
+// 就把刚切掉的东西原路写回服务端了。切回去必须连草稿一起换
+test('★★ 切回历史版本：把那一版的草稿带回来，本地缓存也跟着换', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/versions/2/activate'] = {
+    body: { id: 'f1', activeVersion: 2, updatedAt: null,
+            draft: { ...DEF, id: 'f1', name: '第二版' } },
+  }
+  const r = await lib.rollbackFlow('f1', 2)
+  assert.equal(r.ok, true)
+  assert.equal(r.version, 2)
+  assert.equal(r.def?.name, '第二版', '编辑器要拿它重画画布')
+  assert.equal(lib.listLocalFlows()[0].name, '第二版', '本地缓存也是新的那份')
+})
+
+test('本地模式下切版本是拒绝的，且说清为什么', async () => {
+  await mode(false)
+  const r = await lib.rollbackFlow('f1', 2)
+  assert.equal(r.ok, false)
+  assert.match(r.error ?? '', /DATABASE_URL/)
+})
+
 test('★ 服务端读失败 → 退回本地，但把原因带出来', async () => {
   await mode(false)
   await lib.saveFlow(DEF as never)
@@ -385,6 +427,23 @@ test('服务端上还没有这条时自动补建', async () => {
   const r = await lib.saveFlow(DEF as never)
   assert.equal(r.ok, true)
   assert.equal(calls.filter((c) => c.method === 'POST').length, 1)
+})
+
+// 这把尺子只比逻辑不比布局（服务端的 _differs），前端再抄一份必漂 ——
+// 漂的表现是：拖一下节点位置就点亮「发布 v4」，点下去服务端认定没有实际
+// 改动、不生新版本，而按钮刚承诺过一个 v4
+test('★ 存完之后"还有没有未发布的改动"以服务端为准', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { body: { id: 'f1', hasUnpublishedChanges: false } }
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.ok, true)
+  assert.equal(r.hasUnpublishedChanges, false)
+})
+
+test('服务端没答上来 → undefined，调用方按"可能有改动"处理', async () => {
+  await mode(false)
+  const r = await lib.saveFlow(DEF as never)
+  assert.equal(r.hasUnpublishedChanges, undefined)
 })
 
 test('saveFlowSync 永远只写本地', async () => {

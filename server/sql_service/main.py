@@ -202,6 +202,11 @@ class FlowBody(BaseModel):
     id: Optional[str] = None
 
 
+class PublishBody(BaseModel):
+    """发布。**整个 body 可以不传** —— 变更说明是选填的，老前端也不带它。"""
+    note: Optional[str] = None
+
+
 def _actor(request: Request, header: Optional[str]) -> Optional[str]:
     """谁在操作 —— 流程归属、可见性、审计三件事共用同一个身份。
 
@@ -335,11 +340,30 @@ def save_flow(
 def publish_flow(
     flow_id: str,
     request: Request,
+    body: Optional[PublishBody] = None,
     x_forwarded_user: Optional[str] = Header(default=None),
 ) -> Dict[str, Any]:
     """发布。**无主流程由第一个发布的人认领** —— 谁发布的谁是 owner，
     定时和 webhook 触发也以这个人的名义去数据平台查数。"""
     return _guard(flowstore.publish, flow_id,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user),
+                  note=body.note if body else None)
+
+
+@app.post("/api/flows/{flow_id}/versions/{version}/activate")
+def activate_version(
+    flow_id: str,
+    version: int,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """切回某一个历史版本。**立刻改变线上行为** —— 定时和 webhook 下一次
+    触发就跑这一版，同时编辑器里的草稿也被覆盖成它（理由见 flowstore.rollback）。
+
+    不是 PUT /api/flows/{id}：那条是存草稿，语义完全不同。这里改的是
+    "线上跑哪一版"，而且不产生新版本。
+    """
+    return _guard(flowstore.rollback, flow_id, version,
                   _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
 
 

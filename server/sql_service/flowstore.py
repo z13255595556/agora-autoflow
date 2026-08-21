@@ -140,6 +140,51 @@ def _differs(draft: Any, published: Any) -> bool:
     return logic(draft) != logic(published)
 
 
+#: 变更说明的长度上限。够写清"改了什么、为什么"，又不至于变成把整段设计文档
+#: 塞进版本列表 —— 那一屏是用来扫的，不是用来读的
+NOTE_MAX = 500
+
+
+def _clean_note(note: Optional[str]) -> Optional[str]:
+    """归一变更说明。空白 = 没填（None），不是空字符串。
+
+    两者在界面上要能区分开：**没填**是常态（发布本来就该低摩擦），
+    而"填了一个空字符串"是个说不通的状态，留着它下游每处都要多判一次。
+    """
+    if note is None:
+        return None
+    trimmed = note.strip()
+    return trimmed[:NOTE_MAX] or None
+
+
+def _publish_is_noop(conn, flow_id: str, row: Dict[str, Any]) -> bool:
+    """草稿和当前生效的那一版，逻辑上一模一样吗。
+
+    一样就不该再生一个版本 —— 点一下发布多一版、而两版内容完全相同，
+    版本号就从"线上跑的是哪一份"退化成了"这个按钮被点过几次"。
+    版本列表和运行记录里的 v3/v4/v5 也就不再有任何意义。
+
+    **无主流程例外**：发布还兼着"认领"这件事（谁发布一次就归谁）。
+    直接短路的话，008 之前建的老流程永远认领不了 —— 得先假改一笔才能要回来。
+
+    复用 _differs：只比逻辑不比布局，和 hasUnpublishedChanges、snapshot_draft
+    用的是同一把尺子。三处同一个判定，界面上说"草稿与它一致"的时候，
+    按钮做的事才一定和这句话对得上。
+    """
+    if row["active_version"] is None or row["owner"] is None:
+        return False
+    cur = _one(
+        conn,
+        "SELECT definition FROM flow_versions WHERE flow_id = %s AND version = %s",
+        (flow_id, row["active_version"]),
+    )
+    if not cur:
+        # active_version 指向一个不存在的版本。这时候更该老老实实发一版
+        return False
+    # 先按 0 号归一一次只为了做比较；_differs 会剔掉 version 这个 key
+    return not _differs(flowdef.for_storage(row["draft"], flow_id, 0), cur["definition"])
+
+
 def list_flows(include_archived: bool = False, viewer: Any = None) -> List[Dict[str, Any]]:
     """我的工作台。**只有自己的流程，外加还没有主的那些。**
 
@@ -232,17 +277,23 @@ def save_draft(flow_id: str, definition: Any, actor: Optional[str], viewer: Any 
     return get_flow(flow_id)
 
 
-def publish(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> Dict[str, Any]:
+def publish(flow_id: str, actor: Optional[str], viewer: Any = SELF,
+            note: Optional[str] = None) -> Dict[str, Any]:
     """草稿 → 新版本 → 设为生效。整件事在一个事务里。
 
     分两次提交的话，中间崩溃会留下一个"版本写进去了但没生效"或者更糟的
     "active_version 指向一个不存在的版本"——后者会让所有触发都取不到定义。
+
+    **草稿和线上那一版一样时不生新版本**（见 _publish_is_noop）：连点五下
+    发布不该产生五个内容相同的版本，那样版本号就不再是"线上跑的是哪一份"，
+    而是"这个按钮被点过几次"。返回的仍然是当前状态，不是错误。
     """
     with db.pool().connection() as conn:
         clause, args = _visible(_scope(actor, viewer))
         row = _one(
             conn,
-            "SELECT draft, archived_at FROM flows f WHERE id = %s" + clause + " FOR UPDATE",
+            "SELECT draft, archived_at, active_version, owner FROM flows f WHERE id = %s"
+            + clause + " FOR UPDATE",
             (flow_id,) + args,
         )
         if not row:
@@ -250,32 +301,39 @@ def publish(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> Dict[str,
         if row["archived_at"] is not None:
             raise FlowArchived(f"流程 {flow_id} 已归档，不能发布")
 
-        nxt = _one(
-            conn,
-            # **AND version > 0 不能少**：调试快照占的是负数域，不参与发布编号。
-            # 少了它，一条只调试过没发布过的流程 MAX 是负数，算出的"下一版"
-            # 会是 0 或负数 —— 而 active_version 指向 0 之后所有触发都取不到
-            # 定义，且全程没有任何报错。
-            "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM flow_versions"
-            " WHERE flow_id = %s AND version > 0",
-            (flow_id,),
-        )["v"]
-        definition = flowdef.for_storage(row["draft"], flow_id, nxt)
-        conn.execute(
-            "INSERT INTO flow_versions (flow_id, version, definition, created_by, kind)"
-            " VALUES (%s, %s, %s, %s, 'published')",
-            (flow_id, nxt, Jsonb(definition), actor),
-        )
-        # 草稿也跟着更新版本号，这样导出的草稿能看出它对应第几版。
-        # owner 那个 COALESCE：**谁发布的谁是 owner**。无主流程（008 之前建的）
-        # 由第一次发布的人认领；已经有主的不会被后来者顶掉
-        conn.execute(
-            "UPDATE flows SET active_version = %s, draft = %s, owner = COALESCE(owner, %s),"
-            "       updated_at = now() WHERE id = %s",
-            (nxt, Jsonb(definition), actor, flow_id),
-        )
-        _audit(conn, actor, "flow.publish", flow_id, {"version": nxt})
-        conn.commit()
+        # 没有实际改动就什么都不做：不生版本、不动 active_version、不写审计。
+        # **不报错** —— 用户要的结果（线上跑的是这一份）已经成立了，
+        # 报错等于把一次符合预期的点击说成失败。
+        # 整段仍然留在同一个事务里：把它拆成"先判断、再另起一个事务写"的话，
+        # FOR UPDATE 的锁会在读草稿和写版本之间被放掉，两个人同时点发布
+        # 会算出同一个 nxt，撞 flow_versions 的主键
+        if not _publish_is_noop(conn, flow_id, row):
+            nxt = _one(
+                conn,
+                # **AND version > 0 不能少**：调试快照占的是负数域，不参与发布编号。
+                # 少了它，一条只调试过没发布过的流程 MAX 是负数，算出的"下一版"
+                # 会是 0 或负数 —— 而 active_version 指向 0 之后所有触发都取不到
+                # 定义，且全程没有任何报错。
+                "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM flow_versions"
+                " WHERE flow_id = %s AND version > 0",
+                (flow_id,),
+            )["v"]
+            definition = flowdef.for_storage(row["draft"], flow_id, nxt)
+            conn.execute(
+                "INSERT INTO flow_versions (flow_id, version, definition, created_by, kind, note)"
+                " VALUES (%s, %s, %s, %s, 'published', %s)",
+                (flow_id, nxt, Jsonb(definition), actor, _clean_note(note)),
+            )
+            # 草稿也跟着更新版本号，这样导出的草稿能看出它对应第几版。
+            # owner 那个 COALESCE：**谁发布的谁是 owner**。无主流程（008 之前建的）
+            # 由第一次发布的人认领；已经有主的不会被后来者顶掉
+            conn.execute(
+                "UPDATE flows SET active_version = %s, draft = %s, owner = COALESCE(owner, %s),"
+                "       updated_at = now() WHERE id = %s",
+                (nxt, Jsonb(definition), actor, flow_id),
+            )
+            _audit(conn, actor, "flow.publish", flow_id, {"version": nxt, "note": _clean_note(note)})
+            conn.commit()
     return get_flow(flow_id)
 
 
@@ -345,7 +403,7 @@ def list_versions(flow_id: str, viewer: Optional[str] = ANY) -> List[Dict[str, A
         _assert_visible(conn, flow_id, viewer)
         rows = _rows(
             conn,
-            "SELECT version, created_at, created_by FROM flow_versions"
+            "SELECT version, created_at, created_by, note FROM flow_versions"
             " WHERE flow_id = %s AND version > 0 ORDER BY version DESC",
             (flow_id,),
         )
@@ -354,6 +412,9 @@ def list_versions(flow_id: str, viewer: Optional[str] = ANY) -> List[Dict[str, A
             "version": r["version"],
             "createdAt": r["created_at"].isoformat(),
             "createdBy": r["created_by"],
+            # None = 那一版发布时没填。**不要在这里编一句"无说明"** ——
+            # 界面要能把"没填"和"填了一句空话"区分开
+            "note": r.get("note"),
         }
         for r in rows
     ]
@@ -381,6 +442,59 @@ def get_version(flow_id: str, version: int, viewer: Optional[str] = ANY) -> Dict
         "createdAt": row["created_at"].isoformat(),
         "createdBy": row["created_by"],
     }
+
+
+def rollback(flow_id: str, version: int, actor: Optional[str],
+             viewer: Any = SELF) -> Dict[str, Any]:
+    """把线上切回某一个历史版本。**同时覆盖草稿。**
+
+    只改 active_version 不动草稿的话，切回去的下一秒编辑器就显示"有未发布的
+    改动"，而那份"改动"正是刚被切掉的那一版 —— 再点一次发布就原路回去了。
+    「切回 v2」这句话的完整含义就是"编辑器里也是 v2"，半截的切换比不切更危险。
+    调用方必须把这件事说给用户听（当前草稿会被覆盖）。
+
+    **不生新版本。** 回滚是"换一个已经存在的版本生效"，不是"发布一份新的"；
+    生一版的话版本列表里会出现两条内容完全相同的记录，而且回滚记录本身
+    也就丢了 —— 那件事记在审计里（flow.rollback），版本列表只回答
+    "发布过哪些内容"。
+
+    **立刻改变线上行为**：定时和 webhook 下一次触发就跑这一版。和恢复归档
+    一样，这是个有外部后果的动作，界面上要说明白。
+    """
+    with db.pool().connection() as conn:
+        clause, args = _visible(_scope(actor, viewer))
+        row = _one(
+            conn,
+            "SELECT archived_at, active_version FROM flows f WHERE id = %s" + clause + " FOR UPDATE",
+            (flow_id,) + args,
+        )
+        if not row:
+            raise NotFound(f"流程 {flow_id} 不存在")
+        if row["archived_at"] is not None:
+            raise FlowArchived(f"流程 {flow_id} 已删除（已归档），不能切换版本")
+        # **必须挡住负数**：调试快照不是发布记录，切过去等于让线上跑一份
+        # 谁都没发布过的草稿，而且它随时会被保留期清掉，清掉之后
+        # active_version 就指向一个不存在的版本 —— 所有触发静默取不到定义
+        if version <= 0:
+            raise NotFound(f"版本 {version} 不是已发布的版本")
+        target = _one(
+            conn,
+            "SELECT definition FROM flow_versions WHERE flow_id = %s AND version = %s AND version > 0",
+            (flow_id, version),
+        )
+        if not target:
+            raise NotFound(f"流程 {flow_id} 没有 v{version}")
+
+        # 草稿里的 version 字段要跟着改，否则导出的 JSON 会说自己是另一版
+        draft = flowdef.for_storage(target["definition"], flow_id, version)
+        conn.execute(
+            "UPDATE flows SET active_version = %s, draft = %s, updated_at = now() WHERE id = %s",
+            (version, Jsonb(draft), flow_id),
+        )
+        _audit(conn, actor, "flow.rollback", flow_id,
+               {"version": version, "from": row["active_version"]})
+        conn.commit()
+    return get_flow(flow_id)
 
 
 def archive(flow_id: str, actor: Optional[str], viewer: Any = SELF) -> None:

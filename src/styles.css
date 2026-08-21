@@ -2260,3 +2260,69 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 @media (max-width: 860px) {
   .ucols { grid-template-columns: 1fr; }
 }
+
+/* ================================================================ 版本
+   发布弹窗（填变更说明）+ 历史版本（看说明 / 切回去）。
+   版本号在此之前是没有内容的：列表里只有「v3 · 时间 · 谁」，
+   而回滚前唯一想知道的正是「这一版改了什么」。 */
+.modal--narrow { width: min(520px, 100%); }
+
+.vpub__label {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 13px; font-weight: 600; margin-bottom: 7px;
+}
+/* 「选填」要和标题一样醒目才有用 —— 弱化成灰字的话，
+   用户看到一个输入框的默认反应仍然是"这里必须填点什么" */
+.vpub__label em {
+  font-style: normal; font-size: 11px; font-weight: 500;
+  color: var(--text-faint); border: 1px solid var(--border);
+  border-radius: 20px; padding: 0 7px;
+}
+.vpub__note {
+  width: 100%; padding: 9px 11px; font-size: 13px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.vpub__note:focus {
+  outline: none; border-color: var(--primary);
+  background: var(--surface);
+}
+.vpub__count { font-size: 11px; color: var(--text-faint); margin-top: 5px; text-align: right; }
+.vpub__foot { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.vpub__hint { flex: 1; font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+
+.vhist { display: flex; flex-direction: column; gap: 2px; max-height: min(58vh, 460px); overflow-y: auto; }
+.vhist__row {
+  display: grid; grid-template-columns: 88px 1fr auto;
+  grid-template-areas: 'no note act' 'no meta act';
+  gap: 2px 12px; align-items: center;
+  padding: 10px 11px; border-radius: var(--r-md);
+  border: 1px solid transparent;
+}
+.vhist__row:hover { background: var(--surface-2); }
+/* 生效中那条要一眼认出来：整屏里只有它决定线上跑什么 */
+.vhist__row.on {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+.vhist__no {
+  grid-area: no; font-size: 13px; font-weight: 650;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+}
+.vhist__live {
+  font-size: 10px; font-weight: 600; color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  border-radius: 20px; padding: 0 6px;
+}
+.vhist__note { grid-area: note; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+/* 「没填」和「填了」必须看得出区别 —— 013 之前的版本一律没有说明，
+   它们是基线，不是有人偷懒 */
+.vhist__note--none { color: var(--text-faint); font-style: italic; }
+.vhist__meta { grid-area: meta; font-size: 10.5px; color: var(--text-faint); }
+.vhist__act { grid-area: act; }
+
+@media (max-width: 560px) {
+  .vhist__row { grid-template-columns: 1fr auto; grid-template-areas: 'no act' 'note note' 'meta meta'; }
+  .vhist__no { flex-direction: row; align-items: center; }
+}

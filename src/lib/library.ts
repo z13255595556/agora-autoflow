@@ -229,6 +229,14 @@ export interface SaveResult {
    * 另一个正好相反。**按 code 分支，不要按文案。**
    */
   code?: string
+  /**
+   * 存完之后，草稿和已发布那一版还有没有差别。**服务端算的**。
+   *
+   * 前端自己推不出来：这把尺子只比逻辑不比布局（拖一下节点位置不算改动），
+   * 前端再抄一份必漂。服务端没答上来（本地兜底、写失败）时是 undefined，
+   * 调用方按"可能有改动"处理 —— 少提示一次比谎报"已经是最新"强。
+   */
+  hasUnpublishedChanges?: boolean
 }
 
 /**
@@ -257,8 +265,8 @@ export async function saveFlow(def: FlowDefinition, at: number = Date.now()): Pr
       : { ok: false, mode: 'local', error: '浏览器本地存储写入失败，请检查存储空间或隐私设置' }
   }
   try {
-    await api.saveRemoteFlow(def.id, def)
-    return { ok: true, mode: 'server' }
+    const saved = await api.saveRemoteFlow(def.id, def)
+    return { ok: true, mode: 'server', hasUnpublishedChanges: saved.hasUnpublishedChanges }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // 服务端说这条已经被删了（多半是另一个标签页删的，而这一页还开着编辑器）。
@@ -272,8 +280,8 @@ export async function saveFlow(def: FlowDefinition, at: number = Date.now()): Pr
     // 404 = 服务端还没有这条，补建一次。编辑器里新建流程走的就是这条路
     if (msg.includes('不存在')) {
       try {
-        await api.createRemoteFlow(def.id, def)
-        return { ok: true, mode: 'server' }
+        const made = await api.createRemoteFlow(def.id, def)
+        return { ok: true, mode: 'server', hasUnpublishedChanges: made.hasUnpublishedChanges }
       } catch (err2) {
         return { ok: localOk, mode: 'server', error: err2 instanceof Error ? err2.message : String(err2) }
       }
@@ -318,14 +326,53 @@ export async function deleteFlow(id: string, localOnly = false): Promise<void> {
   }
 }
 
-/** 发布：草稿 → 新版本 → 设为生效。只有服务端模式下有意义 */
-export async function publishFlow(id: string): Promise<{ ok: boolean; version?: number; error?: string }> {
+/**
+ * 发布：草稿 → 新版本 → 设为生效。只有服务端模式下有意义。
+ *
+ * `note` 是这一版的变更说明，选填。**草稿和线上那一版一样时服务端不生新版本**
+ * —— 那时返回的还是原来那个号，说明也无处可记（没有新版本）。
+ */
+export async function publishFlow(
+  id: string,
+  note?: string,
+): Promise<{ ok: boolean; version?: number; error?: string }> {
   if (storageMode() !== 'server') {
     return { ok: false, error: '未连接流程存储，发布需要服务端（配置 DATABASE_URL）' }
   }
   try {
-    const r = await api.publishRemoteFlow(id)
+    const r = await api.publishRemoteFlow(id, note)
     return { ok: true, version: r.activeVersion ?? undefined }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export interface RollbackResult {
+  ok: boolean
+  version?: number
+  /** 切过去之后的草稿。编辑器要用它重画画布，否则屏幕上还是切换前那份 */
+  def?: FlowDefinition
+  error?: string
+}
+
+/**
+ * 切回某一个历史版本。
+ *
+ * **两个后果，调用方必须先跟用户说清**：线上（定时/webhook）下一次触发就跑
+ * 这一版；编辑器里的草稿也会被它覆盖 —— 只切线上不动草稿的话，下一次发布
+ * 就把刚切掉的东西原路发回去了。
+ *
+ * 本地缓存跟着写：不写的话服务端挂了之后从本地打开的还是切换前那份。
+ */
+export async function rollbackFlow(id: string, version: number): Promise<RollbackResult> {
+  if (storageMode() !== 'server') {
+    return { ok: false, error: '未连接流程存储，版本切换需要服务端（配置 DATABASE_URL）' }
+  }
+  try {
+    const r = await api.activateRemoteVersion(id, version)
+    const def = r.draft ? normalizeFlowDefinition(r.draft, id) : undefined
+    if (def) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
+    return { ok: true, version: r.activeVersion ?? undefined, def }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

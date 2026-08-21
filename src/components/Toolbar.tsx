@@ -6,6 +6,7 @@ import { NODE_TYPE_MAP } from '../registry'
 import { focusValidationField } from '../lib/validationFocus'
 import { storageMode } from '../lib/library'
 import Icon from './Icon'
+import { PublishDialog, VersionHistory } from './Versions'
 
 export type DockPanel = 'flow' | 'json' | null
 
@@ -31,6 +32,7 @@ export default function Toolbar({
   saveError,
   publish,
   onPublish,
+  onRollback,
 }: {
   dock: DockPanel
   onDock: (p: DockPanel) => void
@@ -40,8 +42,10 @@ export default function Toolbar({
   dirty: boolean
   saveError: string | null
   publish: PublishState
-  /** 发布；返回错误信息表示失败，null 表示成功 */
-  onPublish: () => Promise<string | null>
+  /** 发布；返回错误信息表示失败，null 表示成功。note 是这一版的变更说明，选填 */
+  onPublish: (note: string) => Promise<string | null>
+  /** 切回某个历史版本；返回错误信息表示失败，null 表示成功 */
+  onRollback: (version: number) => Promise<string | null>
 }) {
   const flowName = useFlow((s) => s.flowName)
   const setFlowName = useFlow((s) => s.setFlowName)
@@ -65,15 +69,15 @@ export default function Toolbar({
 
   const [menuOpen, setMenuOpen] = useState(false)
   const [problemsOpen, setProblemsOpen] = useState(false)
-  const [publishing, setPublishing] = useState(false)
+  /** 发布弹窗开着没。**发布不再是"点一下就发出去"** —— 中间隔一个填变更说明的框 */
+  const [publishOpen, setPublishOpen] = useState(false)
+  /** 历史版本面板开着没 */
+  const [historyOpen, setHistoryOpen] = useState(false)
   // 接了流程存储才有"版本"这个概念；本地模式下画一个点了会报错的按钮不如不画
   const canPublish = storageMode() === 'server'
-  const doPublish = async () => {
-    setPublishing(true)
-    const err = await onPublish()
-    setPublishing(false)
-    if (err) window.alert(`发布失败：${err}`)
-  }
+  const flowId = useFlow((s) => s.flowId)
+  // 从没发布过就是第一版
+  const nextVersion = (publish.activeVersion ?? 0) + 1
   const menuRef = useRef<HTMLDivElement>(null)
   const problemsRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -270,6 +274,19 @@ export default function Toolbar({
               >
                 流程 JSON<em>导入 / 导出</em>
               </button>
+              {/* 发过版才有历史可看。本地模式下没有"版本"这个概念，
+                  和发布按钮同一条判据 */}
+              {canPublish && (
+                <button
+                  className="menu__item"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setHistoryOpen(true)
+                  }}
+                >
+                  历史版本<em>说明 / 回滚</em>
+                </button>
+              )}
               <i className="menu__sep" />
               <button
                 className="menu__item menu__item--danger"
@@ -298,23 +315,30 @@ export default function Toolbar({
         {canPublish && (
           <button
             className={`btn${publish.hasUnpublishedChanges ? ' btn--dirty' : ''}`}
-            onClick={() => void doPublish()}
-            disabled={publishing || running}
+            onClick={() => setPublishOpen(true)}
+            // 没有改动就点不动。**版本号是"线上跑的是哪一份"，不是点击计数** ——
+            // 再点一下只会多一个内容完全相同的 v4，之后版本列表和运行记录里的
+            // 版本号就再也不说明任何事情了。真正的闸在服务端（publish 判定没有
+            // 实际改动就不生版本），这里只是别让人白点。
+            //
+            // **dirty 要放行**：防抖还没落地时 hasUnpublishedChanges 还是上一次
+            // 保存时的答案，刚敲完就点发布会撞上一个点不动的按钮。onPublish
+            // 自己会先存一次，存完服务端说没改动的话它照样不生版本
+            disabled={running
+              || (publish.activeVersion !== null && !publish.hasUnpublishedChanges && !dirty)}
             title={
               publish.activeVersion === null
                 ? '发布后才会有第一个版本。定时和 Webhook 触发的都是已发布的那一版'
                 : publish.hasUnpublishedChanges
                   ? `当前生效的是 v${publish.activeVersion}，草稿有改动还没发布 —— 定时/Webhook 跑的仍是 v${publish.activeVersion}`
-                  : `已发布 v${publish.activeVersion}，草稿与它一致`
+                  : `已发布 v${publish.activeVersion}，草稿与它一致，没有需要发布的改动（只挪动节点位置不算）`
             }
           >
-            {publishing
-              ? '发布中…'
-              : publish.activeVersion === null
-                ? '发布'
-                : publish.hasUnpublishedChanges
-                  ? `发布 v${publish.activeVersion + 1}`
-                  : `v${publish.activeVersion}`}
+            {publish.activeVersion === null
+              ? '发布'
+              : publish.hasUnpublishedChanges
+                ? `发布 v${publish.activeVersion + 1}`
+                : `v${publish.activeVersion}`}
           </button>
         )}
 
@@ -332,6 +356,24 @@ export default function Toolbar({
           </button>
         )}
       </div>
+
+      {/* 两个弹窗挂在 header 下面。发布走弹窗而不是直接发出去 ——
+          变更说明只有这一个时机能填：发完就固化在那一版上了 */}
+      {publishOpen && (
+        <PublishDialog
+          nextVersion={nextVersion}
+          onCancel={() => setPublishOpen(false)}
+          onPublish={onPublish}
+        />
+      )}
+      {historyOpen && (
+        <VersionHistory
+          flowId={flowId}
+          activeVersion={publish.activeVersion}
+          onClose={() => setHistoryOpen(false)}
+          onRollback={onRollback}
+        />
+      )}
     </header>
   )
 }
