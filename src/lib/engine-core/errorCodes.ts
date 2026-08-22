@@ -50,6 +50,18 @@ export function failureKindOf(code: string | null | undefined, httpStatus?: numb
 }
 
 /**
+ * 连续轮询失败到这个次数才认输。
+ *
+ * **轮询失败 ≠ 查询失败**：网络抖一下、节点服务重启一下，平台上那个 job 还
+ * 好好地跑着，判死它既丢了结果又让集群继续白烧到自己结束。
+ *
+ * 定在这里而不是各引擎里各写一个：浏览器里的 engine 和服务端的 worker 跑的是
+ * 同一条流程，"平台抖一下算不算失败"两边给出不同答案是没法解释的 ——
+ * 而且这种不一致只在线上出现。
+ */
+export const MAX_CONSECUTIVE_POLL_FAILURES = 5
+
+/**
  * 重试的第 n 次该等多久（n 从 1 起）。
  *
  * 四要素来自 Temporal 的 RetryPolicy：

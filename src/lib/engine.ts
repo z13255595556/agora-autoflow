@@ -18,7 +18,7 @@ import { redactNodeInput } from './secrets.ts'
 import { outgoing, reachableFrom, topoSort } from './engine-core/graph.ts'
 // 常量全仓单一出处，scripts/check-constants.sh 是门禁
 import { MAX_LOOP_ITERATIONS } from './engine-core/types.ts'
-import { isRetryable } from './engine-core/errorCodes.ts'
+import { isRetryable, MAX_CONSECUTIVE_POLL_FAILURES } from './engine-core/errorCodes.ts'
 export { MAX_LOOP_ITERATIONS }
 
 /**
@@ -772,8 +772,7 @@ async function runLiveNode(
   onProgress(0, handle)
 
   // 轮询失败不等于查询失败：网络抖一下、服务重启一下，平台上的任务都还好好的。
-  // 连续失败到这个次数才认输，中间的单次失败只是等下一轮。
-  const MAX_CONSECUTIVE_POLL_FAILURES = 5
+  // 连续失败到 MAX_CONSECUTIVE_POLL_FAILURES 次才认输，中间的单次失败只是等下一轮。
   let consecutiveFailures = 0
 
   try {

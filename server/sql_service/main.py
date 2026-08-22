@@ -32,6 +32,31 @@ app.add_middleware(
 PROBE_LIMIT = 1
 
 
+@app.exception_handler(Exception)
+def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """兜底：**没接住的异常也必须回 JSON。**
+
+    默认行为是 Starlette 的 text/plain "Internal Server Error"。引擎（浏览器里的
+    和 worker 里的都一样）收到响应第一件事是解析 JSON，于是节点上显示的错误变成
+
+        Unexpected token 'I', "Internal S"... is not valid JSON
+
+    真正的原因一个字都没传到用户面前，连"这是 500"都看不出来。这里只统一格式，
+    不改变行为：Starlette 在调完这个 handler 之后照样把异常抛给 uvicorn 打完整栈，
+    所以服务端日志里该有的一行不会少。
+
+    错误码 INTERNAL 不在 errors.RETRYABLE 里 —— 认不出的错误码当作不可重试，
+    这正是我们要的：没接住的异常重试一次多半还是同样的异常。
+    """
+    return JSONResponse(
+        status_code=500,
+        content={"detail": errors.payload(
+            "INTERNAL",
+            f"服务端内部错误（{type(exc).__name__}）：{str(exc)[:200] or '无异常信息'}。完整堆栈见服务端日志",
+        )},
+    )
+
+
 class SubmitBody(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
 
@@ -109,6 +134,11 @@ def _submit(plan: Dict[str, Any]) -> Dict[str, Any]:
                 robot.invalidate()
                 continue
             raise HTTPException(502, errors.payload("PLATFORM_AUTH", "数据平台不接受机器人账号的票，请检查服务端凭证配置"))
+        except datalego.PlatformTimeout as exc:
+            raise HTTPException(504, errors.payload("UPSTREAM_TIMEOUT", str(exc)))
+        except datalego.PlatformError as exc:
+            # 平台自己坏了，不消耗上面那次换票重试 —— 换张新票也一样连不上
+            raise HTTPException(502, errors.payload("PLATFORM_UNAVAILABLE", str(exc)))
         except datalego.QueryError as exc:
             raise HTTPException(400, errors.payload("SQL_QUERY_ERROR", str(exc)))
     raise HTTPException(500, "unreachable")
@@ -499,9 +529,17 @@ def poll_node(handle: str, limit: int = 1000) -> Dict[str, Any]:
         result = datalego.poll(_token(), handle)
     except datalego.AuthError:
         robot.invalidate()
-        raise HTTPException(502, "数据平台不接受机器人账号的票，请检查服务端凭证配置")
+        # 必须带错误码：引擎读 detail.code 决定要不要重试，裸字符串等于"认不出"，
+        # 而认不出一律不重试 —— 于是一次续票就能好的问题被判成了永久失败
+        raise HTTPException(502, errors.payload("PLATFORM_AUTH", "数据平台不接受机器人账号的票，请检查服务端凭证配置"))
     except datalego.ExpiredError as exc:
         raise HTTPException(410, errors.payload("RESULT_EXPIRED", str(exc)))
+    except datalego.PlatformTimeout as exc:
+        raise HTTPException(504, errors.payload("UPSTREAM_TIMEOUT", str(exc)))
+    except datalego.PlatformError as exc:
+        # **不能返回 {done:true, failed:true}** —— 那是"查询失败"，会把一个还在
+        # 平台上好好跑着的 job 判死。平台抖一下只该让引擎下一轮再来问一次
+        raise HTTPException(502, errors.payload("PLATFORM_UNAVAILABLE", str(exc)))
     except datalego.QueryError as exc:
         # 查询本身失败（语法错、表不存在）—— 这是用户能改的，原文带回去
         return {"done": True, "failed": True, "progress": 100.0, "error": str(exc)}
@@ -534,7 +572,7 @@ def cancel_node(body: CancelBody) -> Dict[str, Any]:
     try:
         datalego.cancel(_token(), body.handle)
     except datalego.QueryError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(400, errors.payload("BAD_REQUEST", str(exc)))
     except Exception as exc:  # 取消失败不该让中止流程本身失败
         return {"cancelled": False, "detail": str(exc)}
     return {"cancelled": True}

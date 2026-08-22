@@ -15,7 +15,9 @@ import {
 } from './store.ts'
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
-import { backoffMs, DEFAULT_RETRY, failureKindOf, isRetryable } from '../src/lib/engine-core/errorCodes.ts'
+import {
+  backoffMs, DEFAULT_RETRY, failureKindOf, isRetryable, MAX_CONSECUTIVE_POLL_FAILURES,
+} from '../src/lib/engine-core/errorCodes.ts'
 
 /**
  * 服务端执行器。**这是「关掉浏览器流程照跑」成立的地方。**
@@ -65,6 +67,58 @@ async function purgeTick(): Promise<void> {
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/** 读一次节点服务的响应。error 有值就是这次调用失败了，code 供重试判定用 */
+interface NodeResponse<T> {
+  body: T
+  error?: string
+  code?: string
+}
+
+/**
+ * 读节点服务的响应体。**先看状态码再解析，而且解析失败本身不能变成错误内容。**
+ *
+ * 以前这里是 `const body = await r.json()`，还排在 `if (!r.ok)` 前面。上游一旦
+ * 回了非 JSON 的错误体 —— 服务端没接住的异常（text/plain 的
+ * "Internal Server Error"）、网关的 502 HTML 页、SSO 的登录页 —— 抛出来的是
+ * 解析异常本身，节点上于是显示
+ *
+ *     Unexpected token 'I', "Internal S"... is not valid JSON
+ *
+ * 状态码、上游原话、错误码一起丢光。更糟的是它落进 catch 分支、不带错误码，
+ * 而认不出错误码一律不重试，于是一次平台抖动被判成永久失败。
+ *
+ * 非 JSON 的响应体**不补错误码**：认不出就是认不出，宁可不重试也不猜 ——
+ * 猜错的方向是"给群里重发三条一样的日报"，比多失败一次贵。
+ */
+export async function readNodeResponse<T = Record<string, unknown>>(r: Response): Promise<NodeResponse<T>> {
+  const text = await r.text()
+  let parsed: unknown
+  try {
+    parsed = text ? JSON.parse(text) : {}
+  } catch {
+    const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 200)
+    return { body: {} as T, error: `节点服务返回了非 JSON 响应（HTTP ${r.status}）：${snippet || '(空)'}` }
+  }
+  const body = (parsed ?? {}) as T
+  if (r.ok) return { body }
+  // FastAPI 的错误在 detail 里；现在是 {code, retryable, message}，老格式是字符串
+  const d = (parsed as { detail?: unknown } | null)?.detail
+  if (d && typeof d === 'object') {
+    const o = d as { code?: string; message?: string }
+    return { body, error: o.message ?? `HTTP ${r.status}`, code: o.code }
+  }
+  return { body, error: typeof d === 'string' ? d : `HTTP ${r.status}` }
+}
+
+/** poll 的返回。字段全是可选的 —— 老服务端和错误响应都可能缺 */
+interface PollBody {
+  done?: boolean
+  failed?: boolean
+  progress?: number
+  error?: string
+  output?: unknown
+}
 
 /** 拉后端节点注册表。**必须成功** —— 拿前端兜底定义去跑会和线上行为不一致 */
 async function loadRegistry(): Promise<void> {
@@ -319,13 +373,8 @@ async function runOneStep(
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idem, ...delegation(creator) },
         body: JSON.stringify({ params: input }),
       })
-      const body = await r.json()
-      if (!r.ok) {
-        const d = body?.detail
-        const code = d && typeof d === 'object' ? d.code : undefined
-        const message = d && typeof d === 'object' ? d.message : (d ?? `HTTP ${r.status}`)
-        return fail(message, failureKindOf(code, r.status), code)
-      }
+      const { body, error, code } = await readNodeResponse(r)
+      if (error) return fail(error, failureKindOf(code, r.status), code)
       await writeStep(run.id, { ...target, status: 'success', input, output: body.output ?? {} })
       await appendEvent(run.id, 'node.succeeded', {}, target.nodeId, target.loopPath)
     } catch (err) {
@@ -357,12 +406,8 @@ async function runOneStep(
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submitKey, ...delegation(creator) },
       body: JSON.stringify({ params: input }),
     })
-    const body = await r.json()
-    if (!r.ok) {
-      const d = body?.detail
-      const code = d && typeof d === 'object' ? d.code : undefined
-      return fail(d && typeof d === 'object' ? d.message : (d ?? `HTTP ${r.status}`), failureKindOf(code, r.status), code)
-    }
+    const { body, error, code } = await readNodeResponse(r)
+    if (error) return fail(error, failureKindOf(code, r.status), code)
     await writeStep(run.id, {
       ...target, status: 'waiting', waitKind: 'poll',
       progress: { submitKey, handle: body.handle, deadlineAt, timeoutMinutes },
@@ -452,14 +497,15 @@ async function wakeDeferred(): Promise<number> {
       const r = await fetch(
         `${API}/nodes/${t.type}/poll?handle=${encodeURIComponent(handle)}&limit=1000`,
       )
-      const body = await r.json()
-      if (!r.ok) throw new Error(body?.detail ?? `HTTP ${r.status}`)
+      const { body, error, code } = await readNodeResponse<PollBody>(r)
+      if (error) throw Object.assign(new Error(error), { code })
       if (!body.done) {
         await writeStep(row.run_id, {
           ...target, status: 'waiting', waitKind: 'poll',
           // deadlineAt 必须原样带着走 —— 每轮 writeStep 都是整行覆盖 progress，
-          // 漏掉它等于每轮把超时重置成"永不超时"
-          progress: { ...(row.progress ?? {}), handle, lastProgress: body.progress },
+          // 漏掉它等于每轮把超时重置成"永不超时"。
+          // pollFailures 归零：连续失败的计数只有"连续"时才算数
+          progress: { ...(row.progress ?? {}), handle, lastProgress: body.progress, pollFailures: 0 },
           nextWakeAt: new Date(Date.now() + (t.runtime.pollIntervalMs ?? 3000)),
         })
         continue
@@ -474,7 +520,26 @@ async function wakeDeferred(): Promise<number> {
       // 结果到手，把 run 放回队列让 worker 接着推进
       await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
     } catch (err) {
-      await writeStep(row.run_id, { ...target, status: 'failed', error: msg(err), failureKind: 'infra' })
+      // **轮询失败 ≠ 查询失败**：平台上那个 job 还好好地跑着。可重试的错误先等
+      // 下一轮，连续到 MAX_CONSECUTIVE_POLL_FAILURES 次才认输 —— 和浏览器里的
+      // 引擎同一条规则。真正兜底的仍是上面的 deadlineAt，它不因这里多等几轮而变。
+      const code = (err as { code?: string }).code
+      const failures = ((row.progress as { pollFailures?: number })?.pollFailures ?? 0) + 1
+      if (isRetryable(code) && failures < MAX_CONSECUTIVE_POLL_FAILURES) {
+        await writeStep(row.run_id, {
+          ...target, status: 'waiting', waitKind: 'poll',
+          progress: { ...(row.progress ?? {}), handle, pollFailures: failures },
+          nextWakeAt: new Date(Date.now() + (t.runtime.pollIntervalMs ?? 3000)),
+        })
+        continue
+      }
+      const why = failures > 1 ? `连续 ${failures} 次查询状态失败：${msg(err)}` : msg(err)
+      await writeStep(row.run_id, { ...target, status: 'failed', error: why, failureKind: 'infra' })
+      await appendEvent(row.run_id, 'node.failed', { error: why }, target.nodeId, target.loopPath)
+      // 步骤判死了，run 必须立刻回队列让 decide 收尾。不放回去它会挂在 'running'
+      // 上直到 deferred 租约（1 小时）过期：界面上一直显示"运行中"，而且 reaper
+      // 会把它记成一次 "worker 失联"，攒够三次整条 run 直接判 error
+      await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
     }
   }
   return rows.length

@@ -48,28 +48,45 @@ async function req<T>(path: string, init?: RequestInit & { timeoutMs?: number })
     signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
+  // **先取文本再解析**，成功失败都走这一条路。以前是 `resp.json()`：一旦响应体
+  // 不是 JSON（服务端没接住的异常回 text/plain 的 "Internal Server Error"、
+  // 网关的 502 HTML 页、SSO 的登录页），抛出来的是解析异常本身，界面上显示成
+  //   Unexpected token 'I', "Internal S"... is not valid JSON
+  // —— 状态码和上游原话全丢了，而那两样才是唯一能指向真正原因的东西。
+  const text = await resp.text()
+  let body: unknown
+  let notJson = false
+  try {
+    body = text ? JSON.parse(text) : {}
+  } catch {
+    notJson = true
+  }
+  const snippet = () => text.trim().replace(/\s+/g, ' ').slice(0, 200) || '(空)'
+
   if (!resp.ok) {
     // FastAPI 的错误在 detail 里，把原话带出来 —— "占位符没有对应参数" 和
     // "机器人账号不可用" 是完全不同的两件事，吞掉就没法排查
-    let detail = `HTTP ${resp.status}`
+    let detail = notJson ? `HTTP ${resp.status}：${snippet()}` : `HTTP ${resp.status}`
     let code: string | undefined
-    try {
-      const body = await resp.json()
-      // 服务端现在返回 {code, retryable, message}；老格式是一个字符串
-      const d = body?.detail
-      if (d && typeof d === 'object') {
-        detail = d.message ?? detail
-        code = d.code
-      } else if (typeof d === 'string') {
-        detail = d
-      }
-    } catch {
-      /* 非 JSON 错误体，保留状态码 */
+    // 服务端现在返回 {code, retryable, message}；老格式是一个字符串
+    const d = (body as { detail?: unknown } | null)?.detail
+    if (d && typeof d === 'object') {
+      const o = d as { code?: string; message?: string }
+      detail = o.message ?? detail
+      code = o.code
+    } else if (typeof d === 'string') {
+      detail = d
     }
     // 错误码挂在异常上：引擎据此判定要不要重试，而不是去匹配文案
     throw Object.assign(new Error(detail), { code, status: resp.status })
   }
-  return resp.json() as Promise<T>
+  if (notJson) {
+    throw Object.assign(
+      new Error(`服务端返回了非 JSON 响应（HTTP ${resp.status}）：${snippet()}`),
+      { status: resp.status },
+    )
+  }
+  return body as T
 }
 
 /** 流程持久化的可用性。和节点服务是**两档独立能力**：没有数据库节点照样跑 */

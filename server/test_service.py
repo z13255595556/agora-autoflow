@@ -8,6 +8,8 @@ import json
 import sys
 import types
 
+import requests
+
 # 必须在导入服务之前塞好假凭证 —— robot 模块只在换票时才读，但 manifest
 # 和端点常量是导入时求值的
 import os
@@ -100,7 +102,11 @@ def fake_put(url, **kw):
 
 fake_requests = types.SimpleNamespace(
     post=fake_post, get=fake_get, put=fake_put,
-    RequestException=Exception, Response=FakeResp,
+    # 放**真的**异常类，不是 Exception —— 用 Exception 的话被测代码里那句
+    # `except requests.RequestException` 会顺手把"没预料到的 URL"这种断言
+    # 一并吞成"连不上数据平台"，测试接错线反而看不出来
+    RequestException=requests.RequestException, Timeout=requests.Timeout,
+    Response=FakeResp,
 )
 datalego.requests = fake_requests
 robot.requests = fake_requests
@@ -508,6 +514,122 @@ ok("非法 handle 不拼进 URL", client.get("/nodes/sql.query/poll?handle=../..
 
 ok("取消", client.post("/nodes/sql.query/cancel", json={"handle": handle}).json()["cancelled"], True)
 truthy("取消请求确实发给了平台", handle in CANCELLED)
+
+# ------------------------------------------------- 平台侧故障（★ 这次的回归）
+#
+# 症状：SQL 节点报 `Unexpected token 'I', "Internal S"... is not valid JSON`。
+# 那句话是引擎 JSON.parse 一段 text/plain 的 "Internal Server Error" 抛的 ——
+# datalego 客户端把 requests 的异常漏了出去，FastAPI 兜底回纯文本 500。
+# 于是真正的原因和"这次可以重试"两个信息一起没了。
+#
+# 这一组盯的是**响应体本身**：任何上游故障都必须是带错误码的 JSON。
+
+_good_requests = datalego.requests
+
+
+def with_upstream(fn):
+    """把 datalego 的出网口换成 fn，跑完还原。"""
+    datalego.requests = types.SimpleNamespace(
+        post=fn, get=fn, put=fn,
+        RequestException=requests.RequestException, Timeout=requests.Timeout,
+    )
+
+
+SUBMIT_PARAMS = {"params": {"sql": "SELECT 1", "params": {}, "engine": "hive"}}
+
+
+def upstream_case(name, fn, want_status, want_code):
+    with_upstream(fn)
+    try:
+        r = client.post("/nodes/sql.query/submit", json=SUBMIT_PARAMS)
+        ok(f"★ {name} → HTTP {want_status}", r.status_code, want_status)
+        truthy(f"★ {name} 回的是 JSON 不是纯文本",
+               r.headers.get("content-type", "").startswith("application/json"))
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        ok(f"★ {name} 带错误码", (body.get("detail") or {}).get("code"), want_code)
+        truthy(f"★ {name} 判为可重试", (body.get("detail") or {}).get("retryable") is True)
+        truthy(f"★ {name} 带上了上游原话", bool((body.get("detail") or {}).get("message")))
+    finally:
+        datalego.requests = _good_requests
+
+
+def raises(exc):
+    def _fn(url, **kw):
+        raise exc
+    return _fn
+
+
+upstream_case("平台 5xx", lambda url, **kw: FakeResp(None, status=502),
+              502, "PLATFORM_UNAVAILABLE")
+upstream_case("连不上平台", raises(requests.ConnectionError("Connection refused")),
+              502, "PLATFORM_UNAVAILABLE")
+upstream_case("平台响应超时", raises(requests.Timeout("timed out")),
+              504, "UPSTREAM_TIMEOUT")
+
+
+# 网关票过期时会回一个 HTTP 200 的登录页 —— 状态码是好的，body 是 HTML。
+# 这种只有"解析不出 JSON"能看出来
+class HtmlResp(FakeResp):
+    def __init__(self):
+        super().__init__(None, status=200)
+        self.text = "<html><body>Sign in</body></html>"
+
+    def json(self):
+        raise ValueError("not json")
+
+
+upstream_case("平台回 HTML 登录页", lambda url, **kw: HtmlResp(), 502, "PLATFORM_UNAVAILABLE")
+
+# 轮询也一样：**绝不能**把平台抖动回成 {done:true, failed:true} ——
+# 那是"查询失败"，会把一个还在平台上好好跑着的 job 判死
+with_upstream(lambda url, **kw: FakeResp(None, status=503))
+try:
+    r = client.get("/nodes/sql.query/poll?handle=job_00000001")
+    ok("★ 轮询撞上平台 5xx → 502 而不是判查询失败", r.status_code, 502)
+    ok("★ 轮询的平台故障也带错误码", detail_code(r), "PLATFORM_UNAVAILABLE")
+finally:
+    datalego.requests = _good_requests
+
+# 4xx 是平台看了这条 SQL 之后拒绝的，那是用户能改的 —— 归业务错，不重试
+with_upstream(lambda url, **kw: FakeResp({"message": "Table not found: dw.foo"}, status=400))
+try:
+    r = client.post("/nodes/sql.query/submit", json=SUBMIT_PARAMS)
+    ok("★ 平台 4xx 是业务错 → 400", r.status_code, 400)
+    ok("★ 平台 4xx 不重试", detail_code(r), "SQL_QUERY_ERROR")
+    truthy("★ 平台 4xx 带上平台原话", "Table not found" in detail_text(r))
+finally:
+    datalego.requests = _good_requests
+
+# 最后一道：**任何**没接住的异常也得是 JSON。这条兜底不存在的话，往后随便
+# 哪个路由抛一次没接住的异常，用户看到的又是 Unexpected token 'I'
+_raw = TestClient(main.app, raise_server_exceptions=False)
+_good_token = robot.get_token
+
+
+def _boom():
+    raise RuntimeError("谁也没接住我")
+
+
+robot.get_token = _boom
+try:
+    r = _raw.post("/nodes/sql.query/submit", json=SUBMIT_PARAMS)
+    ok("★ 没接住的异常 → 500", r.status_code, 500)
+    truthy("★ 没接住的异常也回 JSON",
+           r.headers.get("content-type", "").startswith("application/json"))
+    ok("★ 兜底错误码是 INTERNAL", detail_code(r), "INTERNAL")
+    truthy("★ 兜底带上异常类型，不是一句 Internal Server Error",
+           "RuntimeError" in detail_text(r))
+    truthy("★ 兜底不可重试（没接住的异常重试一次多半还是它）",
+           r.json()["detail"]["retryable"] is False)
+finally:
+    robot.get_token = _good_token
+
+# 还原之后一切照旧 —— 上面那些替换没留下后遗症
+ok("平台恢复后照常提交",
+   client.post("/nodes/sql.query/submit", json=SUBMIT_PARAMS).status_code, 200)
 
 for name, got, want in FAIL:
     print(f"✗ {name}\n    实际: {got!r}\n    期望: {want!r}")

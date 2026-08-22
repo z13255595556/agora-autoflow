@@ -37,9 +37,17 @@ let calls: Array<{ method: string; url: string; body: unknown }> = []
   calls.push({ method, url: path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
   const key = `${method} ${path.split('?')[0]}`
   const route = routes[key]
-  if (!route) return { ok: false, status: 404, json: async () => ({ detail: `没有打桩 ${key}` }) }
-  const status = route.status ?? 200
-  return { ok: status < 400, status, json: async () => route.body }
+  // 返回真的 Response 而不是 {ok, status, json} 三件套：client 读响应体的方式
+  // （先 text 再 parse，为的是让非 JSON 的错误体也能说人话）是被测行为的一部分，
+  // 手搓的替身缺哪个方法，测出来的就是替身而不是那条代码路径
+  if (!route) {
+    return new Response(JSON.stringify({ detail: `没有打桩 ${key}` }), {
+      status: 404, headers: { 'content-type': 'application/json' },
+    })
+  }
+  return new Response(JSON.stringify(route.body ?? {}), {
+    status: route.status ?? 200, headers: { 'content-type': 'application/json' },
+  })
 }
 
 const api = await import('../src/lib/client.ts')
