@@ -13,6 +13,8 @@ const PATHS: Record<string, JSX.Element> = {
   back: <path d="M10 12.5 5.5 8 10 3.5" />,
   play: <path d="M4.5 3.2v9.6l8-4.8z" />,
   stop: <rect x="4" y="4" width="8" height="8" rx="1" />,
+  pause: <path d="M5.2 3.5v9M10.8 3.5v9" />,
+  help: <path d="M8 14.2A6.2 6.2 0 1 0 8 1.8a6.2 6.2 0 0 0 0 12.4ZM6.2 6.3c.2-1 1-1.6 1.9-1.6 1 0 1.8.7 1.8 1.5 0 1.4-1.8 1.4-1.8 2.8M8 11.3h.01" />,
   expand: <path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9" />,
   copy: (
     <>

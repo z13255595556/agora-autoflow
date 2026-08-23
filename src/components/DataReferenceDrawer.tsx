@@ -6,8 +6,10 @@ import {
 } from '../lib/outputShape'
 import {
   compileReferenceSelection, selectionDisplayLabel,
-  type MatchOperator, type ReferenceSelection,
+  type AggregateFn, type MatchOperator, type ReferenceSelection,
 } from '../lib/referenceSelection'
+import { matchesOperator } from '../lib/selectionFilters'
+import { fitReason } from '../lib/referenceFit'
 import { previewText } from '../lib/refLabel'
 import { formatDate } from '../lib/datefn'
 import type { ReferenceTarget } from './ReferencePickerContext'
@@ -25,7 +27,19 @@ const TYPE_LABEL: Record<JsonType, string> = {
 }
 
 const MATCH_LABEL: Record<MatchOperator, string> = {
-  eq: '等于', neq: '不等于', contains: '包含', gt: '大于', lt: '小于',
+  eq: '等于', neq: '不等于', contains: '包含', gt: '大于', gte: '大于等于', lt: '小于', lte: '小于等于',
+}
+
+const AGG_LABEL: Record<AggregateFn, string> = { sum: '求和', avg: '平均', min: '最小', max: '最大' }
+
+/** 面板上算个预览数给用户看。算错也没关系 —— 正式值永远走引擎 */
+function previewAggregate(fn: AggregateFn, values: unknown[]): number | undefined {
+  const nums = values.map(Number).filter((n) => Number.isFinite(n))
+  if (!nums.length) return undefined
+  if (fn === 'sum') return nums.reduce((a, b) => a + b, 0)
+  if (fn === 'avg') return nums.reduce((a, b) => a + b, 0) / nums.length
+  if (fn === 'min') return Math.min(...nums)
+  return Math.max(...nums)
 }
 
 export default function DataReferenceDrawer({ request, onClose }: Props) {
@@ -193,10 +207,10 @@ export default function DataReferenceDrawer({ request, onClose }: Props) {
             <strong>{selectionDisplayLabel(candidate.selection) || candidate.selection.label}</strong>
             <em>{candidate.stale ? '样例已过期' : candidate.known ? previewText(candidate.sample) : '暂无真实样例'}</em>
           </div>
-          {incompatible(request, candidate.selection.valueType) && (
-            <div className="dataref__compat">对象或列表不能直接混在文字中，请改选具体字段或格式化结果。</div>
+          {blockReason(request, candidate.selection) && (
+            <div className="dataref__compat">{blockReason(request, candidate.selection)}</div>
           )}
-          <button className="btn btn--primary" disabled={incompatible(request, candidate.selection.valueType)} onClick={insert}>
+          <button className="btn btn--primary" disabled={Boolean(blockReason(request, candidate.selection))} onClick={insert}>
             插入变量
           </button>
         </footer>
@@ -343,13 +357,22 @@ function RegionView({ shape, region, dirty, running, backendOnline, onBack, onRe
 
 function TableRegion({ shape, region, onChoose }: { shape: OutputShape; region: RegionDesc; onChoose: (candidate: Candidate) => void }) {
   const table = region.table!
-  const [mode, setMode] = useState<'cell' | 'row' | 'column' | 'table' | 'find'>('cell')
+  const [mode, setMode] = useState<'cell' | 'row' | 'column' | 'table' | 'agg' | 'find'>('cell')
   const [rowNumber, setRowNumber] = useState(1)
   const [tableCols, setTableCols] = useState(() => table.columns.slice(0, 8).map((column) => column.name))
   const [matchColumn, setMatchColumn] = useState(table.columns[0]?.name ?? '')
   const [operator, setOperator] = useState<MatchOperator>('eq')
   const [matchValue, setMatchValue] = useState('')
   const [resultColumn, setResultColumn] = useState(table.columns[0]?.name ?? '')
+  // 按条件：只要第一个匹配（find，取单值）还是全部匹配行（where，筛选）
+  const [keepAll, setKeepAll] = useState(false)
+  // 汇总：默认挑第一个数字列 —— 求和 / 平均对文本列没有意义
+  const numericCols = table.columns.filter((c) => c.type === 'integer' || c.type === 'number')
+  const [aggColumn, setAggColumn] = useState(numericCols[0]?.name ?? table.columns[0]?.name ?? '')
+  const [topColumn, setTopColumn] = useState(numericCols[0]?.name ?? table.columns[0]?.name ?? '')
+  const [topDirection, setTopDirection] = useState<'asc' | 'desc'>('desc')
+  const [topN, setTopN] = useState(10)
+  const [topAsTable, setTopAsTable] = useState(true)
   const base = { sourceNodeId: shape.nodeId, sourceLabel: shape.nodeLabel, path: table.container }
   const chooseCell = (row: number, column: string, sample: unknown) => onChoose({
     selection: { ...base, mode: 'at', index: row, column, valueType: table.columns.find((item) => item.name === column)?.type ?? 'unknown', label: `${column} · 第 ${row + 1} 行` },
@@ -359,7 +382,7 @@ function TableRegion({ shape, region, onChoose }: { shape: OutputShape; region: 
   return (
     <div className="dataref__tablearea">
       <div className="dataref__modes">
-        {([['cell', '单个值'], ['row', '整行'], ['column', '整列'], ['table', '表格'], ['find', '按条件']] as const).map(([id, label]) => (
+        {([['cell', '单个值'], ['row', '整行'], ['column', '整列'], ['table', '表格'], ['agg', '汇总'], ['find', '按条件']] as const).map(([id, label]) => (
           <button className={mode === id ? 'is-on' : ''} key={id} onClick={() => setMode(id)}>{label}</button>
         ))}
       </div>
@@ -382,15 +405,69 @@ function TableRegion({ shape, region, onChoose }: { shape: OutputShape; region: 
             {(operatorsFor(table.columns.find((c) => c.name === matchColumn)?.type ?? 'string')).map((op) => <option key={op} value={op}>{MATCH_LABEL[op]}</option>)}
           </select>
           <input value={matchValue} onChange={(e) => setMatchValue(e.target.value)} placeholder="匹配值" />
-          <select value={resultColumn} onChange={(e) => setResultColumn(e.target.value)}><option value="">返回整行</option>{table.columns.map((c) => <option key={c.name}>{c.name}</option>)}</select>
+          {!keepAll && <select value={resultColumn} onChange={(e) => setResultColumn(e.target.value)}><option value="">返回整行</option>{table.columns.map((c) => <option key={c.name}>{c.name}</option>)}</select>}
+          <label className="dataref__toggle" title="不勾：只取第一个匹配的行（find）。勾上：保留全部匹配行（where），适合接表格或汇总">
+            <input type="checkbox" checked={keepAll} onChange={(e) => setKeepAll(e.target.checked)} /> 保留全部匹配行
+          </label>
           <button className="btn btn--primary btn--sm" disabled={!matchColumn || !matchValue} onClick={() => {
             const typed = typedValue(matchValue, table.columns.find((c) => c.name === matchColumn)?.type ?? 'string')
+            if (keepAll) {
+              const rows = table.sampleRows.filter((item) => match(item?.[matchColumn], operator, typed))
+              onChoose({
+                selection: { ...base, mode: 'where', matchColumn, operator, matchValue: typed, valueType: 'array', label: `筛选 ${matchColumn}${MATCH_LABEL[operator]}${matchValue}` },
+                sample: rows, known: table.sampleRows.length > 0,
+              })
+              return
+            }
             const row = table.sampleRows.find((item) => match(item?.[matchColumn], operator, typed))
             onChoose({
               selection: { ...base, mode: 'find', matchColumn, operator, matchValue: typed, resultColumn: resultColumn || undefined, valueType: resultColumn ? (table.columns.find((c) => c.name === resultColumn)?.type ?? 'unknown') : 'object', label: `${resultColumn || '整行'} · ${matchColumn}${MATCH_LABEL[operator]}${matchValue}` },
               sample: resultColumn ? row?.[resultColumn] : row, known: Boolean(row),
             })
-          }}>预览匹配</button>
+          }}>{keepAll ? '筛选行' : '预览匹配'}</button>
+        </div>
+      )}
+      {mode === 'agg' && (
+        <div className="dataref__agg">
+          <div className="dataref__aggrow">
+            <span>对列</span>
+            <select value={aggColumn} onChange={(e) => setAggColumn(e.target.value)}>{table.columns.map((c) => <option key={c.name}>{c.name}</option>)}</select>
+            {(['sum', 'avg', 'min', 'max'] as const).map((fn) => (
+              <button key={fn} className="btn btn--sm" disabled={!aggColumn} onClick={() => onChoose({
+                selection: { ...base, mode: 'aggregate', fn, column: aggColumn, valueType: 'number', label: `${aggColumn} · ${AGG_LABEL[fn]}` },
+                sample: previewAggregate(fn, table.sampleRows.map((row) => row[aggColumn])), known: table.sampleRows.length > 0,
+              })}>{AGG_LABEL[fn]}</button>
+            ))}
+            <button className="btn btn--sm" disabled={!aggColumn} onClick={() => onChoose({
+              selection: { ...base, mode: 'uniqueCount', column: aggColumn, valueType: 'integer', label: `${aggColumn} · 去重个数` },
+              sample: new Set(table.sampleRows.map((row) => JSON.stringify(row[aggColumn]))).size, known: table.sampleRows.length > 0,
+            })}>去重个数</button>
+            <button className="btn btn--sm" disabled={!aggColumn} onClick={() => onChoose({
+              selection: { ...base, mode: 'join', column: aggColumn, separator: '、', valueType: 'string', label: `${aggColumn} · 顿号拼接` },
+              sample: table.sampleRows.map((row) => previewText(row[aggColumn])).join('、'), known: table.sampleRows.length > 0,
+            })}>顿号拼接</button>
+          </div>
+          <div className="dataref__aggrow">
+            <span>按</span>
+            <select value={topColumn} onChange={(e) => setTopColumn(e.target.value)}>{table.columns.map((c) => <option key={c.name}>{c.name}</option>)}</select>
+            <select value={topDirection} onChange={(e) => setTopDirection(e.target.value as 'asc' | 'desc')}><option value="desc">从大到小</option><option value="asc">从小到大</option></select>
+            <label>前 <input type="number" min={1} max={1000} value={topN} onChange={(e) => setTopN(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))} /> 行</label>
+            <label className="dataref__toggle" title="勾上：结果是能直接进消息的 markdown 表格；不勾：结果是行列表，给下游节点用">
+              <input type="checkbox" checked={topAsTable} onChange={(e) => setTopAsTable(e.target.checked)} /> 作为表格
+            </label>
+            <button className="btn btn--primary btn--sm" disabled={!topColumn || (topAsTable && !tableCols.length)} onClick={() => {
+              const sorted = table.sampleRows.slice().sort((a, b) => {
+                const x = Number(a[topColumn]); const y = Number(b[topColumn])
+                const r = Number.isFinite(x) && Number.isFinite(y) ? x - y : String(a[topColumn] ?? '').localeCompare(String(b[topColumn] ?? ''), 'zh')
+                return topDirection === 'desc' ? -r : r
+              }).slice(0, topN)
+              onChoose({
+                selection: { ...base, mode: 'top', sortColumn: topColumn, direction: topDirection, limit: topN, columns: topAsTable ? tableCols : undefined, valueType: topAsTable ? 'string' : 'array', label: `按 ${topColumn} ${topDirection === 'desc' ? '最大' : '最小'}的前 ${topN} 行${topAsTable ? ' · 表格' : ''}` },
+                sample: topAsTable ? `${sorted.length} 行` : sorted, known: table.sampleRows.length > 0,
+              })
+            }}>取前 {topN} 行</button>
+          </div>
+          {topAsTable && <div className="dataref__hint">表格的列 = 「表格」页签里勾选的列（当前 {tableCols.length} 列）。</div>}
         </div>
       )}
       {table.orderUnstable && (mode === 'cell' || mode === 'row') && <div className="dataref__warning">SQL 没有 ORDER BY，按行号取值的结果顺序可能变化。</div>}
@@ -456,9 +533,15 @@ function findRegionOrNull(region: RegionDesc, path: string): RegionDesc | null {
 }
 
 const parentPath = (path: string) => path.includes('.') ? path.slice(0, path.lastIndexOf('.')) : ''
+const blockReason = (target: ReferenceTarget, selection: ReferenceSelection) =>
+  fitReason(selection, target.expectedType)
+  ?? (target.mixed && (selection.valueType === 'array' || selection.valueType === 'object')
+    ? '对象或列表不能直接混在文字中，请改选具体字段或格式化结果。'
+    : null)
 const incompatible = (target: ReferenceTarget, type: JsonType) => target.mixed && (type === 'array' || type === 'object')
 const asJsonType = (type: string): JsonType => type.endsWith('[]') ? 'array' : ['string', 'integer', 'number', 'boolean', 'object', 'array'].includes(type) ? type as JsonType : 'unknown'
 const sourceCaption = (shape: OutputShape, dirty = false) => dirty ? '字段结构可用 · 样例已过期' : shape.source === 'run' ? (shape.live === false ? '已有模拟结果' : '已有真实运行结果') : shape.source === 'pin' ? '使用固定输出' : shape.unknown ? '需要试运行获取数据' : '已有字段结构'
-const operatorsFor = (type: JsonType): MatchOperator[] => type === 'integer' || type === 'number' ? ['eq', 'neq', 'gt', 'lt'] : type === 'boolean' ? ['eq'] : ['eq', 'neq', 'contains']
+const operatorsFor = (type: JsonType): MatchOperator[] => type === 'integer' || type === 'number' ? ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'] : type === 'boolean' ? ['eq'] : ['eq', 'neq', 'contains']
 const typedValue = (value: string, type: JsonType): string | number | boolean => type === 'integer' || type === 'number' ? Number(value) : type === 'boolean' ? value === 'true' : value
-const match = (actual: unknown, op: MatchOperator, expected: unknown) => op === 'eq' ? actual === expected || String(actual) === String(expected) : op === 'neq' ? !(actual === expected || String(actual) === String(expected)) : op === 'contains' ? String(actual ?? '').includes(String(expected ?? '')) : op === 'gt' ? Number(actual) > Number(expected) : Number(actual) < Number(expected)
+// 预览和引擎用同一个比较函数 —— 面板说"匹配 3 行"而引擎筛出 2 行，用户没法解释
+const match = (actual: unknown, op: MatchOperator, expected: unknown) => matchesOperator(actual, op, expected)

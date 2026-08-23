@@ -165,7 +165,7 @@ export async function publisherOf(flowId: string, version: number): Promise<stri
 
 export async function loadSteps(runId: string): Promise<StepRow[]> {
   const { rows } = await pool.query(
-    `SELECT node_id, loop_path, status, matched, fanout, output, input, error, progress, seq
+    `SELECT node_id, loop_path, status, matched, fanout, output, input, error, progress, skip_reason, seq
      FROM steps WHERE run_id = $1 ORDER BY seq`,
     [runId],
   )
@@ -175,6 +175,9 @@ export async function loadSteps(runId: string): Promise<StepRow[]> {
     status: r.status,
     ...(r.matched === null ? {} : { matched: r.matched }),
     ...(r.fanout === null ? {} : { fanout: r.fanout }),
+    // decide() 要靠它分辨「暂停了（活着但没跑）」和「分支没命中（死了）」——
+    // 两者在 status 上都是 skipped
+    ...(r.skip_reason ? { skipReason: r.skip_reason } : {}),
     output: r.output,
     input: r.input,
     error: r.error,

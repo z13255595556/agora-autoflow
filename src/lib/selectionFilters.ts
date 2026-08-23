@@ -28,9 +28,29 @@ const decodeSingleQuoted = (body: string): string => {
   return out
 }
 
+/**
+ * find / where 共用的比较。两边都能走 `String()` 比较是刻意的：SQL 查回来的
+ * vid 可能是数字，用户在面板里填的永远是字符串，`123 == '123'` 必须成立。
+ */
+export const MATCH_OPERATORS = ['eq', 'neq', 'contains', 'gt', 'gte', 'lt', 'lte'] as const
+export type MatchOperatorName = (typeof MATCH_OPERATORS)[number]
+
+export function matchesOperator(actual: unknown, operator: unknown, expected: unknown): boolean {
+  switch (String(operator)) {
+    case 'eq': return actual === expected || String(actual) === String(expected)
+    case 'neq': return !(actual === expected || String(actual) === String(expected))
+    case 'contains': return String(actual ?? '').includes(String(expected ?? ''))
+    case 'gt': return Number(actual) > Number(expected)
+    case 'gte': return Number(actual) >= Number(expected)
+    case 'lt': return Number(actual) < Number(expected)
+    case 'lte': return Number(actual) <= Number(expected)
+    default: throw new Error(`不支持的匹配方式 ${String(operator)}，可用：${MATCH_OPERATORS.join(' / ')}`)
+  }
+}
+
 /** 新可视化选择器使用的纯数据过滤器。无 eval、无属性表达式执行。 */
 export function applySelectionFilter(value: unknown, name: string, args: unknown[]): FilterResult {
-  if (!['at', 'first', 'last', 'column', 'find'].includes(name)) return { handled: false }
+  if (!['at', 'first', 'last', 'column', 'find', 'where', 'limit'].includes(name)) return { handled: false }
   const rows = Array.isArray(value) ? value : []
   const selected = (row: unknown, column: unknown) => {
     if (column === undefined || column === '') return row
@@ -50,18 +70,22 @@ export function applySelectionFilter(value: unknown, name: string, args: unknown
     }
     case 'find': {
       const [matchColumn, operator = 'eq', expected, resultColumn] = args
-      const matches = (actual: unknown) => {
-        switch (String(operator)) {
-          case 'eq': return actual === expected || String(actual) === String(expected)
-          case 'neq': return !(actual === expected || String(actual) === String(expected))
-          case 'contains': return String(actual ?? '').includes(String(expected ?? ''))
-          case 'gt': return Number(actual) > Number(expected)
-          case 'lt': return Number(actual) < Number(expected)
-          default: throw new Error(`不支持的匹配方式 ${String(operator)}`)
-        }
-      }
-      const row = rows.find((item) => matches(isRecord(item) ? item[String(matchColumn)] : undefined))
+      const row = rows.find((item) => matchesOperator(isRecord(item) ? item[String(matchColumn)] : undefined, operator, expected))
       return { handled: true, value: selected(row, resultColumn) }
+    }
+    case 'where': {
+      // 和 find 同一套比较，但保留**全部**匹配行。"只发 dc>5 的"以前只能回去改 SQL
+      const [matchColumn, operator = 'eq', expected] = args
+      return {
+        handled: true,
+        value: rows.filter((item) => matchesOperator(isRecord(item) ? item[String(matchColumn)] : undefined, operator, expected)),
+      }
+    }
+    case 'limit': {
+      // 前 n 行。配合 sort 就是"前十名"；以前要为此拖一个「列表处理」节点
+      const n = Number(args[0])
+      if (!Number.isInteger(n) || n < 0) throw new Error(`|limit 需要一个非负整数，例如 |limit(10)，实际是 ${String(args[0])}`)
+      return { handled: true, value: rows.slice(0, n) }
     }
     default: return { handled: false }
   }

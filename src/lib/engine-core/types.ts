@@ -63,6 +63,7 @@ export type SkipReason =
   | { kind: 'run_failed' }                             // 全局 fail-fast
   | { kind: 'no_incoming' }                            // 非触发器节点没有入边
   | { kind: 'no_iterations' }                          // 循环展开 0 项，体内节点不跑
+  | { kind: 'disabled' }                               // 用户暂停了它。**活着但没跑**：下游照常判活
 
 /**
  * 一步的身份。

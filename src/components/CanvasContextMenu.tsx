@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { NODE_TYPE_MAP } from '../registry'
 import { useFlow } from '../store'
+import { pausable } from '../lib/engine-core/decide'
 import Icon from './Icon'
 
 export type CanvasMenuRequest =
@@ -28,6 +29,7 @@ export default function CanvasContextMenu({
   const deleteNodes = useFlow((s) => s.deleteNodes)
   const arrangeNodes = useFlow((s) => s.arrangeNodes)
   const openNdv = useFlow((s) => s.openNdv)
+  const setNodeDisabled = useFlow((s) => s.setNodeDisabled)
 
   useEffect(() => {
     const onDown = (event: PointerEvent) => {
@@ -134,6 +136,12 @@ export default function CanvasContextMenu({
                 <kbd>⌘D</kbd>
               </button>
             </>
+          )}
+          {node && pausable(node) && (
+            <button role="menuitem" onClick={() => run(() => setNodeDisabled(request.nodeId, !node.data.disabled))}>
+              <Icon name={node.data.disabled ? 'play' : 'pause'} size={14} />
+              <span>{node.data.disabled ? '恢复运行' : '暂停此节点'}</span>
+            </button>
           )}
           {copyable && (
             <>

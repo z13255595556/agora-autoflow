@@ -14,14 +14,26 @@ import { useFlow } from './store'
 import { NODE_TYPE_MAP } from './registry'
 import { ReferencePickerProvider } from './components/ReferencePickerContext'
 import { appHref, stripAppBase } from './lib/basePath'
+import { routeFromPath } from './lib/appRoute'
+import { pushToast } from './lib/toast'
+import { decideRunRequest } from './lib/runRequest'
+import type { Command } from './lib/commands'
+import ToastHost from './components/ToastHost'
+import CommandPalette from './components/CommandPalette'
+import ShortcutsSheet from './components/ShortcutsSheet'
 
 export default function App() {
-  const route = routeFromPath(stripAppBase(window.location.pathname))
+  const [pathname, setPathname] = useState(() => stripAppBase(window.location.pathname))
+  // 只在首次进入时读 query：`/?flow=…&run=…` 是告警链接的深链，打开一次就够了
+  const [initialSearch] = useState(() => window.location.search)
+  const route = routeFromPath(pathname, initialSearch)
   const editorFlowId = route.kind === 'editor' ? route.flowId : null
   const [editorReady, setEditorReady] = useState(false)
   // 右侧停靠区一次只放一个：流程设置 / 流程 JSON / 选中节点的配置。
   // dock 有值时压过节点配置；dock 为 null 时选中谁就显示谁
   const [dock, setDock] = useState<DockPanel>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const runPanelOpen = useFlow((s) => s.runPanelOpen)
   const ndvNodeId = useFlow((s) => s.ndvNodeId)
   const selectedId = useFlow((s) => s.selectedId)
@@ -30,6 +42,17 @@ export default function App() {
     return Boolean(node && NODE_TYPE_MAP.get(node.data.typeId)?.visualOnly)
   })
   const loadRegistry = useFlow((s) => s.loadRegistry)
+
+  useEffect(() => {
+    const onPop = () => setPathname(stripAppBase(window.location.pathname))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  const navigate = (path: string) => {
+    window.history.pushState({}, '', appHref(path))
+    setPathname(stripAppBase(window.location.pathname))
+  }
 
   /** health 探完了没。**流程加载必须等它** —— 探完才知道该读服务端还是 localStorage */
   const [backendProbed, setBackendProbed] = useState(false)
@@ -46,9 +69,12 @@ export default function App() {
 
   // 编辑页是独立 URL。每次整页进入都按路径里的 flowId 重新加载，刷新不会丢流程。
   useEffect(() => {
-    if (route.kind === 'home') return
+    if (route.kind === 'home') {
+      setEditorReady(false)
+      return
+    }
     if (route.kind === 'invalid') {
-      window.location.replace(appHref())
+      navigate('/')
       return
     }
     // 服务端存储在的话优先读它 —— 但要等 loadRegistry 探完 health 才知道在不在，
@@ -59,7 +85,7 @@ export default function App() {
       const saved = await getFlow(route.flowId)
       if (cancelled) return
       if (!saved) {
-        window.location.replace(appHref())
+        navigate('/')
         return
       }
       useFlow.getState().loadDefinition(saved.def)
@@ -130,10 +156,6 @@ export default function App() {
       if (result.code === 'flow_archived' && !toldGone.current) {
         toldGone.current = true
         setGone(true)
-        window.alert(
-          `「${useFlow.getState().flowName}」已经被删除了，这一页是旧的 —— 之后的改动不会再保存。\n\n` +
-          '想留下它的话，先用工具栏的「流程 JSON」导出一份，再新建一条流程贴回去。',
-        )
       }
     }
     return { ok: result.ok, synced: didSyncToServer(result) }
@@ -233,32 +255,82 @@ export default function App() {
   }, [])
 
   const openFlowPage = (flowId: string) => {
-    window.location.assign(appHref(`/workflows/${encodeURIComponent(flowId)}`))
+    navigate(`/workflows/${encodeURIComponent(flowId)}`)
   }
 
   const createAndOpen = async (def: FlowDefinition) => {
     const result = await createFlow(def)
     if (!result.ok) {
-      window.alert(result.error ?? '保存失败')
+      pushToast({ tone: 'error', text: result.error ?? '保存失败' })
       return
     }
-    if (result.error) window.alert(`已存到本地，但同步到服务端失败：${result.error}`)
+    if (result.error) pushToast({ tone: 'warn', text: `已存到本地，但同步到服务端失败：${result.error}` })
     openFlowPage(def.id)
   }
 
   const goHome = async () => {
-    // 防抖还没到点时先保存；只有真的写失败才留在编辑器。
-    // 这里看 ok 不看 synced：服务端挂了不该把人锁在编辑器里
     if (dirty && !(await save()).ok) return
     if (useFlow.getState().running) useFlow.getState().stopRun()
-    window.location.assign(appHref())
+    setEditorReady(false)
+    navigate('/')
   }
+
+  useEffect(() => {
+    if (route.kind !== 'editor' || !editorReady) return
+    const onKey = (event: KeyboardEvent) => {
+      // ? 打开快捷键表：只在非输入态，否则在正文里打问号会弹出来
+      if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey && !isTextEditingTarget(event.target)) {
+        event.preventDefault()
+        setShortcutsOpen(true)
+        return
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return
+      event.preventDefault()
+      setPaletteOpen(true)
+    }
+    const onOpen = () => setPaletteOpen(true)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('autoflow-palette', onOpen)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('autoflow-palette', onOpen)
+    }
+  }, [route.kind, editorReady])
+
+  const paletteCommands: Command[] = [
+    {
+      id: 'run',
+      group: '运行',
+      label: '运行流程',
+      hint: '当前草稿',
+      run: () => {
+        const state = useFlow.getState()
+        const decision = decideRunRequest({
+          running: state.running,
+          flowInputs: state.flowInputs,
+          form: state.manualInputs,
+          problems: [],
+        })
+        if (decision.action === 'stop') state.stopRun()
+        else {
+          state.setRunPanelOpen(true)
+          if (decision.action === 'start') void state.startRun(decision.trigger)
+        }
+      },
+    },
+    { id: 'add', group: '节点', label: '添加节点', hint: 'Tab', run: () => window.dispatchEvent(new Event('autoflow-add-node')) },
+    { id: 'flow', group: '流程', label: '流程设置', hint: '入参 · 失败通知', run: () => setDock('flow') },
+    { id: 'shortcuts', group: '导航', label: '快捷键', hint: '?', run: () => setShortcutsOpen(true) },
+    { id: 'home', group: '导航', label: '回到流程列表', run: () => { void goHome() } },
+  ]
 
   if (route.kind === 'home') {
     return (
       <div className="app">
+        <ToastHost />
         <Home
           ready={backendProbed}
+          openRun={route.openRun}
           onOpenTemplate={(t: Template) => void createAndOpen(t.build())}
           onOpenSaved={(flow) => openFlowPage(flow.id)}
           onImport={(def: FlowDefinition) => void createAndOpen(def)}
@@ -268,11 +340,29 @@ export default function App() {
   }
 
   if (route.kind !== 'editor' || !editorReady) {
-    return <div className="app"><div className="empty">正在打开流程…</div></div>
+    return (
+      <div className="app">
+        <ToastHost />
+        <div className="editor-skeleton" aria-busy="true">
+          <div className="editor-skeleton__bar" />
+          <div className="editor-skeleton__canvas">
+            <div className="empty">正在打开流程…</div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="app">
+      <ToastHost />
+      {gone && (
+        <div className="gonebar" role="status">
+          这条流程已在服务端删除，之后的改动不会再保存。想留下的话先导出流程 JSON。
+          <button className="btn btn--sm" onClick={() => { setDock('json') }}>导出 JSON</button>
+          <button className="btn btn--sm" onClick={() => void goHome()}>回首页</button>
+        </div>
+      )}
       <Toolbar
         dock={dock}
         onDock={setDock}
@@ -313,27 +403,12 @@ export default function App() {
         </div>
         {/* key：切换节点时重挂载，iterIdx/editingPin 等内部状态不跨节点泄漏 */}
         {ndvNodeId && <NodeDetailView key={ndvNodeId} />}
+        {paletteOpen && <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} />}
+        {shortcutsOpen && <ShortcutsSheet onClose={() => setShortcutsOpen(false)} />}
         </ReferencePickerProvider>
       </ReactFlowProvider>
     </div>
   )
-}
-
-type AppRoute =
-  | { kind: 'home' }
-  | { kind: 'editor'; flowId: string }
-  | { kind: 'invalid' }
-
-function routeFromPath(pathname: string): AppRoute {
-  if (pathname === '/' || pathname === '/index.html') return { kind: 'home' }
-  const match = /^\/workflows\/([^/]+)\/?$/.exec(pathname)
-  if (!match) return { kind: 'invalid' }
-  try {
-    const flowId = decodeURIComponent(match[1])
-    return flowId ? { kind: 'editor', flowId } : { kind: 'invalid' }
-  } catch {
-    return { kind: 'invalid' }
-  }
 }
 
 function isTextEditingTarget(target: EventTarget | null): boolean {

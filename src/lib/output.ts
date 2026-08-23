@@ -20,10 +20,38 @@ export const FILTERS = [
   // 聚合。日报里天天要写"总数是多少""去重后几个""排前三的是谁"，
   // 以前只能回去改 SQL —— 而改 SQL 意味着多跑一次几分钟的 Hive 查询
   'sum', 'unique', 'join', 'sort',
+  // 第二批：筛选行、前 N、均值极值、数字格式。
+  // 「只发 dc>5 的」「前 10 名」「平均卡顿率 12.3%」三句话之前表达不出来 ——
+  // find 只取第一个匹配，sort 之后没法截断，sum 之外没有别的聚合。
+  // min/max/avg 对空集返回 undefined 而不是 0 也不是报错：0 会把"没有数据"
+  // 伪装成"平均值是 0"；报错则让 default() 接不住（它只兜 undefined）
+  'where', 'limit', 'min', 'max', 'avg', 'round', 'percent',
   // 缺值逃生口。引用取不到值时引擎会报错（而不是像以前那样渲染成空串），
   // 确实允许缺值的场合用它显式声明：{{ $.x | default('—') }}
   'default',
 ] as const
+
+/**
+ * 一个 {{ }} 块里的过滤器引用了哪些列名。给消息预览做"列名写错了"的提示用。
+ *
+ * 不同过滤器的列名位置不一样：table/list/lines 的参数全是列；where/sort/
+ * sum/avg/min/max/unique/column 只有第一个参数是列；join 是第二个。
+ * 以前预览只认 table/list/lines，`| sum(dcc)` 写错列名要到运行期才知道。
+ */
+export function columnsUsedIn(block: string): string[] {
+  const strip = (s: string) => s.trim().replace(/^['"]|['"]$/g, '')
+  const out: string[] = []
+  for (const seg of splitTopLevelPipes(block).slice(1)) {
+    const m = seg.trim().match(/^([A-Za-z_]+)\s*\(([\s\S]*)\)$/)
+    if (!m) continue
+    const [, name, raw] = m
+    const args = raw.split(',').map(strip).filter(Boolean)
+    if (['table', 'list', 'lines'].includes(name)) out.push(...args)
+    else if (['where', 'sort', 'sum', 'avg', 'min', 'max', 'unique', 'column'].includes(name) && args[0]) out.push(args[0])
+    else if (name === 'join' && args[1]) out.push(args[1])
+  }
+  return [...new Set(out)]
+}
 
 /**
  * 按**顶层**竖线切开表达式：`rows | sort(dc, desc) | at(0, name)`

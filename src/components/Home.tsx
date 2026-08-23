@@ -13,6 +13,10 @@ import RunHistory from './RunHistory'
 import UsageDashboard from './UsageDashboard'
 import { normalizeFlowDefinition } from '../lib/flowImport'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
+import { flowCardMeta } from '../lib/flowCardMeta'
+import { describeNextFire } from '../lib/schedule'
+import { filterFlows, type FlowListFilter } from '../lib/flowListFilter'
+import { pushToast } from '../lib/toast'
 
 /**
  * 首页 = 流程列表。
@@ -24,10 +28,13 @@ import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
  */
 export default function Home({
   ready,
+  openRun,
   onOpenTemplate,
   onOpenSaved,
   onImport,
 }: {
+  /** 深链：打开就直接弹某条流程的运行记录（失败告警里的链接） */
+  openRun?: { flowId: string; runId?: string }
   /**
    * health 探完了没。**列表必须等它** —— storageMode() 是同步读的，
    * 探测没回来时它一律是 'local'，于是首页会拿本地那份当全部内容显示出来，
@@ -41,9 +48,12 @@ export default function Home({
   // 删除/复制后要重新读，用一个计数器触发
   const [tick, setTick] = useState(0)
   const [q, setQ] = useState('')
+  const [filter, setFilter] = useState<FlowListFilter>('all')
   const [creating, setCreating] = useState(false)
   /** 正在看谁的运行记录。null = 没打开 */
   const [history, setHistory] = useState<SavedFlow | null>(null)
+  /** 深链只消费一次：列表刷新不该把已经关掉的运行记录再弹出来 */
+  const openedRun = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const [list, setList] = useState<FlowList>({ flows: [], mode: 'local', localOnly: [] })
@@ -85,9 +95,18 @@ export default function Home({
       if (cancelled) return
       setList(got)
       setLoading(false)
+      // 深链 `/?flow=…&run=…`：列表到了就直接弹那条流程的运行记录。只做一次
+      if (openRun && !openedRun.current) {
+        openedRun.current = true
+        const target = got.flows.find((f) => f.id === openRun.flowId)
+        if (target) setHistory(target)
+        else pushToast({ tone: 'warn', text: '链接里的流程不在你的列表里 —— 可能已归档，或者不是你的' })
+        // 消费掉 query，刷新页面不再重复弹
+        window.history.replaceState({}, '', window.location.pathname)
+      }
     })
     return () => { cancelled = true }
-  }, [tick, ready, tab])
+  }, [tick, ready, tab, openRun])
 
   /**
    * 首页显示的流程。**服务端模式下把「只在本机」那些也并进来。**
@@ -105,10 +124,7 @@ export default function Home({
     return [...list.flows, ...list.localOnly].sort((a, b) => b.updatedAt - a.updatedAt)
   }, [list, tab])
 
-  const shown = useMemo(() => {
-    const kw = q.trim().toLowerCase()
-    return kw ? saved.filter((f) => f.name.toLowerCase().includes(kw)) : saved
-  }, [saved, q])
+  const shown = useMemo(() => filterFlows(saved, q, filter), [saved, q, filter])
 
   /**
    * 管理台的分组。**我自己那组排在最前**，其余按流程数从多到少 ——
@@ -159,7 +175,8 @@ export default function Home({
   const duplicate = async (f: SavedFlow) => {
     // 换个 id 再存，否则会覆盖原来那条
     const result = await createFlow({ ...f.def, id: newFlowId(), name: `${f.name} 副本` })
-    if (!result.ok) alert(result.error ?? '复制失败')
+    if (!result.ok) pushToast({ tone: 'error', text: result.error ?? '复制失败' })
+    else pushToast({ tone: 'ok', text: `已创建「${f.name} 副本」` })
     setTick((t) => t + 1)
   }
 
@@ -186,7 +203,7 @@ export default function Home({
           )
           if (!go) continue
           const done = await restoreAndUpload(f)
-          if (!done.ok) alert(`「${f.name}」恢复失败：${done.error}`)
+          if (!done.ok) pushToast({ tone: 'error', text: `「${f.name}」恢复失败：${done.error}` })
           continue
         }
 
@@ -201,16 +218,16 @@ export default function Home({
           const done = await uploadAsCopy(f, name)
           // 本机那条旧记录不清掉的话，它的 id 永远撞、永远提示"只存在这台机器上"
           if (done.ok) forgetLocal(f.id)
-          else alert(`「${f.name}」上传副本失败：${done.error}`)
+          else pushToast({ tone: 'error', text: `「${f.name}」上传副本失败：${done.error}` })
           continue
         }
 
         if (r.code === 'flow_exists') {
-          alert(`「${f.name}」服务器上已经有了，本机这份列表是旧的 —— 刷新一下就看得到。`)
+          pushToast({ tone: 'warn', text: `「${f.name}」服务器上已经有了，本机这份列表是旧的 —— 刷新一下就看得到。` })
           continue
         }
 
-        alert(`「${f.name}」上传失败：${r.error}`)
+        pushToast({ tone: 'error', text: `「${f.name}」上传失败：${r.error}` })
       }
     } finally {
       setUploading(false)
@@ -235,7 +252,7 @@ export default function Home({
       // 首页导入始终是一条新流程，不覆盖库里同 id 的记录。
       onImport({ ...def, id })
     } catch (e) {
-      alert(`导入失败：${e instanceof Error ? e.message : String(e)}`)
+      pushToast({ tone: 'error', text: `导入失败：${e instanceof Error ? e.message : String(e)}` })
     }
   }
 
@@ -253,6 +270,17 @@ export default function Home({
           onChange={(e) => setQ(e.target.value)}
           placeholder="搜索流程…"
         />
+        <div className="hfilters" role="group" aria-label="筛选">
+          {([['all', '全部'], ['schedule', '定时'], ['webhook', 'Webhook'], ['local', '只在本机']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              className={`hfilters__t${filter === key ? ' on' : ''}`}
+              onClick={() => setFilter(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         {admin && (
           <button className="btn btn--admin" onClick={() => setUsageOpen(true)} title="全部用户的运行统计">
             用量看板
@@ -294,6 +322,9 @@ export default function Home({
 
           <div className="home__head">
             <h1 className="home__title">{tab === 'all' ? '全部用户的流程' : '我的流程'}</h1>
+            {saved.length > 0 && (
+              <button className="btn btn--ghost" onClick={() => setCreating(true)}>从模板新建</button>
+            )}
             <p className="home__sub">
               {tab === 'all'
                 ? '按归属分组。这里能看到、也能改所有人的流程 —— 动别人的东西之前先确认一下。'
@@ -316,6 +347,7 @@ export default function Home({
           {list.error && (
             <div className="home__notice home__notice--warn">
               读不到服务端的流程库，当前显示的是本机缓存：{list.error}
+              <button className="btn btn--sm" onClick={() => setTick((t) => t + 1)}>重试</button>
             </div>
           )}
 
@@ -348,10 +380,19 @@ export default function Home({
               <div className="home__blankicon">◆</div>
               <div className="home__blanktitle">还没有流程</div>
               <div className="home__blanktext">
-                从一个模板开始最快 —— 节点已经连好，填上 SQL 和群机器人地址就能跑。
+                用做好的日报模板最快 —— 节点已经连好，填上 SQL 和群机器人地址就能跑。也可以先选一个触发器从空白开始。
               </div>
               <div className="home__blankcards">
-                {TEMPLATES.map((t) => (
+                {TEMPLATES.filter((t) => t.kind === 'recipe').map((t) => (
+                  <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
+                    <span className="tplcard__icon">{t.icon}</span>
+                    <span className="tplcard__name">{t.name}</span>
+                    <span className="tplcard__desc">{t.desc}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="home__blankcards">
+                {TEMPLATES.filter((t) => t.kind === 'blank').map((t) => (
                   <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
                     <span className="tplcard__icon">{t.icon}</span>
                     <span className="tplcard__name">{t.name}</span>
@@ -361,7 +402,7 @@ export default function Home({
               </div>
             </div>
           ) : shown.length === 0 ? (
-            <div className="empty">没有名字匹配「{q}」的流程。</div>
+            <div className="empty">{filter === 'all' ? `没有名字匹配「${q}」的流程。` : '这个筛选下没有流程。'}</div>
           ) : tab === 'mine' ? (
             <div className="grid">
               {shown.map((f) => (
@@ -400,11 +441,11 @@ export default function Home({
                 <Icon name="close" />
               </button>
             </div>
-            <div className="modal__note">选择触发方式从零开始，或直接导入常用流程模板。</div>
+            <div className="modal__note">选一个触发器从零开始，或直接用已经连好的日报模板。</div>
             <section className="modal__group" aria-labelledby="create-from-scratch">
-              <h2 className="modal__group-title" id="create-from-scratch">从零开始创建</h2>
+              <h2 className="modal__group-title" id="create-from-scratch">选一个触发器</h2>
               <div className="modal__cards">
-                {TEMPLATES.filter((t) => t.key !== 'scheduled-sql').map((t) => (
+                {TEMPLATES.filter((t) => t.kind === 'blank').map((t) => (
                   <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
                     <span className="tplcard__icon">{t.icon}</span>
                     <span className="tplcard__name">{t.name}</span>
@@ -414,9 +455,9 @@ export default function Home({
               </div>
             </section>
             <section className="modal__group" aria-labelledby="import-from-template">
-              <h2 className="modal__group-title" id="import-from-template">从模板导入</h2>
+              <h2 className="modal__group-title" id="import-from-template">用做好的模板</h2>
               <div className="modal__cards modal__cards--templates">
-                {TEMPLATES.filter((t) => t.key === 'scheduled-sql').map((t) => (
+                {TEMPLATES.filter((t) => t.kind === 'recipe').map((t) => (
                   <button key={t.key} className="tplcard" onClick={() => onOpenTemplate(t)}>
                     <span className="tplcard__icon">{t.icon}</span>
                     <span className="tplcard__name">{t.name}</span>
@@ -429,7 +470,7 @@ export default function Home({
         </div>
       )}
 
-      {history && <RunHistory flow={history} onClose={() => setHistory(null)} />}
+      {history && <RunHistory flow={history} initialRunId={openRun?.flowId === history.id ? openRun.runId : undefined} onClose={() => setHistory(null)} />}
       {usageOpen && <UsageDashboard onClose={() => setUsageOpen(false)} />}
     </div>
   )
@@ -465,9 +506,14 @@ function FlowCard({
   // 只读它的话，"这台浏览器没打开过"的定时流程会显示成手动触发
   const kind = flow.triggerKind ?? flow.def.trigger?.kind
   const scheduled = kind === 'schedule'
-  // webhook 流程以前也显示成「手动触发」—— 明明外部系统随时能打进来，
-  // 列表页却说它只能手点。这一栏的用途正是一眼扫出哪些流程会自己动
   const hooked = kind === 'webhook'
+  const meta = flowCardMeta(flow.def)
+  // 「下次 明天 09:00」来自调度器（含 misfire / 重叠之后的实际值），不从草稿算：
+  // 草稿和线上可能不是一份，而且壳定义里根本没有排程参数
+  const nextFire = scheduled && isSchedulerAlive() ? describeNextFire(flow.nextFireAt, new Date()) : null
+  const triggerLabel = scheduled
+    ? (isSchedulerAlive() ? `${meta.scheduleText ?? '定时触发'}${nextFire ? ` · 下次 ${nextFire}` : ''}` : '定时触发 · 未生效')
+    : hooked ? 'Webhook 触发' : '手动触发'
   return (
     // 菜单展开时把整张卡抬起来。.fcard:hover 的 transform 会造一个层叠上下文，
     // 把菜单的 z-index 关在卡片内部 —— 于是下一行的卡片会盖住菜单下半截。
@@ -482,19 +528,18 @@ function FlowCard({
           className={`fcard__tag${scheduled ? (isSchedulerAlive() ? ' fcard__tag--sched' : ' fcard__tag--sched-off') : ''}`}
           title={scheduled && !isSchedulerAlive() ? SCHEDULER_OFF_DETAIL : undefined}
         >
-          {scheduled
-            ? (isSchedulerAlive() ? '定时触发' : '定时触发 · 未生效')
-            : hooked ? 'Webhook 触发' : '手动触发'}
+          {triggerLabel}
         </span>
         <span className="fcard__foot">
-          {/* 服务端上没有它。不标出来的话，删除的后果和别的卡片完全不同
-              （那些是归档，这些是真没了），而卡片看着一模一样 */}
           {flow.origin === 'local' && <b className="fcard__local">只在本机</b>}
           {flow.origin === 'server' && flow.owner === null && '还没有归属 · '}
+          {meta.nodeLabels.length > 0 && `${meta.nodeLabels.join(' · ')} · `}
+          {flow.hasUnpublishedChanges && '草稿未发布 · '}
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>
       </button>
 
+      <button className="fcard__history" onClick={onHistory}>运行记录</button>
       <div className="menu fcard__menu" ref={ref}>
         <button className="fcard__more" onClick={() => setMenu((v) => !v)} title="更多操作">
           <Icon name="more" />

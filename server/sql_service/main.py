@@ -760,6 +760,36 @@ def update_webhook(
     )
 
 
+class NotifyConfigBody(BaseModel):
+    """失败时通知到哪。webhook 为空 = 关掉。"""
+    webhook: Optional[str] = None
+
+
+@app.get("/api/flows/{flow_id}/notify")
+def get_notify(
+    flow_id: str,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    flow = _guard(flowstore.get_flow, flow_id, _viewer(request, x_forwarded_user))
+    return {"notifyConfig": flow.get("notifyConfig")}
+
+
+@app.put("/api/flows/{flow_id}/notify")
+def set_notify(
+    flow_id: str,
+    body: NotifyConfigBody,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """失败告警的入口。**不挂在 PUT /api/flows/{id} 上**：那是编辑器每几秒一次的
+    草稿自动保存，body 只有 definition 且不记审计；运维配置不该跟着击键走。"""
+    viewer = _viewer(request, x_forwarded_user)
+    _guard(flowstore.get_flow, flow_id, viewer)
+    config = {"webhook": body.webhook} if body.webhook else None
+    return _guard(flowstore.set_notify_config, flow_id, config, _actor(request, x_forwarded_user), viewer)
+
+
 @app.post("/api/flows/{flow_id}/webhook/rotate")
 def rotate_webhook(
     flow_id: str,

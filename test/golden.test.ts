@@ -293,3 +293,13 @@ test('同一份输入连跑两次结果逐字段相同', async () => {
   const flow = diamond(true)
   assert.deepEqual(await runGolden(flow), await runGolden(flow))
 })
+
+test('★ 暂停的体内节点每轮都记一条 skipped{disabled}，循环本身照常完成', async () => {
+  const flow = loopFlow('{{ $.nodes.q.output.values.rows }}')
+  flow.nodes = flow.nodes.map((n) => (n.id === 'b' ? node('b', 'transform.template', { template: 'x' }, 'fail', { disabled: true }) : n))
+  const r = await runGolden(flow)
+  assert.equal(ranTimes(r, 'b'), 0, '暂停的节点一次都不跑')
+  assert.equal(r.steps.filter((s) => s.nodeId === 'b' && s.status === 'skipped').length, 3, '但每轮都有痕迹')
+  assert.equal(stepOf(r, 'after')?.status, 'success', 'done 子树照跑')
+  assert.equal(r.runStatus, 'success')
+})

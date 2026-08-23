@@ -104,6 +104,22 @@ rejects(
     mutate(nodes=[dict(GOOD["nodes"][0], params=[])]),
     "params",
 )
+accepts("节点设置：备注 / 暂停 / 重试覆盖 / 明确不重试",
+        mutate(nodes=[dict(GOOD["nodes"][0], note="先别发", disabled=True, retry={"maxAttempts": 2, "initialMs": 500}),
+                      dict(GOOD["nodes"][1], retry=None)]))
+rejects("note 不是字符串", mutate(nodes=[dict(GOOD["nodes"][0], note=3)]), "note")
+accepts("入参：日期 / 下拉 / 小数落成 string+format / enum / number",
+        mutate(inputs={"type": "object", "properties": {
+            "date": {"type": "string", "format": "date", "default": "2026-08-21", "title": "日期"},
+            "engine": {"type": "string", "enum": ["hive", "doris"]},
+            "ratio": {"type": "number"},
+        }}))
+rejects("入参 type 不是 JSON Schema 类型（date 不能直接写成 type）",
+        mutate(inputs={"type": "object", "properties": {"d": {"type": "date"}}}), "inputs.properties.d.type")
+rejects("入参 enum 不是数组", mutate(inputs={"type": "object", "properties": {"e": {"type": "string", "enum": "hive"}}}), "enum")
+rejects("disabled 不是布尔", mutate(nodes=[dict(GOOD["nodes"][0], disabled="yes")]), "disabled")
+rejects("retry 不是对象", mutate(nodes=[dict(GOOD["nodes"][0], retry=3)]), "retry")
+rejects("retry.maxAttempts 不是数字", mutate(nodes=[dict(GOOD["nodes"][0], retry={"maxAttempts": "x"})]), "maxAttempts")
 rejects(
     "onError 取值非法",
     mutate(nodes=[dict(GOOD["nodes"][0], onError="ignore")]),

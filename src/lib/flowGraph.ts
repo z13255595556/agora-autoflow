@@ -1,5 +1,5 @@
 import type { Edge } from '@xyflow/react'
-import type { FlowDefinition, FlowInputField } from '../types.ts'
+import type { FlowDefinition, FlowInputField, FlowInputKind, JsonSchema } from '../types.ts'
 import type { FNode } from '../store.ts'
 
 /**
@@ -41,6 +41,73 @@ export function portOf(edge: AnyEdge): string {
  * 查出来的问题和编辑器里显示的问题会对不上，而那种不一致最难排查：
  * 两边单独看都是对的。
  */
+/**
+ * 定义里的一个节点 → 画布 / 引擎用的 data。
+ *
+ * **定义 → data 只有这一个出处。** 以前 store.loadDefinition 和这里各写一份字段清单，
+ * 加「暂停」时前端那份加了、这份没加 —— 表现是编辑器里暂停了、worker 照跑，
+ * 而且 DB 端到端测试跑出来之前谁也不知道
+ */
+export function nodeDataOf(n: FlowDefinition['nodes'][number]): FNode['data'] {
+  return {
+    typeId: n.type,
+    typeVersion: n.typeVersion,
+    label: n.name,
+    params: n.params ?? {},
+    onError: n.onError ?? 'fail',
+    ...(n.probedOutput ? { probedOutput: n.probedOutput } : {}),
+    ...(n.note ? { note: n.note } : {}),
+    ...(n.disabled ? { disabled: true } : {}),
+    ...(n.retry !== undefined ? { retry: n.retry } : {}),
+  }
+}
+
+/**
+ * 入参的种类 ↔ JSON Schema。**两个方向只在这一处。**
+ *
+ * date / select 不是 JSON Schema 类型，落盘时变成 string + format / string + enum；
+ * 读回来再认出种类。store.loadDefinition / toDefinition 和 worker 的 toGraph 都走这里 ——
+ * 各写一份的后果是"表单显示日期、引擎当字符串"，而且只在某一条路径上坏
+ */
+export function inputFieldOf(key: string, s: JsonSchema, required: boolean): FlowInputField {
+  const type: FlowInputKind = s.enum
+    ? 'select'
+    : s.format === 'date'
+      ? 'date'
+      : s.type === 'integer' || s.type === 'number' || s.type === 'boolean'
+        ? s.type
+        : 'string'
+  return {
+    key,
+    title: s.title ?? key,
+    type,
+    required,
+    ...(s.default !== undefined && s.default !== null ? { default: String(s.default) } : {}),
+    ...(s.description ? { description: s.description } : {}),
+    ...(s.enum ? { options: s.enum } : {}),
+  }
+}
+
+export function inputSchemaOf(f: FlowInputField): JsonSchema {
+  const type = f.type === 'date' || f.type === 'select' ? 'string' : f.type
+  const raw = f.default?.trim()
+  const def = raw === undefined || raw === ''
+    ? undefined
+    : type === 'integer' || type === 'number'
+      ? (Number.isFinite(Number(raw)) ? Number(raw) : undefined)
+      : type === 'boolean'
+        ? raw === 'true'
+        : raw
+  return {
+    type,
+    title: f.title || f.key,
+    ...(f.type === 'date' ? { format: 'date' } : {}),
+    ...(f.type === 'select' ? { enum: (f.options ?? []).filter(Boolean) } : {}),
+    ...(def !== undefined ? { default: def } : {}),
+    ...(f.description?.trim() ? { description: f.description.trim() } : {}),
+  }
+}
+
 export function toGraph(def: FlowDefinition): {
   nodes: FNode[]
   edges: Edge[]
@@ -50,14 +117,7 @@ export function toGraph(def: FlowDefinition): {
     id: n.id,
     type: 'flowNode',
     position: def.layout?.[n.id] ?? { x: 0, y: 0 },
-    data: {
-      typeId: n.type,
-      typeVersion: n.typeVersion,
-      label: n.name,
-      params: n.params ?? {},
-      onError: n.onError ?? 'fail',
-      ...(n.probedOutput ? { probedOutput: n.probedOutput } : {}),
-    },
+    data: nodeDataOf(n),
   })) as FNode[]
 
   const edges = def.edges.map((e, i) => ({
@@ -67,12 +127,9 @@ export function toGraph(def: FlowDefinition): {
     sourceHandle: portOf(e),
   })) as Edge[]
 
-  const inputs: FlowInputField[] = Object.entries(def.inputs?.properties ?? {}).map(([key, s]) => ({
-    key,
-    title: s.title ?? key,
-    type: (s.type as FlowInputField['type']) ?? 'string',
-    required: (def.inputs?.required ?? []).includes(key),
-  }))
+  const required = def.inputs?.required ?? []
+  const inputs: FlowInputField[] = Object.entries(def.inputs?.properties ?? {}).map(([key, s]) =>
+    inputFieldOf(key, s, required.includes(key)))
 
   return { nodes, edges, inputs }
 }

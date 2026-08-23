@@ -35,6 +35,20 @@ interface DragState {
 
 const canvasEl = () => document.querySelector<HTMLElement>('.canvas')
 
+/**
+ * 搜索命中：名字、类型 id、描述，以及 manifest 里声明的别名。
+ * 用户加节点时想的是动作 —— 「发群」要能找到企微，「查数」要能找到 SQL ——
+ * 而节点名是「企微通知」「DataLego SQL」，两头对不上
+ */
+function matchesNode(t: NodeType, kw: string): boolean {
+  return (
+    t.name.toLowerCase().includes(kw) ||
+    t.type.toLowerCase().includes(kw) ||
+    (t.description ?? '').toLowerCase().includes(kw) ||
+    (t.keywords ?? []).some((k) => k.toLowerCase().includes(kw))
+  )
+}
+
 export default function NodePicker({
   anchor,
   target,
@@ -87,13 +101,9 @@ export default function NodePicker({
     const kw = q.trim().toLowerCase()
     const hit = NODE_TYPES.filter((t) => {
       // 接在别的节点后面时，没有输入口的触发器排掉 —— 选了也连不上
+      if (target.kind === 'trigger') return t.hasInput === false && !t.visualOnly && (!kw || matchesNode(t, kw))
       if (target.kind !== 'free' && (t.hasInput === false || t.visualOnly)) return false
-      return (
-        !kw ||
-        t.name.toLowerCase().includes(kw) ||
-        t.type.toLowerCase().includes(kw) ||
-        (t.description ?? '').toLowerCase().includes(kw)
-      )
+      return !kw || matchesNode(t, kw)
     })
     const recentItems = !kw
       ? recent.map((type) => hit.find((item) => item.type === type)).filter((item): item is NodeType => !!item)

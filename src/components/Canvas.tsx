@@ -22,7 +22,6 @@ import FlowNodeView from './FlowNodeView'
 import FlowEdge from './FlowEdge'
 import NodePicker from './NodePicker'
 import CanvasContextMenu, { type CanvasMenuRequest } from './CanvasContextMenu'
-import CanvasNodeSearch from './CanvasNodeSearch'
 import Icon from './Icon'
 import { CanvasCtx, anchorOf, type PickerRequest } from './canvasCtx'
 
@@ -48,7 +47,6 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
 
   const [picker, setPicker] = useState<PickerRequest | null>(null)
   const [contextMenu, setContextMenu] = useState<CanvasMenuRequest | null>(null)
-  const [nodeSearchOpen, setNodeSearchOpen] = useState(false)
   const [canvasMode, setCanvasMode] = useState<'pan' | 'note'>('pan')
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null)
   const lastPointer = useRef<{ x: number; y: number } | null>(null)
@@ -73,21 +71,42 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
       event.preventDefault()
       setContextMenu(null)
       setPicker(null)
-      setNodeSearchOpen(true)
+      window.dispatchEvent(new Event('autoflow-palette'))
+    }
+    const onAdd = () => {
+      const point = lastPointer.current ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+      openPicker({ anchor: point, target: { kind: 'free' } })
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    window.addEventListener('autoflow-add-node', onAdd)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('autoflow-add-node', onAdd)
+    }
+  }, [openPicker])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') return
       if (event.metaKey || event.ctrlKey || event.altKey || isInputLike(event.target)) return
       if (event.key.toLowerCase() === 'h') setCanvasMode('pan')
       else if (event.key.toLowerCase() === 'c') setCanvasMode('note')
+      else if (event.key === 'Tab') {
+        event.preventDefault()
+        setContextMenu(null)
+        const trigger = nodes.length <= 1 ? nodes[0] : null
+        const point = lastPointer.current ?? { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+        openPicker({
+          anchor: point,
+          target: trigger
+            ? { kind: 'after', nodeId: trigger.id, port: 'out' }
+            : { kind: 'free' },
+        })
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [nodes, openPicker])
 
   const isValidConnection = useCallback(
     (connection: Parameters<typeof connectionProblem>[0]) => {
@@ -216,6 +235,10 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
               setCanvasMode('pan')
               return
             }
+            if (event.detail >= 2) {
+              openPicker({ anchor: { x: event.clientX, y: event.clientY }, target: { kind: 'free' } })
+              return
+            }
             select(null)
           }}
           onPaneContextMenu={(event) => {
@@ -260,9 +283,9 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
               </button>
               <button
                 className="canvasfind"
-                onClick={() => setNodeSearchOpen(true)}
-                title="查找节点（⌘/Ctrl+K）"
-                aria-label="查找节点"
+                onClick={() => window.dispatchEvent(new Event('autoflow-palette'))}
+                title="命令栏（⌘/Ctrl+K）"
+                aria-label="命令栏"
               >
                 <Icon name="search" size={15} />
               </button>
@@ -272,7 +295,7 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
           {showGuide && (
             <Panel position="top-center">
               <div className="quickstart" aria-label="添加第一个步骤">
-                <span className="quickstart__label">添加第一个步骤</span>
+                <span className="quickstart__label">下一步</span>
                 <button disabled={!triggerId} onClick={() => {
                   if (!triggerId) return
                   rememberNodeType('sql.query')
@@ -312,7 +335,6 @@ export default function Canvas({ reservedRight = 0 }: { reservedRight?: number }
         {picker && (
           <NodePicker anchor={picker.anchor} target={picker.target} onClose={() => setPicker(null)} />
         )}
-        {nodeSearchOpen && <CanvasNodeSearch onClose={() => setNodeSearchOpen(false)} />}
         {contextMenu && (
           <CanvasContextMenu
             request={contextMenu}

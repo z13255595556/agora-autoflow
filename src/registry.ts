@@ -13,6 +13,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'trigger.manual',
     typeVersion: '1.0.0',
     name: '手动触发',
+    keywords: ['手动', '点一下', '调试'],
     category: '触发器',
     icon: '▶',
     description: '按流程入参表单手动发起一次运行',
@@ -31,6 +32,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'trigger.schedule',
     typeVersion: '1.0.0',
     name: '定时触发',
+    keywords: ['定时', '每天', '日报', 'cron', '排程'],
     category: '触发器',
     icon: '⏰',
     description: '按固定时间自动发起运行，不用人盯着',
@@ -38,6 +40,8 @@ export const NODE_TYPES: NodeType[] = [
     input: {
       type: 'object',
       required: ['mode'],
+      // 接下来三次触发时刻的预览挂在整个表单上（和日期节点同一个机制）
+      'x-ui': { preview: 'schedule' },
       properties: {
         mode: {
           type: 'string',
@@ -106,6 +110,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'trigger.webhook',
     typeVersion: '1.0.0',
     name: 'Webhook 触发',
+    keywords: ['接口触发', '外部调用', 'POST', 'http 入口'],
     category: '触发器',
     icon: '🔗',
     description: '外部系统 POST 一下就运行，body 里的同名字段自动当流程入参',
@@ -183,6 +188,8 @@ export const NODE_TYPES: NodeType[] = [
     type: 'sql.query',
     typeVersion: '2.0.0',
     name: 'DataLego SQL',
+    keywords: ['查数', '取数', 'hive', 'doris', 'clickhouse', '数据平台', 'datalego'],
+    docsUrl: 'https://github.com/z13255595556/agora-autoflow#sql-节点真实执行',
     category: '数据查询',
     icon: '▤',
     description: '在 DataLego 数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接',
@@ -249,7 +256,7 @@ export const NODE_TYPES: NodeType[] = [
         rowCount: {
           type: 'integer',
           title: '返回行数',
-          description: '实际取回的行数（已受行数上限截断），不是匹配总数',
+          description: '实际取回的行数（已受行数上限截断），不是匹配总数。truncated 为真时二者不相等',
         },
         columns: { type: 'array', title: '列信息', items: { type: 'object' } },
         truncated: { type: 'boolean', title: '是否触到行数上限' },
@@ -259,17 +266,22 @@ export const NODE_TYPES: NodeType[] = [
     },
     policy: {
       idempotent: true,
+      dryRunnable: true,
       cancellable: true,
-      retry: { maxAttempts: 2, backoff: 'exponential', initialMs: 2000 },
+      // worker 重试的唯一出处（以前 worker 另有一份写死的表，数字和这里对不上）。
+      // 只在基础设施类错误（平台抖动、限流、超时）上重试；SQL 语法错重试一百次也一样。
+      // 后端 manifest.py 是正本，这里是离线兜底 —— 两边必须一致，test/manifestParity 会查
+      retry: { maxAttempts: 3, initialMs: 5000, backoffCoefficient: 2, maximumIntervalMs: 60_000 },
     },
   },
   {
     type: 'postgres.workspace',
     typeVersion: '1.0.0',
     name: '自建 PostgreSQL',
+    keywords: ['建表', '存结果', '自建库', 'pg', 'postgres'],
     category: '数据查询',
     icon: '▤',
-    description: '在你的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库',
+    description: '在你自己的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库',
     input: {
       type: 'object', required: ['sql'],
       properties: {
@@ -295,7 +307,12 @@ export const NODE_TYPES: NodeType[] = [
       },
     },
     runtime: { kind: 'http', execute: 'POST /nodes/postgres.workspace/execute' },
-    policy: { idempotent: false },
+    policy: {
+      idempotent: false,
+      // 自建库偶发连不上 / 超时值得等一下再试。执行接口带幂等键（服务端 24h 去重），
+      // 重试不会把同一条 INSERT 写两遍
+      retry: { maxAttempts: 3, initialMs: 2000, backoffCoefficient: 2, maximumIntervalMs: 30_000 },
+    },
   },
   // Kibana 检索 / Grafana 指标暂时下架（按需求临时移除）。
   // 要恢复的话，节点定义在 git 历史里，engine.mockOutput 的对应分支也一起删了。
@@ -305,6 +322,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'flow.if',
     typeVersion: '1.0.0',
     name: '条件分支',
+    keywords: ['判断', '分支', 'if', '条件'],
     category: '控制',
     icon: '◇',
     description: '按条件判定走 true / false 两个出口',
@@ -337,9 +355,10 @@ export const NODE_TYPES: NodeType[] = [
     type: 'flow.foreach',
     typeVersion: '1.0.0',
     name: '循环遍历',
+    keywords: ['遍历', '循环', '每个', '逐条', 'loop'],
     category: '控制',
     icon: '↻',
-    description: '对数组逐项执行下游，必须设并发上限',
+    description: '对数组逐项执行下游；每项串行跑，超过 1000 项整个节点失败',
     ports: [
       { id: 'each', label: '每一项' },
       { id: 'done', label: '完成' },
@@ -353,9 +372,12 @@ export const NODE_TYPES: NodeType[] = [
           title: '遍历对象',
           'x-ui': { widget: 'text', placeholder: '{{ $.nodes.n1.output.rows }}' },
         },
-        concurrency: { type: 'integer', title: '并发上限', default: 5, minimum: 1, maximum: 50, 'x-ui': { group: 'advanced' } },
-        batchSize: { type: 'integer', title: '批大小', default: 1, minimum: 1, 'x-ui': { group: 'advanced' } },
-        continueOnItemError: { type: 'boolean', title: '单项失败继续', default: true, 'x-ui': { widget: 'switch', group: 'advanced' } },
+        // 这里曾经有 concurrency / batchSize / continueOnItemError 三个「高级设置」。
+        // **故意删掉的**：引擎和 worker 一行都没读过它们 —— 用户把并发调到 10
+        // 期待快十倍，实际串行；把「单项失败继续」关掉，实际照样继续。
+        // 假开关比没有开关更贵：它让用户以为问题已经解决了。
+        // 并发、容错和收集结果一起做（docs/node-usability-design.md §3.18），
+        // 做完再把字段加回来；老流程里残留的这三个参数无害（没人读，原样带着）。
       },
     },
     output: {
@@ -371,6 +393,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'flow.merge',
     typeVersion: '1.0.0',
     name: '汇合',
+    keywords: ['汇合', '合并', '等待', 'join'],
     category: '控制',
     icon: '⋈',
     description: '等待多条分支到齐后继续',
@@ -397,6 +420,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'flow.end',
     typeVersion: '1.0.0',
     name: '结束',
+    keywords: ['结束', '返回', '输出', '结果'],
     category: '控制',
     icon: '■',
     description: '结束当前分支，并把指定内容作为流程结果',
@@ -430,6 +454,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'date.compute',
     typeVersion: '1.0.0',
     name: '日期计算',
+    keywords: ['昨天', '日期', '时间', '分区', '今天', 'date'],
     category: '处理',
     icon: '📅',
     description: '选出昨天 / 本月 1 号这类日期，一次给出 yyyyMMdd、时间戳等各种格式，下游直接引用',
@@ -510,6 +535,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'transform.map',
     typeVersion: '1.0.0',
     name: '数据整形',
+    keywords: ['整形', '表达式', '加工', '转换'],
     category: '处理',
     icon: '⇄',
     description: '用表达式把上游输出改成下游要的形状',
@@ -530,6 +556,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'transform.template',
     typeVersion: '1.0.0',
     name: '模板转换',
+    keywords: ['模板', '拼文本', '正文', '渲染'],
     category: '处理',
     icon: 'T',
     description: '把固定文本和上游变量组合成一段文本',
@@ -552,6 +579,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'variable.assign',
     typeVersion: '1.0.0',
     name: '变量赋值',
+    keywords: ['变量', '赋值', '常量', '设置'],
     category: '处理',
     icon: '=',
     description: '集中定义一组供下游使用的变量',
@@ -582,6 +610,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'list.operation',
     typeVersion: '1.0.0',
     name: '列表处理',
+    keywords: ['列表', '截取', '第一项', '前几条'],
     category: '处理',
     icon: '≡',
     description: '从数组中取第一项、最后一项或指定区间',
@@ -619,11 +648,15 @@ export const NODE_TYPES: NodeType[] = [
     type: 'http.request',
     typeVersion: '1.0.0',
     name: 'HTTP 调用',
+    keywords: ['接口', '调用', 'api', '请求', 'curl', 'rest'],
+    docsUrl: 'https://github.com/z13255595556/agora-autoflow#http-调用节点真实请求',
     category: '处理',
     icon: '↗',
-    description: '兜底节点，调用尚未包成节点的接口',
+    description: '由节点服务发起真实 HTTP 请求',
     input: {
       type: 'object',
+      // 粘一段 curl 自动填参。声明在 manifest 里而不是表单里按 typeId 判断
+      'x-ui': { importers: ['curl'] },
       required: ['method', 'url'],
       properties: {
         method: {
@@ -658,12 +691,15 @@ export const NODE_TYPES: NodeType[] = [
           type: 'object', title: '表单字段', additionalProperties: true, 'x-ui': { widget: 'kv' },
           'x-show': { bodyType: ['form-urlencoded'] },
         },
+        // 超时 / SSL / 重试都是「配一次就不再动」的，折进高级设置。
+        // 后端 manifest.py 是正本，这里只是离线兜底；两边必须一致（test/manifestParity）
         timeoutMs: {
           type: 'integer', title: '默认超时(ms)', default: 30000, minimum: 1, maximum: 120000,
           description: '连接和读取未单独设置时使用',
+          'x-ui': { group: 'advanced' },
         },
-        connectTimeoutMs: { type: 'integer', title: '连接超时(ms)', minimum: 1, maximum: 120000 },
-        readTimeoutMs: { type: 'integer', title: '读取超时(ms)', minimum: 1, maximum: 120000 },
+        connectTimeoutMs: { type: 'integer', title: '连接超时(ms)', minimum: 1, maximum: 120000, 'x-ui': { group: 'advanced' } },
+        readTimeoutMs: { type: 'integer', title: '读取超时(ms)', minimum: 1, maximum: 120000, 'x-ui': { group: 'advanced' } },
         allowHttpErrors: {
           type: 'boolean',
           title: '接受错误状态码',
@@ -673,20 +709,22 @@ export const NODE_TYPES: NodeType[] = [
         },
         verifySsl: {
           type: 'boolean', title: '校验 SSL 证书', default: true,
-          description: '仅在调用自签名证书服务时关闭', 'x-ui': { widget: 'switch' },
+          description: '仅在调用自签名证书服务时关闭', 'x-ui': { widget: 'switch', group: 'advanced' },
         },
+        // HTTP 的重试在节点内做，故意不声明 policy.retry —— 否则 worker 再叠一层
+        // 就是 3 × (1 + maxRetries) 次请求，对非幂等的 POST 尤其危险
         retryEnabled: {
           type: 'boolean', title: '失败后重试', default: false,
           description: '仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启',
-          'x-ui': { widget: 'switch' },
+          'x-ui': { widget: 'switch', group: 'advanced' },
         },
         maxRetries: {
           type: 'integer', title: '最多重试次数', default: 2, minimum: 1, maximum: 5,
-          'x-show': { retryEnabled: [true] },
+          'x-show': { retryEnabled: [true] }, 'x-ui': { group: 'advanced' },
         },
         retryIntervalMs: {
           type: 'integer', title: '重试间隔(ms)', default: 500, minimum: 0, maximum: 10000,
-          'x-show': { retryEnabled: [true] },
+          'x-show': { retryEnabled: [true] }, 'x-ui': { group: 'advanced' },
         },
       },
     },
@@ -710,6 +748,8 @@ export const NODE_TYPES: NodeType[] = [
     type: 'notify.wecom',
     typeVersion: '1.0.0',
     name: '企微通知',
+    keywords: ['发群', '通知', '机器人', '报警', '企业微信', '推送'],
+    docsUrl: 'https://github.com/z13255595556/agora-autoflow#企微通知节点真实发送',
     category: '输出',
     icon: '✉',
     description: '推到企微群。填群机器人的 webhook 地址',
@@ -739,7 +779,7 @@ export const NODE_TYPES: NodeType[] = [
           'x-ui': {
             widget: 'textarea',
             rows: 10,
-            inserters: ['table', 'message'],
+            inserters: ['message'],
             placeholder: '## 卡顿排查结果\n共 {{ $.nodes.n2.output.rowCount }} 条\n\n{{ $.nodes.n2.output.rows | table(uid, avg_dc, cnt_dc) }}',
           },
         },
@@ -760,7 +800,11 @@ export const NODE_TYPES: NodeType[] = [
         target: { type: 'string', title: '目标（key 已打码）' },
       },
     },
-    policy: { idempotent: false },
+    policy: {
+      // 非幂等：重试会重复发。真实引擎重试前必须带幂等键（worker 已带，服务端 24h 去重）
+      idempotent: false,
+      retry: { maxAttempts: 5, initialMs: 2000, backoffCoefficient: 2, maximumIntervalMs: 10_000 },
+    },
   },
 
   // ---------------------------------------------------------------- 画布辅助
@@ -768,6 +812,7 @@ export const NODE_TYPES: NodeType[] = [
     type: 'canvas.note',
     typeVersion: '1.0.0',
     name: '便签',
+    keywords: ['备注', '说明', '贴纸', '注释'],
     category: '辅助',
     icon: 'N',
     description: '在画布上记录说明、约定和待办，不参与流程执行',
@@ -787,7 +832,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '颜色',
           default: 'yellow',
           enum: ['yellow', 'blue', 'green', 'pink', 'gray'],
-          'x-ui': { widget: 'select' },
+          'x-ui': { widget: 'select', labels: { yellow: '黄', blue: '蓝', green: '绿', pink: '粉', gray: '灰' } },
         },
       },
     },

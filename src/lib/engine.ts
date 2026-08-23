@@ -16,6 +16,7 @@ import { compareCondition, opNeedsValue, opToleratesMissing, readConditionGroup 
 import { redactNodeInput } from './secrets.ts'
 // 图遍历那部分已经提纯到 engine-core：decide() 要用同一套判定，而它必须是纯的
 import { outgoing, reachableFrom, topoSort } from './engine-core/graph.ts'
+import { pausable } from './engine-core/decide.ts'
 // 常量全仓单一出处，scripts/check-constants.sh 是门禁
 import { MAX_LOOP_ITERATIONS } from './engine-core/types.ts'
 import { isRetryable, MAX_CONSECUTIVE_POLL_FAILURES } from './engine-core/errorCodes.ts'
@@ -263,6 +264,48 @@ function applyFilter(value: unknown, name: string, args: unknown[]): unknown {
       // 默认「、」而不是逗号：这些串最终进的是中文消息，顿号是列举的自然分隔符
       const sep = args[0] === undefined ? '、' : String(args[0])
       return pick(value, args[1]).map(flat).join(sep)
+    }
+    // ---- 第二批聚合：均值 / 极值。和 sum 同形（可选列名），但**空集返回 undefined**：
+    //      返回 0 会把"没有数据"伪装成"平均值是 0"发进群里；抛错则让链尾的
+    //      default() 接不住 —— 它只兜 undefined（见 resolveExpr）。和 find 未命中一致
+    case 'min':
+    case 'max':
+    case 'avg': {
+      const nums = pick(value, args[0]).map((v) => Number(v))
+      const bad = nums.findIndex((n) => !Number.isFinite(n))
+      if (bad >= 0) {
+        throw new Error(
+          `|${name} 只能对数字计算，第 ${bad + 1} 项不是数字。` +
+            (args[0] ? '' : `如果数据是对象数组，要写成 |${name}(列名)`),
+        )
+      }
+      if (!nums.length) return undefined
+      if (name === 'min') return Math.min(...nums)
+      if (name === 'max') return Math.max(...nums)
+      return nums.reduce((a, b) => a + b, 0) / nums.length
+    }
+    // ---- 数字格式。undefined 原样透传：`avg(dc) | round(1) | default('—')`
+    //      在空集上要能走到 default，中途的格式化不能把"没有值"变成报错
+    case 'round': {
+      if (value === undefined) return undefined
+      const digits = Number(args[0] ?? 0)
+      if (!Number.isInteger(digits) || digits < 0) throw new Error('|round 的小数位要是非负整数，例如 |round(1)')
+      const n = Number(value)
+      if (value === null || value === '' || typeof value === 'boolean' || !Number.isFinite(n)) {
+        throw new Error(`|round 只能对数字取整，实际是 ${JSON.stringify(value)?.slice(0, 40)}`)
+      }
+      const f = 10 ** digits
+      return Math.round(n * f) / f
+    }
+    case 'percent': {
+      if (value === undefined) return undefined
+      const digits = Number(args[0] ?? 1)
+      if (!Number.isInteger(digits) || digits < 0) throw new Error('|percent 的小数位要是非负整数，例如 |percent(1)')
+      const n = Number(value)
+      if (value === null || value === '' || typeof value === 'boolean' || !Number.isFinite(n)) {
+        throw new Error(`|percent 只能对数字转百分比，实际是 ${JSON.stringify(value)?.slice(0, 40)}`)
+      }
+      return `${(n * 100).toFixed(digits)}%`
     }
     case 'sort': {
       const key = args[0] === undefined ? undefined : String(args[0])
@@ -987,7 +1030,11 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
       if (incoming.length === 0) { skip([node.id]); continue }
       const alive = incoming.some((e) => {
         const src = run.steps[e.source]?.at(-1)
-        return src && src.status !== 'skipped' && src.status !== 'error' && !dead.has(e.source)
+        if (!src || dead.has(e.source)) return false
+        // 暂停的上游是「活着但没跑」：它自己活才会被记成这种 skipped，下游照常判活。
+        // 和 decide.ts 的 sourceAlive 同一条规则 —— 两个引擎对"暂停"给出不同答案没法解释
+        if (src.status === 'skipped') return src.skipReason?.kind === 'disabled'
+        return src.status !== 'error'
       })
       const errButContinue = incoming.some((e) => {
         const srcNode = nodes.find((n) => n.id === e.source)
@@ -995,6 +1042,12 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
         return src?.status === 'error' && srcNode?.data.onError === 'continue'
       })
       if (!alive && !errButContinue) { skip([node.id]); continue }
+    }
+
+    // 暂停：活着，但用户说了别跑。不进 dead —— 下游靠上面那条规则照常判活
+    if (node.data.disabled && pausable(node)) {
+      record({ nodeId: node.id, status: 'skipped', skipReason: { kind: 'disabled' }, startedAt: Date.now(), durationMs: 0, input: {}, output: null })
+      continue
     }
 
     // 条件分支：先执行自身，再灭掉未命中分支的下游
@@ -1179,6 +1232,10 @@ export async function executeFlow(opts: ExecuteOptions): Promise<FlowRun> {
           for (const id of reachableFrom(deadT, bodyEdges)) {
             if (!liveSet.has(id) && bodySet.has(id)) iterDead.add(id)
           }
+          continue
+        }
+        if (bn.data.disabled && pausable(bn)) {
+          record({ nodeId: bn.id, status: 'skipped', skipReason: { kind: 'disabled' }, startedAt: Date.now(), durationMs: 0, input: {}, output: null, iteration: i })
           continue
         }
         const s = await runNode(bn, i, loop)

@@ -1,5 +1,5 @@
-import type { Block } from '../lib/blocks'
-import { ZWSP } from '../lib/blocks'
+import type { Block } from '../lib/blocks.ts'
+import { ZWSP } from '../lib/blocks.ts'
 
 /**
  * 胶囊编辑器的 DOM 层。纯 DOM 操作，不认识 React。
@@ -230,6 +230,27 @@ export function adjacentChip(host: HTMLElement, dir: 'before' | 'after'): HTMLEl
   if (node.data.slice(startOffset).replace(ZWSP_RE, '') !== '') return null
   const next = node.nextSibling
   return next && chipRawOf(next) !== null ? (next as HTMLElement) : null
+}
+
+/** 单击打开取值面板；连点第二次把胶囊展开成可编辑原文。 */
+export function chipClickIntent(detail: number): 'pick' | 'expand' {
+  return detail >= 2 ? 'expand' : 'pick'
+}
+
+/**
+ * 把一枚不可编辑的胶囊换成它的原文文本节点，光标落在表达式开头。
+ * 失焦后 renderTokens 会再收成胶囊。序列化结果与替换前相同（未改字时）。
+ */
+export function expandChip(host: HTMLElement, chip: HTMLElement): { start: number; end: number } | null {
+  const raw = chipRawOf(chip)
+  if (raw === null) return null
+  const span = chipRange(host, chip)
+  if (!span) return null
+  const text = document.createTextNode(raw)
+  chip.replaceWith(text)
+  placeCaret(text, 0)
+  host.focus()
+  return span
 }
 
 /** 某枚胶囊在字符串里占的区间 */

@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { ctxFromRun, lookupPath, resolveTemplate } from '../lib/engine'
 import { extractBlocks, extractRefs, upstreamColumns } from '../lib/vars'
+import { columnsUsedIn } from '../lib/output'
 import { useFlow } from '../store'
 
 /**
@@ -67,10 +68,10 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
     const known = new Set(upstreamColumns(nodeId, nodes, edges).flatMap((u) => u.columns.map((c) => c.name)))
     if (!known.size) return []
     const used = new Set<string>()
+    // 列名的位置因过滤器而异（table 全是列、sum 第一个是列、join 第二个是列），
+    // 交给 columnsUsedIn 统一认；以前只认 table/list/lines，`| sum(dcc)` 写错要到运行期才知道
     for (const block of extractBlocks(content)) {
-      const m = block.match(/\|\s*(?:table|list|lines)\s*\(([^)]*)\)/)
-      if (!m) continue
-      for (const a of m[1].split(',').map((s) => s.trim()).filter(Boolean)) used.add(a)
+      for (const c of columnsUsedIn(block)) used.add(c)
     }
     return [...used].filter((c) => !known.has(c))
   }, [content, nodeId, nodes, edges])

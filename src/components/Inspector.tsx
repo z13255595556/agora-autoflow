@@ -4,11 +4,15 @@ import { CATEGORY_COLOR, NODE_TYPE_MAP } from '../registry'
 import { availableVars, validateNode } from '../lib/vars'
 import { probedColumns, probedObjectFields } from '../lib/output'
 import { previewFromRun } from '../lib/engine'
+import { pausable } from '../lib/engine-core/decide'
+import { normalizeRetryPolicy, resolveRetry } from '../lib/engine-core/errorCodes'
 import SchemaForm from './SchemaForm'
-import HttpRequestForm from './HttpRequestForm'
 import WebhookPanel from './WebhookPanel'
 import FlowInputsEditor from './FlowInputsEditor'
 import Icon from './Icon'
+import { storageMode } from '../lib/library'
+import { getFlowNotify, setFlowNotify } from '../lib/client'
+import { pushToast } from '../lib/toast'
 
 /**
  * 选中节点时浮在画布右侧的配置面板。
@@ -47,6 +51,9 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   const updateNodeParam = useFlow((s) => s.updateNodeParam)
   const renameNode = useFlow((s) => s.renameNode)
   const setNodeOnError = useFlow((s) => s.setNodeOnError)
+  const setNodeNote = useFlow((s) => s.setNodeNote)
+  const setNodeDisabled = useFlow((s) => s.setNodeDisabled)
+  const setNodeRetry = useFlow((s) => s.setNodeRetry)
   const deleteNode = useFlow((s) => s.deleteNode)
   const openNdv = useFlow((s) => s.openNdv)
   const clearSelection = useFlow((s) => s.clearSelection)
@@ -65,7 +72,13 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
 
   const node = nodes.find((n) => n.id === selectedId)!
   const t = NODE_TYPE_MAP.get(node.data.typeId)!
+  const paused = Boolean(node.data.disabled) && pausable(node)
+  // 暂停的节点不跑，它的参数错不拦运行（和 Toolbar 同一把尺子）；面板里仍然照常标红，
+  // 用户恢复它之前就能看到要补什么
   const errors = validateNode(node, nodes, edges, flowInputs)
+  // 老版本服务端下发的是三要素的旧形状，normalize 一道，别让面板显示「最长 NaN 秒」
+  const typeRetry = normalizeRetryPolicy(t.policy?.retry) ?? undefined
+  const retrySpec = resolveRetry(typeRetry, node.data.retry)
   const color = CATEGORY_COLOR[t.category] ?? '#64748b'
   const dynamicMode = t.output['x-dynamic']
   const columns = probedColumns(node.data.probedOutput)
@@ -122,11 +135,14 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
             title="点击重命名这个节点"
           />
           <div className="ins__meta">
-            <code title={`节点类型 ${t.type} · v${t.typeVersion}`}>{t.type}</code>
-            <i />
-            <code title="下游引用这个节点时用的名字">{node.id}</code>
+            <span>{t.name}</span>
           </div>
         </div>
+        {t.docsUrl && (
+          <a className="iconbtn" href={t.docsUrl} target="_blank" rel="noreferrer" title="这个节点的说明文档">
+            <Icon name="help" />
+          </a>
+        )}
         <button className="iconbtn" onClick={() => openNdv(node.id)} title="详情视图：输入 / 参数 / 输出（双击画布节点同效）">
           <Icon name="expand" />
         </button>
@@ -145,18 +161,6 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
             而认证方式那两个下拉是配置完就不再看的东西 */}
         {t.type === 'trigger.webhook' && <WebhookPanel nodeParams={node.data.params} />}
 
-        {t.type === 'http.request' ? (
-          <HttpRequestForm
-            schema={t.input}
-            values={node.data.params}
-            required={t.input.required ?? []}
-            vars={vars}
-            onChange={(k, v) => updateNodeParam(node.id, k, v)}
-            previewRef={previewFromRun(activeRun, pinData)}
-            nodeId={node.id}
-            validationErrors={errors}
-          />
-        ) : (
           <SchemaForm
             schema={t.input}
             values={node.data.params}
@@ -167,7 +171,6 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
             nodeId={node.id}
             validationErrors={errors}
           />
-        )}
 
         <div className="section">
           <button className="section__head" aria-expanded={open} onClick={() => setShowOutput(!open)}>
@@ -207,34 +210,76 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
               {dynamicMode === 'run' && responseFields.length === 0 && (
                 <div className="probe__text">成功运行一次后，这里会列出响应体字段，下游可直接从变量菜单选择。</div>
               )}
-              <details className="outschema__decl">
-                <summary>声明的输出结构</summary>
-                <pre className="mono outschema">{JSON.stringify(t.output, null, 2)}</pre>
-              </details>
+              {columns.length === 0 && responseFields.length === 0 && !dynamicMode && (
+                <div className="probe__text">这个节点的输出结构是固定的，下游输入 / 即可选择。</div>
+              )}
             </div>
           )}
         </div>
 
+        {/* 设置：参数之外、每种节点都有的那几项（n8n 的 Settings 标签）。
+            以前只有「失败时」一项 —— 调 SQL 时想让企微节点先别发，只能把它删掉再加回来 */}
         <div className="section">
-          <div className="section__head section__head--static">错误处理</div>
-          <div className="section__body">
-            <div className="field">
-              <label className="field__label">失败时</label>
-              <select value={node.data.onError} onChange={(e) => setNodeOnError(node.id, e.target.value as 'fail' | 'continue')}>
-                <option value="fail">中断整条流程</option>
-                <option value="continue">记录错误并继续</option>
-              </select>
-            </div>
-            <div className="policy">
-              幂等：<b>{t.policy?.idempotent ? '是 · 可自动重试' : '否 · 重试需带幂等键'}</b>
-              {t.policy?.retry && (
-                <>
-                  <br />
-                  重试：{t.policy.retry.maxAttempts} 次 / {t.policy.retry.backoff}
-                </>
+          <details className="section__details" open={paused || undefined}>
+            <summary className="section__head section__head--static">
+              设置
+              {paused && <em className="section__flag">已暂停</em>}
+              {node.data.retry === null && <em>不重试</em>}
+            </summary>
+            <div className="section__body">
+              {pausable(node) && (
+                <div className="field">
+                  <label className="switch">
+                    <input type="checkbox" checked={paused} onChange={(e) => setNodeDisabled(node.id, e.target.checked)} />
+                    <span>{paused ? '已暂停：跳过不执行，下游照常往下走' : '暂停此节点'}</span>
+                  </label>
+                  {paused && <div className="field__desc">调试期间先别跑它。引用了它输出的下游节点会在校验时报错 —— 那些节点也得一起暂停，或者改引用。</div>}
+                </div>
               )}
+              <div className="field">
+                <label className="field__label">失败时</label>
+                <select value={node.data.onError} onChange={(e) => setNodeOnError(node.id, e.target.value as 'fail' | 'continue')}>
+                  <option value="fail">中断整条流程</option>
+                  <option value="continue">记录错误并继续</option>
+                </select>
+              </div>
+              {typeRetry ? (
+                <div className="field">
+                  <label className="field__label">失败后重试</label>
+                  <select
+                    value={node.data.retry === null ? 'off' : node.data.retry === undefined ? 'default' : 'custom'}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setNodeRetry(node.id, v === 'off' ? null : v === 'default' ? undefined : { maxAttempts: typeRetry.maxAttempts, initialMs: typeRetry.initialMs })
+                    }}
+                  >
+                    <option value="default">默认 · 最多 {typeRetry.maxAttempts} 次，首次间隔 {Math.round(typeRetry.initialMs / 1000)} 秒</option>
+                    <option value="off">不重试</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                  {node.data.retry && retrySpec && (
+                    <div className="retry__row">
+                      <label>最多 <input type="number" min={1} max={10} value={retrySpec.maxAttempts} onChange={(e) => setNodeRetry(node.id, { ...node.data.retry, maxAttempts: Number(e.target.value) })} /> 次</label>
+                      <label>首次间隔 <input type="number" min={0} max={typeRetry.maximumIntervalMs / 1000} value={Math.round(retrySpec.initialMs / 1000)} onChange={(e) => setNodeRetry(node.id, { ...node.data.retry, initialMs: Number(e.target.value) * 1000 })} /> 秒</label>
+                    </div>
+                  )}
+                  <div className="field__desc">只在基础设施类错误上重试（平台抖动、限流、超时）；SQL 语法错这类改了参数才能解决的不会重试。间隔按 ×{typeRetry.backoffCoefficient} 递增，最长 {Math.round(typeRetry.maximumIntervalMs / 1000)} 秒。</div>
+                </div>
+              ) : (
+                node.data.typeId === 'http.request' && <div className="field__desc">这个节点的重试在「高级设置」里自己配（网络错 / 429 / 5xx）。</div>
+              )}
+              <div className="field">
+                <label className="field__label">备注</label>
+                <textarea
+                  rows={2}
+                  value={node.data.note ?? ''}
+                  placeholder="写给下一个打开它的人：这条 SQL 只看昨天、这个群是测试群……"
+                  onChange={(e) => setNodeNote(node.id, e.target.value)}
+                />
+                <div className="field__desc">显示在卡片下面，不参与执行，改它不算「未发布的改动」。</div>
+              </div>
             </div>
-          </div>
+          </details>
         </div>
       </div>
 
@@ -287,11 +332,101 @@ export function FlowInspector({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        <NotifySettings />
+
         <div className="tip">
-          加节点：点节点右侧的 <b>+</b>，或画布左上角的「添加节点」。<br />
-          连线中间的 <b>+</b> 可以往两个节点之间插一步。
+          入参会出现在底部「运行」表单里，下游用触发器变量引用。<br />
+          定时 / Webhook 跑的是已发布版本，不是眼前这份草稿。
         </div>
       </div>
     </>
+  )
+}
+
+/**
+ * 失败时通知到哪。
+ *
+ * 告警是运行的旁路（worker/alerts.ts）：整条运行失败才发、同一原因 10 分钟内只发一条、
+ * 发不出去不影响运行状态。这些在后端一直都在 —— 只是 notify_config 这一列在此之前
+ * 没有任何界面能写，告警链路是条修好了路没有入口的死路。
+ *
+ * 不跟着草稿自动保存走：它是运维设置，改一次记一次审计；所以这里有自己的「保存」。
+ */
+function NotifySettings() {
+  const flowId = useFlow((s) => s.flowId)
+  const serverMode = storageMode() === 'server'
+  const [loaded, setLoaded] = useState<string | null>(null)   // 服务端当前的值（'' = 没配）
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!serverMode || !flowId) return
+    let alive = true
+    setError(null)
+    getFlowNotify(flowId)
+      .then((r) => {
+        if (!alive) return
+        const hook = r.notifyConfig?.webhook ?? ''
+        setLoaded(hook)
+        setDraft(hook)
+      })
+      .catch((err) => {
+        if (alive) setError(err instanceof Error ? err.message : String(err))
+      })
+    return () => { alive = false }
+  }, [serverMode, flowId])
+
+  // 本地模式没有 worker，也就没有告警 —— 不画一个存不了的输入框
+  if (!serverMode) return null
+
+  const dirty = loaded !== null && draft.trim() !== loaded
+  const save = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await setFlowNotify(flowId, draft.trim() || null)
+      const hook = r.notifyConfig?.webhook ?? ''
+      setLoaded(hook)
+      setDraft(hook)
+      pushToast({ tone: 'ok', text: hook ? '失败通知已开启' : '失败通知已关闭' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="section">
+      <div className="section__head section__head--static">
+        失败时通知
+        <em>{loaded ? '已开启' : loaded === null ? '读取中…' : '未开启'}</em>
+      </div>
+      <div className="section__body">
+        <div className="field">
+          <label className="field__label">企微群机器人地址</label>
+          <input
+            type="password"
+            autoComplete="off"
+            value={draft}
+            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"
+            disabled={loaded === null || busy}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="field__desc">
+            整条运行失败（不管是定时、Webhook 还是手动）就往这个群发一条；同一原因 10 分钟内只发一条。
+            留空并保存 = 关掉。
+          </div>
+          {error && <div className="field__errors" role="alert">{error}</div>}
+        </div>
+        <div className="notify__actions">
+          <button className="btn btn--sm btn--primary" disabled={!dirty || busy} onClick={() => void save()}>
+            {busy ? '保存中…' : draft.trim() ? '保存' : loaded ? '关闭通知' : '保存'}
+          </button>
+          {dirty && !busy && <button className="btn btn--sm" onClick={() => setDraft(loaded ?? '')}>撤销修改</button>}
+        </div>
+      </div>
+    </div>
   )
 }

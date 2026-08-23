@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Set
 
 TRIGGER_KINDS = {"manual", "schedule", "webhook"}
 ON_ERROR = {"fail", "continue"}
+# 入参能落成的 JSON Schema 类型。前端的「日期」「下拉」是 string 加 format / enum
+INPUT_TYPES = {"string", "integer", "number", "boolean"}
 
 # 未认证的接口收 JSONB，必须有上限。
 # 一条正常流程的定义是几十 KB 量级；1 MB 已经宽得离谱。
@@ -89,6 +91,18 @@ def validate(value: Any) -> Dict[str, Any]:
             raise FlowDefError(
                 f"nodes[{i}].onError 只能是 {' / '.join(sorted(ON_ERROR))}，收到 {on_error!r}"
             )
+        # 节点设置（备注 / 暂停 / 重试覆盖）。只判类型 —— 语义（暂停的节点下游引用
+        # 报错、控制节点不能暂停）在引擎里，这里不重复一份会漂移的规则
+        if node.get("note") is not None and not isinstance(node["note"], str):
+            raise FlowDefError(f"nodes[{i}].note 必须是字符串")
+        if node.get("disabled") is not None and not isinstance(node["disabled"], bool):
+            raise FlowDefError(f"nodes[{i}].disabled 必须是布尔值")
+        if "retry" in node and node["retry"] is not None:
+            retry = _obj(node["retry"], f"nodes[{i}].retry")
+            for key in ("maxAttempts", "initialMs"):
+                v = retry.get(key)
+                if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
+                    raise FlowDefError(f"nodes[{i}].retry.{key} 必须是数字")
 
     edges = raw.get("edges", [])
     if not isinstance(edges, list):
@@ -112,7 +126,20 @@ def validate(value: Any) -> Dict[str, Any]:
             )
 
     if raw.get("inputs") is not None:
-        _obj(raw["inputs"], "inputs")
+        inputs = _obj(raw["inputs"], "inputs")
+        props = inputs.get("properties")
+        if props is not None:
+            # 入参的种类（日期 / 下拉 / 小数）落到这里是 string + format / enum / number。
+            # type 必须是 JSON Schema 认得的，否则 webhook 的类型转换会静默把它当字符串
+            for key, schema in _obj(props, "inputs.properties").items():
+                schema = _obj(schema, f"inputs.properties.{key}")
+                t = schema.get("type")
+                if t is not None and t not in INPUT_TYPES:
+                    raise FlowDefError(
+                        f"inputs.properties.{key}.type 只能是 {' / '.join(sorted(INPUT_TYPES))}，收到 {t!r}"
+                    )
+                if schema.get("enum") is not None and not isinstance(schema["enum"], list):
+                    raise FlowDefError(f"inputs.properties.{key}.enum 必须是数组")
     if raw.get("layout") is not None:
         _obj(raw["layout"], "layout")
 

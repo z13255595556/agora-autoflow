@@ -1,6 +1,11 @@
 import type { JsonType } from './outputShape'
+import type { MatchOperatorName } from './selectionFilters.ts'
 
-export type MatchOperator = 'eq' | 'neq' | 'contains' | 'gt' | 'lt'
+/** 比较方式的唯一出处在 selectionFilters（引擎那边）。面板能选的就是引擎能跑的 */
+export type MatchOperator = MatchOperatorName
+
+/** 汇总函数。面板上的一个按钮 = 引擎里同名的一个过滤器 */
+export type AggregateFn = 'sum' | 'avg' | 'min' | 'max'
 
 export type ReferenceSelection =
   | { sourceNodeId: string; sourceLabel: string; path: string; mode: 'field' | 'all'; valueType: JsonType; label: string }
@@ -21,6 +26,34 @@ export type ReferenceSelection =
       valueType: JsonType
       label: string
     }
+  // ---- 第二批：筛选行 / 前 N / 汇总。都编译成现有管道，不新增节点种类
+  | {
+      sourceNodeId: string
+      sourceLabel: string
+      path: string
+      mode: 'where'
+      matchColumn: string
+      operator: MatchOperator
+      matchValue: string | number | boolean | null
+      valueType: 'array'
+      label: string
+    }
+  | {
+      sourceNodeId: string
+      sourceLabel: string
+      path: string
+      mode: 'top'
+      sortColumn: string
+      direction: 'asc' | 'desc'
+      limit: number
+      /** 给了列就接一段 | table(...)，结果是能直接进消息的表格 */
+      columns?: string[]
+      valueType: 'array' | 'string'
+      label: string
+    }
+  | { sourceNodeId: string; sourceLabel: string; path: string; mode: 'aggregate'; fn: AggregateFn; column: string; valueType: 'number'; label: string }
+  | { sourceNodeId: string; sourceLabel: string; path: string; mode: 'uniqueCount'; column: string; valueType: 'integer'; label: string }
+  | { sourceNodeId: string; sourceLabel: string; path: string; mode: 'join'; column: string; separator: string; valueType: 'string'; label: string }
 
 const arg = (value: unknown): string => {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value)
@@ -67,6 +100,18 @@ export function compileReferenceSelection(selection: ReferenceSelection): string
       return `{{ ${base} | count }}`
     case 'find':
       return `{{ ${base} | find(${arg(selection.matchColumn)}, ${selection.operator}, ${arg(selection.matchValue)}${selection.resultColumn ? `, ${arg(selection.resultColumn)}` : ''}) }}`
+    case 'where':
+      return `{{ ${base} | where(${arg(selection.matchColumn)}, ${selection.operator}, ${arg(selection.matchValue)}) }}`
+    case 'top': {
+      const table = selection.columns?.length ? ` | table(${selection.columns.map(arg).join(', ')})` : ''
+      return `{{ ${base} | sort(${arg(selection.sortColumn)}, ${selection.direction}) | limit(${selection.limit})${table} }}`
+    }
+    case 'aggregate':
+      return `{{ ${base} | ${selection.fn}(${arg(selection.column)}) }}`
+    case 'uniqueCount':
+      return `{{ ${base} | unique(${arg(selection.column)}) | count }}`
+    case 'join':
+      return `{{ ${base} | column(${arg(selection.column)}) | join(${arg(selection.separator)}) }}`
   }
 }
 

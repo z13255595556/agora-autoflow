@@ -17,6 +17,8 @@ export interface VarEntry {
   type: string
   /** 来源节点显示名，仅用于分组展示 */
   group: string
+  /** 给人看的名字，不含 $. 路径 */
+  displayLabel?: string
   large?: boolean
 }
 
@@ -107,7 +109,7 @@ export function availableVars(
     out.push({ path: p.expr, label: p.label, type: 'string', group: '日期函数' })
   }
 
-  if (!nodeId) return out
+  if (!nodeId) return labelVars(out)
 
   const ups = upstreamNodes(nodeId, nodes, edges)
   // 在循环体内（上游有 foreach）→ 提供 $.loop.*
@@ -140,7 +142,11 @@ export function availableVars(
     // 由 upstreamColumns 供给选列器。
     pushFirstRowVars(up, out)
   }
-  return out
+  return labelVars(out)
+}
+
+function labelVars(out: VarEntry[]): VarEntry[] {
+  return out.map((item) => ({ ...item, displayLabel: item.displayLabel ?? `${item.group} · ${item.label}` }))
 }
 
 /**
@@ -338,6 +344,18 @@ export function validateNode(
     }
 
     for (const ref of extractRefs(value)) {
+      // 引用了一个暂停的节点：它不会跑、没有输出，运行期一定取不到值。
+      // 在这里报而不是等运行期 —— 暂停的本意就是"先别跑那个"，顺带把依赖它的
+      // 节点也暂停是用户接下来要做的事，现在告诉他比跑到一半炸了强。
+      // 自己也暂停了的节点不报（它不会跑），Toolbar/RunPanel 已把暂停的节点豁免
+      const paused = ref.match(/^\$\.nodes\.([^.]+)\./)
+      if (paused) {
+        const src = nodes.find((n) => n.id === paused[1])
+        if (src?.data.disabled && upstreamIds.has(src.id)) {
+          errors.push(`「${key}」引用了已暂停的节点「${src.data.label}」，它不会产生输出`)
+          continue
+        }
+      }
       if (isKnown(ref)) continue
       const m = ref.match(/^\$\.nodes\.([^.]+)\./)
       if (m && !upstreamIds.has(m[1])) {

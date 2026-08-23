@@ -56,12 +56,13 @@ export function node(
   typeId: string,
   params: Record<string, unknown> = {},
   onError: 'fail' | 'continue' = 'fail',
+  settings: { disabled?: boolean; note?: string } = {},
 ): FNode {
   return {
     id,
     type: 'flowNode',
     position: { x: 0, y: 0 },
-    data: { typeId, typeVersion: '1.0.0', label: id, params, onError },
+    data: { typeId, typeVersion: '1.0.0', label: id, params, onError, ...settings },
   } as FNode
 }
 

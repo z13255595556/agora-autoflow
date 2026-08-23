@@ -33,6 +33,8 @@ export interface SavedFlow {
   activeVersion?: number | null
   /** 草稿和已发布那一版不一致 —— 定时/webhook 跑的是已发布那版 */
   hasUnpublishedChanges?: boolean
+  /** 调度器记的下次触发时刻（ISO）。只有服务端知道 —— 它含 misfire / 重叠之后的实际值 */
+  nextFireAt?: string | null
   /** 这条是从哪来的。'local' 表示服务端上没有它 */
   origin?: 'server' | 'local'
   /**
@@ -130,6 +132,7 @@ function fromRemote(r: api.RemoteFlow, def: FlowDefinition): SavedFlow {
     def,
     activeVersion: r.activeVersion,
     hasUnpublishedChanges: r.hasUnpublishedChanges,
+    nextFireAt: r.nextFireAt ?? null,
     triggerKind: r.triggerKind,
     origin: 'server',
     owner: r.owner,

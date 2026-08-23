@@ -10,6 +10,7 @@ import { extractSqlPlaceholders } from '../lib/placeholders'
 import { useFlow } from '../store'
 import { validationFieldKey } from '../lib/validationFocus'
 import DatePreview from './DatePreview'
+import SchedulePreview from './SchedulePreview'
 import MessagePreview from './MessagePreview'
 import RefField from './RefField'
 import ConditionsEditor from './ConditionsEditor'
@@ -45,7 +46,8 @@ export default function SchemaForm({
   showCurlImport = true,
 }: SchemaFormProps) {
   const known = new Set(vars.map((v) => v.path))
-  const isHttpRequest = useFlow((s) => s.nodes.some((node) => node.id === nodeId && node.data.typeId === 'http.request'))
+  // 导入器由 manifest 声明（x-ui.importers），不再按 typeId 判断 —— 那是表单里最后一个特判
+  const importers = schema['x-ui']?.importers ?? []
   const nodes = useFlow((s) => s.nodes)
   const flowInputs = useFlow((s) => s.flowInputs)
   // 所有可写引用的字符串字段都使用变量胶囊；凭证字段保持 password input。
@@ -270,7 +272,7 @@ export default function SchemaForm({
 
   return (
     <div className="form">
-      {isHttpRequest && showCurlImport && <CurlImport onChange={onChange} />}
+      {importers.includes('curl') && showCurlImport && <CurlImport onChange={onChange} />}
       {mainEntries.map(renderField)}
 
       {/* 折叠区里有报错就强制展开，且这期间收不起来 —— 把一条"必填项未填"
@@ -288,6 +290,7 @@ export default function SchemaForm({
       {/* 整个表单的实时预览。挂在 schema 上而不是某个字段上 —— 它算的是所有
           字段合起来的结果，位置也该在最后 */}
       {schema['x-ui']?.preview === 'date' && <DatePreview values={values} nodeId={nodeId} />}
+      {schema['x-ui']?.preview === 'schedule' && <SchedulePreview values={values} />}
     </div>
   )
 }

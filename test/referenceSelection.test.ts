@@ -49,3 +49,40 @@ test('插入 HTTP JSON 字符串后仍是合法 JSON', () => {
   })
   assert.deepEqual(JSON.parse(String(resolved)), { appCertificate: 'secret-value' })
 })
+
+// ---------------------------------------------------------------- 第二批：筛选行 / 前 N / 汇总
+
+test('筛选行编译成 where，且引擎筛出来的和面板预览一致', () => {
+  const expr = compileReferenceSelection({
+    sourceNodeId: 'n2', sourceLabel: 'SQL 查询', path: 'rows', mode: 'where',
+    matchColumn: 'uid', operator: 'gte', matchValue: 200, valueType: 'array', label: '筛选 uid≥200',
+  })
+  assert.equal(expr, "{{ $.nodes.n2.output.rows | where('uid', gte, 200) }}")
+  const out = resolveTemplate(expr, {
+    trigger: {}, run: { id: 'r', startedAt: '2026-08-17T00:00:00.000Z' },
+    nodes: { n2: { output: { rows } } },
+  })
+  assert.deepEqual(out, [rows[1]])
+})
+
+test('前 N 行：带列就接 table，不带列就是行列表', () => {
+  const base = { sourceNodeId: 'n2', sourceLabel: 'SQL 查询', path: 'rows', mode: 'top' as const, sortColumn: 'uid', direction: 'desc' as const, limit: 1, label: '前 1 行' }
+  assert.equal(
+    compileReferenceSelection({ ...base, columns: ['uid', 'name'], valueType: 'string' }),
+    "{{ $.nodes.n2.output.rows | sort('uid', desc) | limit(1) | table('uid', 'name') }}",
+  )
+  assert.equal(
+    compileReferenceSelection({ ...base, valueType: 'array' }),
+    "{{ $.nodes.n2.output.rows | sort('uid', desc) | limit(1) }}",
+  )
+  const ctx = { trigger: {}, run: { id: 'r', startedAt: '2026-08-17T00:00:00.000Z' }, nodes: { n2: { output: { rows } } } }
+  assert.deepEqual(resolveTemplate(compileReferenceSelection({ ...base, valueType: 'array' }), ctx), [rows[1]])
+  assert.match(String(resolveTemplate(compileReferenceSelection({ ...base, columns: ['name'], valueType: 'string' }), ctx)), /李四/)
+})
+
+test('汇总按钮 = 引擎里同名过滤器；去重个数和拼接各是两段链', () => {
+  const base = { sourceNodeId: 'n2', sourceLabel: 'SQL 查询', path: 'rows' }
+  assert.equal(compileReferenceSelection({ ...base, mode: 'aggregate', fn: 'avg', column: 'uid', valueType: 'number', label: 'uid · 平均' }), "{{ $.nodes.n2.output.rows | avg('uid') }}")
+  assert.equal(compileReferenceSelection({ ...base, mode: 'uniqueCount', column: 'name', valueType: 'integer', label: 'name · 去重个数' }), "{{ $.nodes.n2.output.rows | unique('name') | count }}")
+  assert.equal(compileReferenceSelection({ ...base, mode: 'join', column: 'name', separator: '、', valueType: 'string', label: 'name · 拼接' }), "{{ $.nodes.n2.output.rows | column('name') | join('、') }}")
+})

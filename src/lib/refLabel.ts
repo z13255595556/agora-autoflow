@@ -2,6 +2,7 @@ import type { Block } from './blocks'
 import { NODE_TYPE_MAP } from '../registry.ts'
 import type { JsonSchema } from '../types'
 import { datePresets } from './datefn.ts'
+import { splitTopLevelPipes } from './output.ts'
 
 /**
  * 把一个 `{{ }}` 块翻译成人话。
@@ -57,27 +58,22 @@ export function previewText(v: unknown): string {
 }
 
 /** 去掉尾部的 `| 过滤器`，返回 [路径, 过滤器名, 参数[]] */
-function splitPipe(body: string): { head: string; filter?: string; args: string[] } {
-  // 引号里的 | 不是管道。findPipe 在 engine 里是私有的，这里只需要这么多
-  let quote: string | null = null
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i]
-    if (quote) {
-      if (c === quote) quote = null
-      continue
-    }
-    if (c === '"' || c === "'") quote = c
-    else if (c === '|') {
-      const rest = body.slice(i + 1).trim()
-      const m = rest.match(/^([A-Za-z_]+)\s*(?:\(([^)]*)\))?$/)
-      return {
-        head: body.slice(0, i).trim(),
-        filter: m?.[1],
-        args: (m?.[2] ?? '').split(',').map((s) => s.trim()).filter(Boolean),
-      }
-    }
-  }
-  return { head: body.trim(), args: [] }
+/**
+ * 把 `rows | sort(dc, desc) | limit(10)` 切成头部 + 过滤器链。
+ *
+ * 以前只认第一个过滤器，而且"第一个过滤器后面还有东西"时正则整个不匹配，
+ * 链式表达式的胶囊上一个过滤器标签都没有 —— 用户点出来的「前 10 名」
+ * 显示成「SQL查询·rows」。切分走 splitTopLevelPipes，和引擎一样认引号里的竖线。
+ */
+function splitPipe(body: string): { head: string; filters: Array<{ name: string; args: string[] }> } {
+  const [head, ...rest] = splitTopLevelPipes(body)
+  const filters = rest.map((seg) => {
+    const m = seg.trim().match(/^([A-Za-z_]+)\s*(?:\(([\s\S]*)\))?$/)
+    // 标签里不要引号：compileReferenceSelection 编出来的参数是 'dc' 这种带引号的
+    const args = (m?.[2] ?? '').split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+    return { name: m?.[1] ?? seg.trim(), args }
+  })
+  return { head: head.trim(), filters }
 }
 
 /** 一条 $. 路径 → 人话。认不出来就返回 null，交给调用方兜底。 */
@@ -117,6 +113,10 @@ function describePath(path: string, ctx: LabelCtx): string | null {
   return `${who}·${title ?? rest}`
 }
 
+const OP_TEXT: Record<string, string> = {
+  eq: '=', neq: '≠', contains: '包含', gt: '>', gte: '≥', lt: '<', lte: '≤',
+}
+
 const FILTER_LABEL: Record<string, (args: string[]) => string> = {
   count: () => '行数',
   json: () => 'JSON',
@@ -129,6 +129,19 @@ const FILTER_LABEL: Record<string, (args: string[]) => string> = {
   last: (a) => `${a[0] ? `${a[0]}·` : ''}最后一行`,
   column: (a) => `${a[0] ?? ''}整列`,
   find: (a) => `${a[3] ? `${a[3]}·` : ''}按 ${a[0] ?? '字段'} 查找`,
+  // 这几个以前缺着：sum/unique/join/sort/default 在胶囊上只显示英文名
+  sum: (a) => `${a[0] ? `${a[0]} ` : ''}求和`,
+  avg: (a) => `${a[0] ? `${a[0]} ` : ''}平均`,
+  min: (a) => `${a[0] ? `${a[0]} ` : ''}最小`,
+  max: (a) => `${a[0] ? `${a[0]} ` : ''}最大`,
+  unique: (a) => `${a[0] ? `${a[0]} ` : ''}去重`,
+  join: (a) => `${a[1] ? `${a[1]} ` : ''}拼接`,
+  sort: (a) => `按 ${a[0] ?? '值'}${(a[1] ?? '').toLowerCase() === 'desc' ? '降序' : '升序'}`,
+  where: (a) => `筛选 ${a[0] ?? '字段'} ${OP_TEXT[a[1] ?? 'eq'] ?? a[1]} ${a[2] ?? ''}`.trim(),
+  limit: (a) => `前 ${a[0] ?? '?'} 行`,
+  round: (a) => (a[0] && a[0] !== '0' ? `保留 ${a[0]} 位小数` : '取整'),
+  percent: () => '百分比',
+  default: (a) => `缺值时用 ${a[0] || '空'}`,
 }
 
 export function describeBlock(b: Block, ctx: LabelCtx): ChipLabel {
@@ -149,9 +162,10 @@ export function describeBlock(b: Block, ctx: LabelCtx): ChipLabel {
 
   switch (b.kind) {
     case 'ref': {
-      const { head, filter, args } = splitPipe(b.body)
+      const { head, filters } = splitPipe(b.body)
       const who = describePath(head, ctx)
-      const suffix = filter ? (FILTER_LABEL[filter]?.(args) ?? filter) : null
+      // 链上每个过滤器都翻一下，用 · 串起来：「SQL查询·按 dc 降序·前 10 行·表格 3列」
+      const suffix = filters.length ? filters.map((f) => FILTER_LABEL[f.name]?.(f.args) ?? f.name).join('·') : null
       if (!who) return withValue(trunc(b.body, 24), 'bad', '认不出这条引用')
       // 形状认得出来，但当前节点够不够得着是另一回事
       const reach = (b.body.match(/\$\.[A-Za-z0-9_.[\]]+/g) ?? [])

@@ -43,6 +43,10 @@ SCHEMA = {
         "days": {"type": "integer"},
         "name": {"type": "string"},
         "dry": {"type": "boolean"},
+        # 前端的「日期」「下拉」「小数」种类落到 schema 里就是这三种形状
+        "date": {"type": "string", "format": "date"},
+        "engine": {"type": "string", "enum": ["hive", "doris"]},
+        "ratio": {"type": "number"},
     },
     "required": ["vid"],
 }
@@ -64,6 +68,12 @@ ok("布尔的字符串写法", m({"vid": 1, "dry": "true"}), {"vid": 1, "dry": T
 ok("布尔的 0/1 写法", m({"vid": 1, "dry": "0"}), {"vid": 1, "dry": False})
 ok("整数转字符串字段", m({"vid": 1, "name": 42}), {"vid": 1, "name": "42"})
 
+ok("日期入参按 yyyy-MM-dd 放行", m({"vid": 1, "date": "2026-08-21"}), {"vid": 1, "date": "2026-08-21"})
+ok("下拉入参在候选里放行", m({"vid": 1, "engine": "doris"}), {"vid": 1, "engine": "doris"})
+ok("小数入参：字符串转 float", m({"vid": 1, "ratio": "0.25"}), {"vid": 1, "ratio": 0.25})
+rejects("日期格式不对 → 400 且指明字段", lambda: m({"vid": 1, "date": "20260821"}), 400, "date")
+rejects("下拉值不在候选里 → 400 且列出候选", lambda: m({"vid": 1, "engine": "mysql"}), 400, "hive")
+rejects("小数入参收到布尔 → 400", lambda: m({"vid": 1, "ratio": True}), 400, "ratio")
 rejects("必填缺失 → 400", lambda: m({"days": 7}), 400, "vid")
 rejects("整数字段收到 abc → 400 且指明字段", lambda: m({"vid": "abc"}), 400, "vid")
 rejects("整数字段收到小数 → 400", lambda: m({"vid": 7.5}), 400, "vid")

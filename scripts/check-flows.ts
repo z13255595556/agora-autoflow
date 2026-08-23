@@ -39,6 +39,8 @@ function check(def: FlowDefinition): string[] {
   }
   problems.push(...graphProblems(nodes, edges).map((p) => (p.nodeId ? `[${p.nodeId}] ${p.message}` : p.message)))
   for (const node of nodes) {
+    // 暂停的节点不跑，它的参数错不算"这条流程会坏"（和编辑器的问题列表同一把尺子）
+    if (node.data.disabled) continue
     for (const e of validateNode(node, nodes, edges, inputs)) {
       problems.push(`[${node.id}] ${e}`)
     }

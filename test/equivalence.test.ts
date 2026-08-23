@@ -194,3 +194,31 @@ test('divergence 表每条都有理由', () => {
     assert.ok(d.before && d.after)
   }
 })
+
+test('★ 暂停的节点两个引擎一致：下游照跑，暂停的记 skipped', async () => {
+  await bothAgree('paused', {
+    name: 'paused',
+    pins: '',
+    nodes: [
+      node('t', 'trigger.manual'),
+      node('a', 'transform.template', { template: 'A' }, 'fail', { disabled: true }),
+      node('b', 'transform.template', { template: 'B' }),
+    ],
+    edges: [edge('t', 'a'), edge('a', 'b')],
+  })
+})
+
+test('★ 循环体内暂停的节点两个引擎一致', async () => {
+  await bothAgree('paused-in-loop', {
+    name: 'paused-in-loop',
+    pins: '',
+    nodes: [
+      node('t', 'trigger.manual'),
+      node('v', 'variable.assign', { values: { rows: [{ v: 1 }, { v: 2 }] } }),
+      node('lp', 'flow.foreach', { items: '{{ $.nodes.v.output.values.rows }}' }),
+      node('body', 'transform.template', { template: 'x{{ $.loop.index }}' }, 'fail', { disabled: true }),
+      node('after', 'transform.template', { template: 'done' }),
+    ],
+    edges: [edge('t', 'v'), edge('v', 'lp'), edge('lp', 'body', 'each'), edge('lp', 'after', 'done')],
+  })
+})

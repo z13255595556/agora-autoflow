@@ -93,12 +93,14 @@ export async function runViaDecide(flow: GoldenFlow): Promise<GoldenResult> {
         status: r.status,
         ...(r.fanout === undefined ? {} : { fanout: r.fanout }),
         ...(r.matched === undefined ? {} : { matched: r.matched }),
+        // 和 worker 的 loadSteps 一样把原因带回去：暂停的 skipped 要被下游判成活
+        ...(r.skipReason === undefined ? {} : { skipReason: r.skipReason }),
       })) as DecideStep[],
     })
 
     for (const s of result.toSkip) {
       if (rows.has(stepKeyOf(s))) continue
-      put({ nodeId: s.nodeId, loopPath: s.loopPath, status: 'skipped', output: null })
+      put({ nodeId: s.nodeId, loopPath: s.loopPath, status: 'skipped', output: null, skipReason: s.reason })
     }
 
     if (!result.toRun.length) {

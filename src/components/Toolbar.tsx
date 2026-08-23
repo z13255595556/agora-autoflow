@@ -5,6 +5,7 @@ import { graphProblems } from '../lib/graph'
 import { NODE_TYPE_MAP } from '../registry'
 import { focusValidationField } from '../lib/validationFocus'
 import { storageMode } from '../lib/library'
+import { decideRunRequest } from '../lib/runRequest'
 import Icon from './Icon'
 import { PublishDialog, VersionHistory } from './Versions'
 
@@ -60,11 +61,12 @@ export default function Toolbar({
   const redo = useFlow((s) => s.redo)
 
   const running = useFlow((s) => s.running)
-  const runPanelOpen = useFlow((s) => s.runPanelOpen)
   const setRunPanelOpen = useFlow((s) => s.setRunPanelOpen)
   const pinData = useFlow((s) => s.pinData)
   const backend = useFlow((s) => s.backend)
   const stopRun = useFlow((s) => s.stopRun)
+  const startRun = useFlow((s) => s.startRun)
+  const manualInputs = useFlow((s) => s.manualInputs)
   useFlow((s) => s.registryVersion) // 注册表换了要重算问题数
 
   const [menuOpen, setMenuOpen] = useState(false)
@@ -89,7 +91,8 @@ export default function Toolbar({
     return () => document.removeEventListener('mousedown', close)
   }, [menuOpen])
 
-  // pinned 节点执行时跳过参数校验（n8n 语义），问题计数也不算它
+  // pinned 节点执行时跳过参数校验（n8n 语义），问题计数也不算它；
+  // 暂停的节点同理 —— 暂停的本意就是"先别管它"，它缺个 webhook 不该拦住别人跑
   const problems = useMemo(
     () => [
       ...graphProblems(nodes, edges).map((problem) => ({
@@ -98,7 +101,7 @@ export default function Toolbar({
         e: problem.message,
       })),
       ...nodes
-        .filter((n) => !Object.prototype.hasOwnProperty.call(pinData, n.id))
+        .filter((n) => !Object.prototype.hasOwnProperty.call(pinData, n.id) && !n.data.disabled)
         .flatMap((n) => validateNode(n, nodes, edges, flowInputs).map((e) => ({ id: n.id, name: n.data.label, e }))),
     ],
     [nodes, edges, flowInputs, pinData],
@@ -203,7 +206,6 @@ export default function Toolbar({
                     <i>!</i>
                     <span>
                       <b>{problem.name}</b>
-                      {problem.id && <code>{problem.id}</code>}
                       <em>{problem.e}</em>
                     </span>
                   </button>
@@ -214,41 +216,6 @@ export default function Toolbar({
         </div>
 
         <i className="topbar__sep" />
-
-        <button
-          className={`btn topbar__inputs${dock === 'flow' ? ' btn--active' : ''}`}
-          onClick={() => {
-            setMenuOpen(false)
-            setProblemsOpen(false)
-            onDock(dock === 'flow' ? null : 'flow')
-          }}
-          title="添加或管理流程入参"
-          aria-pressed={dock === 'flow'}
-        >
-          <Icon name="plus" size={14} />
-          添加入参
-        </button>
-
-        <div className="historytools" aria-label="编辑历史">
-          <button
-            className="historytools__btn"
-            onClick={undo}
-            disabled={running || !canUndo}
-            title="撤销（⌘/Ctrl+Z）"
-            aria-label="撤销"
-          >
-            <Icon name="undo" size={14} />
-          </button>
-          <button
-            className="historytools__btn"
-            onClick={redo}
-            disabled={running || !canRedo}
-            title="重做（⌘/Ctrl+Shift+Z）"
-            aria-label="重做"
-          >
-            <Icon name="redo" size={14} />
-          </button>
-        </div>
 
         <div className="menu" ref={menuRef}>
           <button
@@ -263,8 +230,29 @@ export default function Toolbar({
           </button>
           {menuOpen && (
             <div className="menu__pop">
-              {/* 「整理」不放这儿 —— 画布左下角的控制条里那个还会顺手把视野跟过去，
-                  这里放一个不跟视野的同名项，只会让人以为两个功能不一样 */}
+              <button
+                className="menu__item"
+                onClick={() => {
+                  onDock(dock === 'flow' ? null : 'flow')
+                  setMenuOpen(false)
+                }}
+              >
+                流程设置<em>名称 / 入参</em>
+              </button>
+              <button
+                className="menu__item"
+                disabled={running || !canUndo}
+                onClick={() => { undo(); setMenuOpen(false) }}
+              >
+                撤销<em>⌘Z</em>
+              </button>
+              <button
+                className="menu__item"
+                disabled={running || !canRedo}
+                onClick={() => { redo(); setMenuOpen(false) }}
+              >
+                重做<em>⇧⌘Z</em>
+              </button>
               <button
                 className="menu__item"
                 onClick={() => {
@@ -301,14 +289,15 @@ export default function Toolbar({
           )}
         </div>
 
-        <button
-          className={`btn${saveError ? ' btn--error' : dirty ? ' btn--dirty' : ''}`}
-          onClick={onSave}
-          disabled={!dirty}
-          title={saveError ?? (dirty ? '立即保存（⌘S / Ctrl+S）' : '所有改动已自动保存')}
-        >
-          保存
-        </button>
+        {(dirty || saveError) && (
+          <button
+            className={`btn${saveError ? ' btn--error' : ' btn--dirty'}`}
+            onClick={onSave}
+            title={saveError ?? '立即保存（⌘S / Ctrl+S）'}
+          >
+            {saveError ? '重试保存' : '保存'}
+          </button>
+        )}
 
         {/* 发布只在接了流程存储时出现。本地模式下没有"版本"这个概念，
             画一个点了会报错的按钮不如不画 */}
@@ -348,9 +337,26 @@ export default function Toolbar({
           </button>
         ) : (
           <button
-            className={`btn btn--primary${runPanelOpen ? ' btn--active' : ''}`}
-            onClick={() => setRunPanelOpen(!runPanelOpen)}
-            title={backend?.ok ? '打开运行面板（SQL 节点走真实执行）' : '打开运行面板（mock 执行）'}
+            className="btn btn--primary"
+            onClick={() => {
+              const decision = decideRunRequest({
+                running: false,
+                flowInputs,
+                form: manualInputs,
+                problems: problems.map((problem) => problem.e),
+              })
+              if (decision.action === 'stop') {
+                stopRun()
+                return
+              }
+              setRunPanelOpen(true)
+              if (decision.action === 'start') void startRun(decision.trigger)
+            }}
+            title={
+              backend?.ok
+                ? '运行当前草稿（不是已发布的那一版）。有必填入参时会先打开底部面板'
+                : '运行当前草稿（mock）。有必填入参时会先打开底部面板'
+            }
           >
             <Icon name="play" size={12} /> 运行
           </button>

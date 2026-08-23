@@ -234,6 +234,37 @@ test('★ 调试快照（负数版本）照常执行，worker 一行不用改', 
   assert.deepEqual((await stepRows(runId)).map((s) => s.node_id), ['t', 'd', 'm'])
 })
 
+test('★ 暂停的节点在服务端：记一行 skipped{disabled}，下游照跑，run 成功', { skip: SKIP }, async () => {
+  // 和浏览器引擎 / decide 的等价性测试钉的是同一条语义，这里再过一遍真库：
+  // skip_reason 要真的写进 steps 表、再被 loadSteps 读回来 —— 漏了哪一头，
+  // 下游都会被当成 unreachable 灭掉
+  const def = DEF(flowId)
+  def.nodes = def.nodes.map((n) => (n.id === 'd' ? { ...n, disabled: true } : n))
+  // 下游不引用暂停节点的输出（引用了会在校验期报错，那是另一条规则）
+  def.nodes = def.nodes.map((n) => (n.id === 'm' ? { ...n, params: { template: '不看日期' } } : n))
+  await pool.query(
+    `INSERT INTO flow_versions (flow_id, version, definition, created_by, kind)
+     VALUES ($1, -9, $2, 'alice@agora.io', 'draft') ON CONFLICT DO NOTHING`,
+    [flowId, JSON.stringify({ ...def, version: -9 })],
+  )
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    "INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,-9,'{}')",
+    [runId, flowId],
+  )
+  await drain()
+
+  const r = await runRow(runId)
+  assert.equal(r.status, 'success', r.error ?? '')
+  const { rows } = await pool.query(
+    'SELECT node_id, status, skip_reason FROM steps WHERE run_id = $1 ORDER BY seq', [runId],
+  )
+  const d = rows.find((x) => x.node_id === 'd')
+  assert.equal(d?.status, 'skipped')
+  assert.equal(d?.skip_reason?.kind, 'disabled')
+  assert.equal(rows.find((x) => x.node_id === 'm')?.status, 'success', '暂停节点的下游照跑')
+})
+
 test('★ 清理调试快照：没人引用的删掉，被引用的和正数版本一律不碰', { skip: SKIP }, async () => {
   // -2 有一条已过期的 run 引用它；-3 是无人引用的老快照；-4 是刚建的孤儿
   const defJson = JSON.stringify({ ...DEF(flowId), version: -2 })

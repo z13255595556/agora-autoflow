@@ -1,3 +1,5 @@
+import type { NodeRetryOverride, RetryPolicy } from '../../types.ts'
+
 /**
  * 错误码与重试判定。**必须和 server/sql_service/errors.py 逐字对齐。**
  *
@@ -66,18 +68,61 @@ export const MAX_CONSECUTIVE_POLL_FAILURES = 5
  *
  * 四要素来自 Temporal 的 RetryPolicy：
  * `min(initialMs × backoffCoefficient^(n-1), maximumIntervalMs)`
+ *
+ * 形状就是 types.ts 的 RetryPolicy —— 这里曾经另有一份写死的 DEFAULT_RETRY 表，
+ * 和 manifest 里声明的数字对不上（sql.query 一边 2 次一边 3 次），而 manifest
+ * 那份没人读。现在策略只从节点类型的 policy.retry 来，见 resolveRetry。
  */
-export interface RetrySpec {
-  maxAttempts: number
-  initialMs: number
-  backoffCoefficient: number
-  maximumIntervalMs: number
+export type RetrySpec = RetryPolicy
+
+/**
+ * 一个节点实例最终按什么重试。
+ *
+ * - 类型没声明 policy.retry → null（不重试）。http.request 是有意不声明的：
+ *   它在节点内自己重试（网络错 / 429 / 5xx，500ms 级），再叠一层 worker 重试
+ *   就是 3 × (1 + maxRetries) 次请求，对非幂等的 POST 尤其危险
+ * - 实例 retry === null → 用户明确关掉
+ * - 实例 retry 给了次数 / 首次间隔 → 覆盖；系数和上限仍按类型
+ *
+ * 次数夹在 1..10，间隔夹在 0..maximumIntervalMs —— 导入的 JSON 能写任何数字
+ */
+/**
+ * 把 manifest 里的 policy.retry 补成四要素。
+ *
+ * 老版本的服务端（还没重启、或者还没升级）下发的是 `{maxAttempts, backoff, initialMs}`
+ * 三要素 —— 直接用会算出 NaN 秒。前端和 worker 都不该因为后端晚升级一天而坏掉
+ */
+export function normalizeRetryPolicy(raw: unknown): RetryPolicy | null {
+  if (!raw || typeof raw !== 'object') return null
+  const p = raw as Partial<RetryPolicy> & { backoff?: string }
+  const maxAttempts = Number(p.maxAttempts)
+  const initialMs = Number(p.initialMs)
+  if (!Number.isFinite(maxAttempts) || !Number.isFinite(initialMs)) return null
+  const coefficient = Number(p.backoffCoefficient)
+  const maximum = Number(p.maximumIntervalMs)
+  return {
+    maxAttempts,
+    initialMs,
+    backoffCoefficient: Number.isFinite(coefficient) && coefficient > 0 ? coefficient : p.backoff === 'fixed' ? 1 : 2,
+    maximumIntervalMs: Number.isFinite(maximum) && maximum > 0 ? maximum : 60_000,
+  }
 }
 
-export const DEFAULT_RETRY: Readonly<Record<string, RetrySpec>> = {
-  'sql.query': { maxAttempts: 3, initialMs: 5000, backoffCoefficient: 2, maximumIntervalMs: 60_000 },
-  'notify.wecom': { maxAttempts: 5, initialMs: 2000, backoffCoefficient: 2, maximumIntervalMs: 10_000 },
-  'http.request': { maxAttempts: 3, initialMs: 2000, backoffCoefficient: 2, maximumIntervalMs: 30_000 },
+export function resolveRetry(
+  policy: RetryPolicy | undefined,
+  override: NodeRetryOverride | undefined,
+): RetrySpec | null {
+  const base = normalizeRetryPolicy(policy)
+  if (!base) return null
+  if (override === null) return null
+  const maxAttempts = override?.maxAttempts ?? base.maxAttempts
+  const initialMs = override?.initialMs ?? base.initialMs
+  return {
+    maxAttempts: Math.min(10, Math.max(1, Math.round(Number(maxAttempts) || 1))),
+    initialMs: Math.min(base.maximumIntervalMs, Math.max(0, Math.round(Number(initialMs) || 0))),
+    backoffCoefficient: base.backoffCoefficient,
+    maximumIntervalMs: base.maximumIntervalMs,
+  }
 }
 
 export function backoffMs(spec: RetrySpec, attempt: number): number {

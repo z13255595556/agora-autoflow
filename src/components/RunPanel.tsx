@@ -4,7 +4,8 @@ import type { StepStatus } from '../types'
 import Icon from './Icon'
 import { graphProblems } from '../lib/graph'
 import { validateNode } from '../lib/vars'
-import { formatDate } from '../lib/datefn'
+import { defaultForm, triggerFromForm } from '../lib/runRequest'
+import { formatRunLabel } from '../lib/runLabel'
 
 const STATUS_ICON: Record<StepStatus, string> = {
   waiting: '·',
@@ -16,6 +17,10 @@ const STATUS_ICON: Record<StepStatus, string> = {
 
 const MIN_HEIGHT = 180
 const MAX_HEIGHT = 560
+const KIND_LABEL: Record<string, string> = {
+  string: '文本', integer: '整数', number: '小数', boolean: '是/否', date: '日期', select: '选择',
+}
+
 const DEFAULT_HEIGHT = 258
 const HEIGHT_KEY = 'autoflow.run-panel-height'
 
@@ -102,21 +107,24 @@ export default function RunPanel() {
     }
   }, [])
 
+  useEffect(() => {
+    const firstEmpty = flowInputs.find((field) => field.required && !form[field.key]?.trim())
+    if (!firstEmpty) return
+    const input = document.querySelector<HTMLInputElement>(`input[data-run-input="${CSS.escape(firstEmpty.key)}"]`)
+    input?.focus()
+  }, [])
+
   const missingRequired = flowInputs.filter((f) => f.required && !form[f.key]?.trim())
   const workflowProblems = [
     ...graphProblems(nodes, edges).map((problem) => problem.message),
     ...nodes
-      .filter((node) => !Object.prototype.hasOwnProperty.call(pinData, node.id))
+      // pinned 和暂停的节点都不跑，它们的参数错不该拦住运行（和 Toolbar 同一把尺子）
+      .filter((node) => !Object.prototype.hasOwnProperty.call(pinData, node.id) && !node.data.disabled)
       .flatMap((node) => validateNode(node, nodes, edges, flowInputs)),
   ]
 
   const doRun = () => {
-    const trigger: Record<string, unknown> = {}
-    for (const f of flowInputs) {
-      const raw = form[f.key] ?? ''
-      trigger[f.key] = f.type === 'integer' ? Number(raw || 0) : f.type === 'boolean' ? raw === 'true' : raw
-    }
-    void startRun(trigger)
+    void startRun(triggerFromForm(flowInputs, form))
   }
 
   const nameOf = (id: string) => nodes.find((n) => n.id === id)?.data.label ?? id
@@ -146,19 +154,45 @@ export default function RunPanel() {
           <button className="runpanel__close" onClick={() => setRunPanelOpen(false)} title="收起运行面板"><Icon name="close" size={13} /></button>
         </div>
         <div className="runpanel__form">
-          {flowInputs.map((f) => (
-            <label key={f.key} className="runpanel__field">
-              <span>
-                {f.title || f.key}
-                {f.required && <i className="req">*</i>}
-              </span>
-              <input
-                value={form[f.key] ?? ''}
-                placeholder={f.type}
-                onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
-              />
-            </label>
-          ))}
+          {flowInputs.map((f) => {
+            const value = form[f.key] ?? ''
+            const set = (v: string) => setForm({ ...form, [f.key]: v })
+            const placeholder = f.description || KIND_LABEL[f.type]
+            return (
+              <label key={f.key} className="runpanel__field" title={f.description}>
+                <span>
+                  {f.title || f.key}
+                  {f.required && <i className="req">*</i>}
+                </span>
+                {/* 按种类画控件：日期用日期框（值天然是 yyyy-MM-dd，SQL 占位符直接能用），
+                    下拉用 select，是/否用开关 —— 以前全是一个要手敲的文本框 */}
+                {f.type === 'select' ? (
+                  <select data-run-input={f.key} value={value} onChange={(e) => set(e.target.value)}>
+                    <option value="">{placeholder}</option>
+                    {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                ) : f.type === 'boolean' ? (
+                  <select data-run-input={f.key} value={value} onChange={(e) => set(e.target.value)}>
+                    <option value="">{placeholder}</option>
+                    <option value="true">是</option>
+                    <option value="false">否</option>
+                  </select>
+                ) : (
+                  <input
+                    data-run-input={f.key}
+                    type={f.type === 'date' ? 'date' : f.type === 'integer' || f.type === 'number' ? 'number' : 'text'}
+                    step={f.type === 'number' ? 'any' : undefined}
+                    value={value}
+                    placeholder={placeholder}
+                    onChange={(e) => set(e.target.value)}
+                  />
+                )}
+              </label>
+            )
+          })}
+          {flowInputs.some((f) => f.default !== undefined && f.default !== '') && (
+            <button className="linkbtn runpanel__reset" onClick={() => setForm(defaultForm(flowInputs))} title="把表单恢复成入参的默认值">恢复默认</button>
+          )}
           <button
             className="btn btn--primary"
             disabled={running || missingRequired.length > 0 || workflowProblems.length > 0}
@@ -184,8 +218,7 @@ export default function RunPanel() {
               onClick={() => setActiveRun(r.id)}
             >
               <i>{r.status === 'running' ? '◌' : r.status === 'success' ? '✓' : '✗'}</i>
-              <code>{r.id}</code>
-              <span>{formatDate(new Date(r.startedAt), 'time')}</span>
+              <span title={r.id}>{formatRunLabel(r)}</span>
             </button>
           ))}
         </div>
@@ -207,13 +240,10 @@ export default function RunPanel() {
                 >
                   <i className="steprow__icon">{STATUS_ICON[last.status]}</i>
                   <span className="steprow__name">{nameOf(nodeId)}</span>
-                  <code className="steprow__id">{nodeId}</code>
                   {steps.length > 1 && <span className="steprow__iters">×{steps.length}</span>}
-                  {last.pinned && <span title="来自固定数据">📌</span>}
-                  {last.live && <span className="steprow__live" title="真实执行（走了节点服务）">live</span>}
                   <span className="steprow__ms">
                     {last.status === 'skipped'
-                      ? '跳过'
+                      ? last.skipReason?.kind === 'disabled' ? '已暂停' : '跳过'
                       : last.status === 'running'
                         ? last.progress !== undefined
                           ? `${last.progress.toFixed(0)}%`

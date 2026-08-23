@@ -6,9 +6,9 @@ import { extractRows } from '../lib/output'
 import { latestOutput, previewFromRun } from '../lib/engine'
 import { redactOutput } from '../lib/secrets'
 import SchemaForm from './SchemaForm'
-import HttpRequestForm from './HttpRequestForm'
 import WebhookPanel from './WebhookPanel'
 import { formatDate } from '../lib/datefn'
+import { pushToast } from '../lib/toast'
 
 /**
  * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
@@ -81,7 +81,7 @@ export default function NodeDetailView() {
       pinNode(node.id, JSON.parse(editingPin))
       setEditingPin(null)
     } catch {
-      alert('不是合法的 JSON')
+      pushToast({ tone: 'error', text: '不是合法的 JSON' })
     }
   }
 
@@ -91,7 +91,6 @@ export default function NodeDetailView() {
         <div className="ndv__head">
           <span className="ins__icon" style={{ background: color }}>{t.icon}</span>
           <span className="ndv__title">{node.data.label}</span>
-          <code className="ndv__type">{node.id} · {t.type}</code>
           {isPinned && <span className="pinbadge" title="输出已固定，运行时不会真正执行">📌 已固定</span>}
           <button
             className="btn"
@@ -143,27 +142,15 @@ export default function NodeDetailView() {
             <div className="ndv__coltitle">参数</div>
             <div className="ndv__colbody">
               {t.type === 'trigger.webhook' && <WebhookPanel nodeParams={node.data.params} />}
-              {t.type === 'http.request' ? (
-                <HttpRequestForm
-                  schema={t.input}
-                  values={node.data.params}
-                  required={t.input.required ?? []}
-                  vars={vars}
-                  onChange={(k, v) => updateNodeParam(node.id, k, v)}
-                  previewRef={previewFromRun(run, pinData)}
-                  nodeId={node.id}
-                />
-              ) : (
-                <SchemaForm
-                  schema={t.input}
-                  values={node.data.params}
-                  required={t.input.required ?? []}
-                  vars={vars}
-                  onChange={(k, v) => updateNodeParam(node.id, k, v)}
-                  previewRef={previewFromRun(run, pinData)}
-                  nodeId={node.id}
-                />
-              )}
+              <SchemaForm
+                schema={t.input}
+                values={node.data.params}
+                required={t.input.required ?? []}
+                vars={vars}
+                onChange={(k, v) => updateNodeParam(node.id, k, v)}
+                previewRef={previewFromRun(run, pinData)}
+                nodeId={node.id}
+              />
             </div>
           </section>
 

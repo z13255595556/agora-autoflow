@@ -21,6 +21,20 @@ const SUPPRESS_WINDOW_SECONDS = 600
 const API = process.env.NODE_SERVICE ?? 'http://localhost:8791'
 
 /**
+ * 告警里那条「运行详情」链接指向哪。
+ *
+ * 配了 PUBLIC_APP_URL（比如 https://autoflow.corp）就给一个点开直接是运行记录的前端地址；
+ * 没配就退回 /api/runs/{id} —— 一个 JSON 接口，看得见但不好看。宁可给一个能用的 JSON
+ * 地址，也不猜一个可能不存在的前端地址
+ */
+const PUBLIC_APP_URL = (process.env.PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
+export function runLink(flowId: string, runId: string): string {
+  return PUBLIC_APP_URL
+    ? `${PUBLIC_APP_URL}/?flow=${encodeURIComponent(flowId)}&run=${encodeURIComponent(runId)}`
+    : `/api/runs/${runId}`
+}
+
+/**
  * run 进终态时登记一条告警。成功的运行不告警。
  *
  * dedup_key 取 流程 + 第一个失败节点 + 错误摘要：同一个原因反复失败
@@ -101,7 +115,7 @@ export async function deliverPending(limit = 10): Promise<number> {
       `失败节点：${p.failedNode ?? '（未定位）'}`,
       `原因：${p.reason}`,
       `触发方式：${p.triggerKind}`,
-      `运行详情：/api/runs/${a.run_id}`,
+      `运行详情：${runLink(a.flow_id, a.run_id)}`,
     ].join('\n')
 
     try {

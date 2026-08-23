@@ -8,7 +8,7 @@ import { slashMatchAt } from '../lib/slash'
 import type { JsonType } from '../lib/outputShape'
 import type { TextEl } from '../lib/caret'
 import {
-  adjacentChip, caretInfo, chipRange, hasForeignNodes, renderTokens,
+  adjacentChip, caretInfo, chipClickIntent, chipRange, expandChip, hasForeignNodes, renderTokens,
   offsetInsideChip, selectionRange, serializeDom, serializeSelection, setCaret,
 } from './chipDom'
 import { useReferencePicker } from './ReferencePickerContext'
@@ -242,6 +242,12 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
   const lastEmitted = useRef(value)
   const undo = useRef({ stack: [{ value, caret: value.length }], index: 0, at: 0 })
   const picker = useReferencePicker()
+  /** 单击开取值面板要等一会儿，否则第二次 mousedown 到不了，双击展开会被吃掉 */
+  const pickTimer = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (pickTimer.current !== null) window.clearTimeout(pickTimer.current)
+  }, [])
 
   // --- 结构性重建 -----------------------------------------------------------
   // 只在这些时刻发生：挂载、外部改值、显式插入、粘贴、删胶囊、失焦。
@@ -256,7 +262,7 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
     if (!host) return
     renderTokens(host, tokenizeRefs(value, tokenizeOpts(value)), (b) => {
       const l = describeBlock(b, labelCtx)
-      return { text: l.text, tone: l.tone, title: l.title }
+      return { text: l.text, tone: l.tone, title: `${l.title}\n双击编辑表达式` }
     })
     if (pendingCaret.current !== null) {
       setCaret(host, Math.min(pendingCaret.current, value.length))
@@ -526,30 +532,51 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
         onMouseDown={(event) => {
           const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-chip-raw]') : null
           const host = hostRef.current
-          if (!target || !host || !picker || !nodeId) return
+          if (!target || !host) return
+          // 胶囊 contentEditable=false，不拦住的话双击会选中旁边的字而不是展开
+          event.preventDefault()
+          host.focus()
+          if (pickTimer.current !== null) {
+            window.clearTimeout(pickTimer.current)
+            pickTimer.current = null
+          }
+          if (chipClickIntent(event.detail) === 'expand') {
+            picker?.close()
+            slashActive.current = false
+            setSlash(null)
+            expandChip(host, target)
+            return
+          }
+          if (!picker || !nodeId) return
           const span = chipRange(host, target)
           const raw = target.getAttribute('data-chip-raw') ?? ''
           if (!span || !raw) return
-          event.preventDefault()
-          slashActive.current = false
-          picker.open({
-            nodeId,
-            query: '',
-            mixed: (value.slice(0, span.start) + value.slice(span.end)).trim().length > 0,
-            expectedType,
-            initialExpression: raw,
-            replace: (snippet) => commit(value.slice(0, span.start) + snippet + value.slice(span.end), span.start + snippet.length),
-          })
+          pickTimer.current = window.setTimeout(() => {
+            pickTimer.current = null
+            slashActive.current = false
+            picker.open({
+              nodeId,
+              query: '',
+              mixed: (value.slice(0, span.start) + value.slice(span.end)).trim().length > 0,
+              expectedType,
+              initialExpression: raw,
+              replace: (snippet) => commit(value.slice(0, span.start) + snippet + value.slice(span.end), span.start + snippet.length),
+            })
+          }, 280)
         }}
         onPaste={onPaste}
         onCopy={onCopy}
         onCut={onCut}
         onBlur={() => {
           if (composing.current) return // 带着候选窗口点走时不要重建
+          if (pickTimer.current !== null) {
+            window.clearTimeout(pickTimer.current)
+            pickTimer.current = null
+          }
           setTimeout(() => setSlash(null), 150)
-          // 失焦是唯一让手敲的 {{ }} 变成胶囊的时机
-          const host = hostRef.current
-          if (host && serializeDom(host) === value) bump(null)
+          // 先收下展开态里改过的字，再重建：手敲的 {{ }} 和双击展开的原文都会重新收成胶囊
+          flush()
+          bump(null)
         }}
       />
     </>

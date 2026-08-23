@@ -3,8 +3,11 @@ import { newFlowId } from './library.ts'
 
 /** 新建流程可从常用业务模板或单一触发方式开始。 */
 
+export type TemplateKind = 'blank' | 'recipe'
+
 export interface Template {
   key: string
+  kind: TemplateKind
   name: string
   desc: string
   icon: string
@@ -21,6 +24,7 @@ const base = (name: string): Omit<FlowDefinition, 'nodes' | 'edges' | 'layout' |
 export const TEMPLATES: Template[] = [
   {
     key: 'scheduled-sql',
+    kind: 'recipe',
     name: '定时查询 SQL',
     desc: '定时触发 → DataLego SQL → 企微通知，填好 SQL 和通知内容即可使用',
     icon: '⏰',
@@ -54,6 +58,7 @@ export const TEMPLATES: Template[] = [
   },
   {
     key: 'manual',
+    kind: 'blank',
     name: '手动触发',
     desc: '从编辑器手动运行，适合调试和临时任务',
     icon: '▶',
@@ -69,6 +74,7 @@ export const TEMPLATES: Template[] = [
   },
   {
     key: 'schedule',
+    kind: 'blank',
     name: '定时器触发',
     desc: '默认每天北京时间 09:00 自动运行，可在节点参数中调整',
     icon: '⏰',
@@ -87,6 +93,7 @@ export const TEMPLATES: Template[] = [
   },
   {
     key: 'webhook',
+    kind: 'blank',
     name: 'Webhook 触发',
     desc: '外部系统通过 HTTP POST 触发流程',
     icon: '🔗',

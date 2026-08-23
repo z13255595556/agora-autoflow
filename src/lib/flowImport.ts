@@ -36,6 +36,16 @@ export function normalizeFlowDefinition(value: unknown, fallbackId = 'flow_impor
     const probedOutput = rawProbed && Object.fromEntries(
       Object.entries(rawProbed).map(([key, schema]) => [key, objectAt(schema, `nodes[${index}].probedOutput.${key}`) as JsonSchema]),
     )
+    // 节点设置（备注 / 暂停 / 重试覆盖）。这里是显式键的白名单，漏一个就静默丢字段 ——
+    // toDefinition / loadDefinition 是另外两处，test/flowGraph 里有往返测试钉着
+    const retry = node.retry === null
+      ? null
+      : node.retry !== undefined && typeof node.retry === 'object'
+        ? {
+            ...(typeof (node.retry as { maxAttempts?: unknown }).maxAttempts === 'number' ? { maxAttempts: (node.retry as { maxAttempts: number }).maxAttempts } : {}),
+            ...(typeof (node.retry as { initialMs?: unknown }).initialMs === 'number' ? { initialMs: (node.retry as { initialMs: number }).initialMs } : {}),
+          }
+        : undefined
     return {
       id,
       type,
@@ -44,6 +54,9 @@ export function normalizeFlowDefinition(value: unknown, fallbackId = 'flow_impor
       params,
       onError: node.onError === 'continue' ? 'continue' as const : 'fail' as const,
       ...(probedOutput ? { probedOutput } : {}),
+      ...(typeof node.note === 'string' && node.note.trim() ? { note: node.note } : {}),
+      ...(node.disabled === true ? { disabled: true } : {}),
+      ...(retry !== undefined ? { retry } : {}),
     }
   })
 

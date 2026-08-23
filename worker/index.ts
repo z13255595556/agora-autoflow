@@ -16,7 +16,7 @@ import {
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
 import {
-  backoffMs, DEFAULT_RETRY, failureKindOf, isRetryable, MAX_CONSECUTIVE_POLL_FAILURES,
+  backoffMs, failureKindOf, isRetryable, MAX_CONSECUTIVE_POLL_FAILURES, resolveRetry,
 } from '../src/lib/engine-core/errorCodes.ts'
 
 /**
@@ -184,6 +184,8 @@ async function driveRun(run: RunRow): Promise<void> {
           nodeId: s.nodeId, loopPath: s.loopPath, status: s.status,
           ...(s.matched === undefined ? {} : { matched: s.matched }),
           ...(s.fanout === undefined ? {} : { fanout: s.fanout }),
+          // 暂停的 skipped 要被下游判成活，靠的就是这一个字段
+          ...(s.skipReason === undefined ? {} : { skipReason: s.skipReason }),
         })) as DecideStep[],
       })
 
@@ -217,6 +219,12 @@ async function driveRun(run: RunRow): Promise<void> {
       }
 
       if (!result.toRun.length) {
+        // 这一轮只写了 skipped 行、没有可跑的：状态变了，**立刻重算**而不是交接出去。
+        // 否则会走到下面的 deferRun —— 它释放租约后只有"等外部系统"的行会把 run
+        // 唤回来，而纯 skip 没有这种行，run 就停在 running 直到一小时后 reaper 来收。
+        // 暂停的节点第一次把这条路走出来了：它的下游要等它被记成 skipped 之后
+        // 的下一轮才能判活
+        if (result.toSkip.length) continue
         if (result.progress === 'stuck') {
           await finishRun(run.id, 'error', '流程卡住：存在环路或不可达的汇合点，没有节点可以推进')
           await recordRunAlert(run.id).catch(() => {})
@@ -287,7 +295,9 @@ async function runOneStep(
    */
   const attempt = (steps.find((x) => stepKeyOf(x) === stepKeyOf(target)) as { attempt?: number } | undefined)?.attempt ?? 0
   const fail = async (error: string, kind: string, code?: string) => {
-    const spec = DEFAULT_RETRY[node.data.typeId]
+    // 策略只从节点类型的 policy.retry 来（manifest 是唯一出处），实例可以覆盖次数 /
+    // 首次间隔或干脆关掉。以前这里读一张写死的 DEFAULT_RETRY 表，和 manifest 不一致
+    const spec = resolveRetry(NODE_TYPE_MAP.get(node.data.typeId)?.policy?.retry, node.data.retry)
     const canRetry = spec && isRetryable(code) && attempt + 1 < spec.maxAttempts
     if (canRetry) {
       const wait = backoffMs(spec, attempt + 1)

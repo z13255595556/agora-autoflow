@@ -28,6 +28,8 @@ SQL_QUERY: Dict[str, Any] = {
     "type": "sql.query",
     "typeVersion": "2.0.0",
     "name": "DataLego SQL",
+    "keywords": ["查数", "取数", "hive", "doris", "clickhouse", "数据平台", "datalego"],
+    "docsUrl": "https://github.com/z13255595556/agora-autoflow#sql-节点真实执行",
     "category": "数据查询",
     "icon": "▤",
     "description": "在 DataLego 数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接",
@@ -136,7 +138,11 @@ SQL_QUERY: Dict[str, Any] = {
         "idempotent": True,
         "dryRunnable": True,
         "cancellable": True,
-        "retry": {"maxAttempts": 2, "backoff": "exponential", "initialMs": 2000},
+        # worker 重试的**唯一出处**。以前 worker 另有一份写死的表（3 次 / 5 秒），
+        # 和这里声明的 2 次 / 2 秒对不上，而这里这份没有任何消费者。现在以这里为准，
+        # 且只在基础设施类错误（PLATFORM_AUTH / UPSTREAM_TIMEOUT / RATE_LIMITED …）
+        # 上重试 —— SQL 语法错重试一百次也一样。前端 registry.ts 那份镜像要跟着改
+        "retry": {"maxAttempts": 3, "initialMs": 5000, "backoffCoefficient": 2, "maximumIntervalMs": 60_000},
     },
 }
 
@@ -144,6 +150,8 @@ NOTIFY_WECOM: Dict[str, Any] = {
     "type": "notify.wecom",
     "typeVersion": "1.0.0",
     "name": "企微通知",
+    "keywords": ["发群", "通知", "机器人", "报警", "企业微信", "推送"],
+    "docsUrl": "https://github.com/z13255595556/agora-autoflow#企微通知节点真实发送",
     "category": "输出",
     "icon": "✉",
     "description": "推到企微群。填群机器人的 webhook 地址",
@@ -177,9 +185,9 @@ NOTIFY_WECOM: Dict[str, Any] = {
                 "x-ui": {
                     "widget": "textarea",
                     "rows": 10,
-                    # 选列器 + 实时预览。用户不用手敲节点 id、路径和过滤器名 ——
-                    # 那三样是手敲最容易错的地方，而且错了都是静默的
-                    "inserters": ["table", "message"],
+                    # 实时预览：发之前先看看成品和字节数。表格插入走取值面板的「表格」页签
+                    # （这里曾经声明过 "table"，但前端从没消费过它）
+                    "inserters": ["message"],
                     "placeholder": (
                         "## 卡顿排查结果\n"
                         "共 {{ $.nodes.n2.output.rowCount }} 条\n\n"
@@ -210,10 +218,12 @@ NOTIFY_WECOM: Dict[str, Any] = {
         "execute": "POST /nodes/notify.wecom/execute",
     },
     "policy": {
-        # 非幂等：重试会重复发。真实引擎重试前必须带幂等键。
+        # 非幂等：重试会重复发。真实引擎重试前必须带幂等键（worker 已带，
+        # 服务端 24 小时内同 key 只真发一次）。
         # 也没有 dryRun 了 —— 跑到这个节点就是真发，编辑器里的实时预览
         # 负责"发之前先看看"。
         "idempotent": False,
+        "retry": {"maxAttempts": 5, "initialMs": 2000, "backoffCoefficient": 2, "maximumIntervalMs": 10_000},
     },
 }
 
@@ -221,12 +231,16 @@ HTTP_REQUEST: Dict[str, Any] = {
     "type": "http.request",
     "typeVersion": "1.0.0",
     "name": "HTTP 调用",
+    "keywords": ["接口", "调用", "api", "请求", "curl", "rest"],
+    "docsUrl": "https://github.com/z13255595556/agora-autoflow#http-调用节点真实请求",
     "category": "处理",
     "icon": "↗",
     "description": "由节点服务发起真实 HTTP 请求",
     "input": {
         "type": "object",
         "required": ["method", "url"],
+        # 粘一段 curl 自动填参。声明在 manifest 里而不是表单里按 typeId 判断
+        "x-ui": {"importers": ["curl"]},
         "properties": {
             "method": {
                 "type": "string",
@@ -280,6 +294,9 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "x-ui": {"widget": "kv"},
                 "x-show": {"bodyType": ["form-urlencoded"]},
             },
+            # 超时 / SSL / 重试都是「配一次就不再动」的，折进高级设置。
+            # 前端 registry.ts 早就这么标了，这里一直没标 —— 而 manifest 整份覆盖前端，
+            # 结果是本地折叠、线上平铺。正是 README 说的"只在线上坏，本地测不出来"
             "timeoutMs": {
                 "type": "integer",
                 "title": "默认超时(ms)",
@@ -287,12 +304,15 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": 120000,
                 "description": "连接和读取未单独设置时使用",
+                "x-ui": {"group": "advanced"},
             },
             "connectTimeoutMs": {
                 "type": "integer", "title": "连接超时(ms)", "minimum": 1, "maximum": 120000,
+                "x-ui": {"group": "advanced"},
             },
             "readTimeoutMs": {
                 "type": "integer", "title": "读取超时(ms)", "minimum": 1, "maximum": 120000,
+                "x-ui": {"group": "advanced"},
             },
             "allowHttpErrors": {
                 "type": "boolean",
@@ -303,20 +323,23 @@ HTTP_REQUEST: Dict[str, Any] = {
             },
             "verifySsl": {
                 "type": "boolean", "title": "校验 SSL 证书", "default": True,
-                "description": "仅在调用自签名证书服务时关闭", "x-ui": {"widget": "switch"},
+                "description": "仅在调用自签名证书服务时关闭", "x-ui": {"widget": "switch", "group": "advanced"},
             },
+            # HTTP 的重试在节点内做（网络错 / 429 / 5xx，毫秒级间隔），**故意不声明
+            # policy.retry** —— 否则 worker 再叠一层就是 3 × (1 + maxRetries) 次请求，
+            # 对非幂等的 POST 尤其危险。节点设置里的「重试」一栏对它显示"由节点内重试"
             "retryEnabled": {
                 "type": "boolean", "title": "失败后重试", "default": False,
                 "description": "仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启",
-                "x-ui": {"widget": "switch"},
+                "x-ui": {"widget": "switch", "group": "advanced"},
             },
             "maxRetries": {
                 "type": "integer", "title": "最多重试次数", "default": 2, "minimum": 1, "maximum": 5,
-                "x-show": {"retryEnabled": [True]},
+                "x-show": {"retryEnabled": [True]}, "x-ui": {"group": "advanced"},
             },
             "retryIntervalMs": {
                 "type": "integer", "title": "重试间隔(ms)", "default": 500, "minimum": 0, "maximum": 10000,
-                "x-show": {"retryEnabled": [True]},
+                "x-show": {"retryEnabled": [True]}, "x-ui": {"group": "advanced"},
             },
         },
     },
@@ -343,6 +366,7 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
     "type": "postgres.workspace",
     "typeVersion": "1.0.0",
     "name": "自建 PostgreSQL",
+    "keywords": ["建表", "存结果", "自建库", "pg", "postgres"],
     "category": "数据查询",
     "icon": "▤",
     "description": "在你自己的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库",
@@ -375,7 +399,12 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
         },
     },
     "runtime": {"kind": "http", "execute": "POST /nodes/postgres.workspace/execute"},
-    "policy": {"idempotent": False},
+    "policy": {
+        "idempotent": False,
+        # 自建库偶发连不上 / 超时值得等一下再试。执行接口带幂等键（24h 去重），
+        # 重试不会把同一条 INSERT 写两遍
+        "retry": {"maxAttempts": 3, "initialMs": 2000, "backoffCoefficient": 2, "maximumIntervalMs": 30_000},
+    },
 }
 
 ALL = [SQL_QUERY, POSTGRES_WORKSPACE, NOTIFY_WECOM, HTTP_REQUEST]

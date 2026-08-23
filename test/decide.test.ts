@@ -255,3 +255,76 @@ test('便签不参与任何判定', () => {
   assert.ok(!r.toRun.some((x) => x.nodeId === 'note'))
   assert.ok(!r.toSkip.some((x) => x.nodeId === 'note'))
 })
+
+// ---------------------------------------------------------------- 暂停（活着但不跑）
+
+test('★ 暂停的节点记成 skipped{disabled}，但要等上游到终态之后', () => {
+  const base = line()
+  const paused = {
+    ...base,
+    nodes: [base.nodes[0], node('a', 'transform.template', { template: 'A' }, 'fail', { disabled: true }), base.nodes[2]],
+  }
+  // 触发器还没跑：a 的入边源非终态，a 该 blocked 而不是被提前记成 skipped ——
+  // 否则 b 会拿一个"终态"的源去判，把 pending 当成 dead
+  const r0 = decide(paused)
+  assert.ok(!r0.toSkip.some((s) => s.nodeId === 'a'))
+  assert.ok(r0.blocked.some((b) => b.nodeId === 'a'))
+
+  const r1 = decide(withSteps(paused, [S('t', 'success')]))
+  assert.ok(!r1.toRun.some((x) => x.nodeId === 'a'), '暂停的节点不跑')
+  const skip = r1.toSkip.find((s) => s.nodeId === 'a')
+  assert.equal(skip?.reason.kind, 'disabled')
+})
+
+test('★★ 暂停对下游透明：a 暂停，b 照跑；a 的上游死了，b 也死', () => {
+  const base = line()
+  const paused = {
+    ...base,
+    nodes: [base.nodes[0], node('a', 'transform.template', { template: 'A' }, 'fail', { disabled: true }), base.nodes[2]],
+  }
+  const r = decide(withSteps(paused, [
+    S('t', 'success'),
+    S('a', 'skipped', { skipReason: { kind: 'disabled' } }),
+  ]))
+  assert.deepEqual(r.toRun.map((x) => x.nodeId), ['b'], '上游活 → 暂停节点的下游照跑')
+
+  // 同样的 skipped，但原因是 unreachable —— 下游必须跟着死。两种 skipped 在 status 上一样，
+  // 靠 skipReason 分辨；没有它两个引擎就会对"暂停"给出不同答案
+  const r2 = decide(withSteps(paused, [
+    S('t', 'success'),
+    S('a', 'skipped', { skipReason: { kind: 'unreachable' } }),
+  ]))
+  assert.ok(!r2.toRun.some((x) => x.nodeId === 'b'))
+  assert.ok(r2.toSkip.some((s) => s.nodeId === 'b'))
+})
+
+test('条件 / 循环 / 触发器上的 disabled 被忽略 —— 引擎要读它们的判定结果', () => {
+  const input: DecideInput = {
+    nodes: [
+      node('t', 'trigger.manual', {}, 'fail', { disabled: true }),
+      node('i', 'flow.if', { condition: 'true' }, 'fail', { disabled: true }),
+      node('a', 'transform.template', { template: 'A' }),
+    ],
+    edges: [edge('t', 'i'), edge('i', 'a', 'true')],
+    run: { status: 'running' },
+    steps: [],
+  }
+  const r0 = decide(input)
+  assert.ok(r0.toRun.some((x) => x.nodeId === 't'), '触发器照跑')
+  const r1 = decide(withSteps(input, [S('t', 'success')]))
+  assert.ok(r1.toRun.some((x) => x.nodeId === 'i'), 'flow.if 照跑，否则下游永远 stuck')
+})
+
+test('暂停的节点跑完整条之后 run 是 success，不是 error', () => {
+  const base = line()
+  const paused = {
+    ...base,
+    nodes: [base.nodes[0], node('a', 'transform.template', { template: 'A' }, 'fail', { disabled: true }), base.nodes[2]],
+  }
+  const r = decide(withSteps(paused, [
+    S('t', 'success'),
+    S('a', 'skipped', { skipReason: { kind: 'disabled' } }),
+    S('b', 'success'),
+  ]))
+  assert.equal(r.finished, 'success')
+})

@@ -48,6 +48,7 @@ const SKIP_TEXT: Record<string, string> = {
   run_failed: '流程已经失败，不再往下跑',
   no_incoming: '没有入边，接不上任何上游',
   no_iterations: '循环展开出 0 项，体内一次都不跑',
+  disabled: '已暂停（在节点设置里恢复）',
 }
 
 /** 大结果集直接铺出来会把界面卡住。截断要**说出来**，不能让人以为就这么多 */
@@ -72,7 +73,7 @@ function versionText(v: number): string {
   return v < 0 ? '草稿' : `v${v}`
 }
 
-export default function RunHistory({ flow, onClose }: { flow: SavedFlow; onClose: () => void }) {
+export default function RunHistory({ flow, initialRunId, onClose }: { flow: SavedFlow; initialRunId?: string; onClose: () => void }) {
   const [runs, setRuns] = useState<RemoteRun[] | null>(null)
   const [listErr, setListErr] = useState('')
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -96,7 +97,8 @@ export default function RunHistory({ flow, onClose }: { flow: SavedFlow; onClose
       .then((got) => {
         if (cancelled) return
         setRuns(got)
-        setActiveId(got[0]?.id ?? null)
+        // 告警链接带着 run id 进来：直接选中那一次，而不是最新的那次
+        setActiveId((initialRunId && got.some((r) => r.id === initialRunId) ? initialRunId : got[0]?.id) ?? null)
       })
       .catch((err) => {
         if (cancelled) return

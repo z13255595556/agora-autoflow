@@ -9,6 +9,7 @@
 import hashlib
 import hmac
 import json
+import re
 import os
 import secrets
 import time
@@ -283,7 +284,7 @@ def map_inputs(raw_body: bytes, inputs_schema: Dict[str, Any]) -> Dict[str, Any]
             if key in required:
                 raise WebhookError(400, f"缺少必填入参 {key}")
             continue
-        out[key] = _coerce(body[key], str(schema.get("type") or "string"), key)
+        out[key] = _coerce(body[key], str(schema.get("type") or "string"), key, schema)
 
     for key in required:
         if key not in out:
@@ -291,9 +292,27 @@ def map_inputs(raw_body: bytes, inputs_schema: Dict[str, Any]) -> Dict[str, Any]
     return out
 
 
-def _coerce(value: Any, want: str, key: str) -> Any:
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _coerce(value: Any, want: str, key: str, schema: Optional[Dict[str, Any]] = None) -> Any:
     """类型转换。**转不了就 400 并说清是哪个字段** ——
-    报文是给上游系统的开发者看的，不是给我们自己看的。"""
+    报文是给上游系统的开发者看的，不是给我们自己看的。
+
+    入参的「日期」「下拉」种类落到 schema 里是 string + format / string + enum
+    （见前端 flowGraph.inputSchemaOf），这里按同一份 schema 校验，前后端认的是一样的。"""
+    schema = schema or {}
+    if want == "number":
+        if isinstance(value, bool):
+            raise WebhookError(400, f"入参 {key} 需要数字，收到布尔值")
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                pass
+        raise WebhookError(400, f"入参 {key} 需要数字，收到 {json.dumps(value, ensure_ascii=False)}")
     if want == "integer":
         if isinstance(value, bool):
             raise WebhookError(400, f"入参 {key} 需要整数，收到布尔值")
@@ -308,7 +327,13 @@ def _coerce(value: Any, want: str, key: str) -> Any:
         if isinstance(value, str) and value.lower() in {"true", "false", "1", "0"}:
             return value.lower() in {"true", "1"}
         raise WebhookError(400, f"入参 {key} 需要布尔值，收到 {json.dumps(value, ensure_ascii=False)}")
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if schema.get("format") == "date" and not _DATE_RE.match(text.strip()):
+        raise WebhookError(400, f"入参 {key} 需要 yyyy-MM-dd 格式的日期，收到 {json.dumps(value, ensure_ascii=False)}")
+    options = schema.get("enum")
+    if isinstance(options, list) and options and text not in options:
+        raise WebhookError(400, f"入参 {key} 只能是 {' / '.join(map(str, options))}，收到 {json.dumps(value, ensure_ascii=False)}")
+    return text
 
 
 # ---------------------------------------------------------------- 认证与限流

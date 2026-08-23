@@ -9,18 +9,19 @@ import {
   type Node,
   type NodeChange,
 } from '@xyflow/react'
-import type { FlowDefinition, FlowInputField, FlowNodeData, FlowRun, JsonSchema, NodeType, StepRun } from './types'
-import { applyBackendNodes, NODE_TYPE_MAP, portsOf, setOptions } from './registry'
-import { executeFlow, executeSingleNode } from './lib/engine'
-import { isFieldVisible } from './lib/display'
-import { learnColumns, toProbedFields, toResponseFields } from './lib/output'
-import { redactNodeInput } from './lib/secrets'
-import { extractSqlPlaceholders } from './lib/placeholders'
-import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout'
-import { connectionProblem, graphProblems } from './lib/graph'
-import { portOf } from './lib/flowGraph.ts'
-import * as api from './lib/client'
+import type { FlowDefinition, FlowInputField, FlowNodeData, FlowRun, JsonSchema, NodeRetryOverride, NodeType, StepRun } from './types'
+import { applyBackendNodes, NODE_TYPE_MAP, portsOf, setOptions } from './registry.ts'
+import { executeFlow, executeSingleNode } from './lib/engine.ts'
+import { isFieldVisible } from './lib/display.ts'
+import { learnColumns, toProbedFields, toResponseFields } from './lib/output.ts'
+import { redactNodeInput } from './lib/secrets.ts'
+import { extractSqlPlaceholders } from './lib/placeholders.ts'
+import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout.ts'
+import { connectionProblem, graphProblems } from './lib/graph.ts'
+import { inputFieldOf, inputSchemaOf, nodeDataOf, portOf } from './lib/flowGraph.ts'
+import * as api from './lib/client.ts'
 import { startRemoteRun } from './lib/remoteRun.ts'
+import { coerceInput, defaultForm } from './lib/runRequest.ts'
 
 export type FNode = Node<FlowNodeData>
 
@@ -45,6 +46,31 @@ const HISTORY_GROUP_MS = 800
 const NODE_H = 76
 const RUN_PANEL_HEIGHT_KEY = 'autoflow.run-panel-height'
 const DEFAULT_RUN_PANEL_HEIGHT = 258
+
+/**
+ * 手动运行表单按流程记在本机。键名跟 autoflow.* 惯例。
+ * 只记文本，不记结果；坏掉的 JSON 当没有
+ */
+const INPUTS_KEY = (flowId: string) => `autoflow.inputs.${flowId}`
+function recallInputs(flowId: string): Record<string, string> {
+  if (typeof localStorage === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(INPUTS_KEY(flowId))
+    const parsed = raw ? JSON.parse(raw) : null
+    if (!parsed || typeof parsed !== 'object') return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+function rememberInputs(flowId: string, inputs: Record<string, string>): void {
+  if (typeof localStorage === 'undefined' || !flowId) return
+  try {
+    localStorage.setItem(INPUTS_KEY(flowId), JSON.stringify(inputs))
+  } catch {
+    /* 配额满了 / 隐私模式：记不住就算了，不影响运行 */
+  }
+}
 
 function initialRunPanelHeight(): number {
   if (typeof localStorage === 'undefined') return DEFAULT_RUN_PANEL_HEIGHT
@@ -264,6 +290,10 @@ interface FlowState {
   toggleNodeSelection: (id: string) => void
   updateNodeParam: (id: string, key: string, value: unknown) => void
   renameNode: (id: string, label: string) => void
+  /** 节点设置（备注 / 暂停 / 重试覆盖）。undefined = 清掉这一项回到默认 */
+  setNodeNote: (id: string, note: string) => void
+  setNodeDisabled: (id: string, disabled: boolean) => void
+  setNodeRetry: (id: string, retry: NodeRetryOverride | undefined) => void
   setNodeOnError: (id: string, v: 'fail' | 'continue') => void
   deleteNode: (id: string) => void
   probeNode: (id: string) => Promise<void>
@@ -821,6 +851,37 @@ export const useFlow = create<FlowState>((set, get) => ({
       nodes: get().nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, onError } } : n)),
     }),
 
+  // 备注连续输入合并成一步撤销，和重命名同一个套路
+  setNodeNote: (id, note) =>
+    set({
+      ...historyCommit(get(), `node-note:${id}`),
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id) return n
+        const { note: _old, ...rest } = n.data
+        return { ...n, data: note.trim() ? { ...rest, note } : rest }
+      }),
+    }),
+
+  setNodeDisabled: (id, disabled) =>
+    set({
+      ...historyCommit(get()),
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id) return n
+        const { disabled: _old, ...rest } = n.data
+        return { ...n, data: disabled ? { ...rest, disabled: true } : rest }
+      }),
+    }),
+
+  setNodeRetry: (id, retry) =>
+    set({
+      ...historyCommit(get()),
+      nodes: get().nodes.map((n) => {
+        if (n.id !== id) return n
+        const { retry: _old, ...rest } = n.data
+        return { ...n, data: retry === undefined ? rest : { ...rest, retry } }
+      }),
+    }),
+
   deleteNode: (id) => {
     get().deleteNodes([id])
   },
@@ -953,7 +1014,10 @@ export const useFlow = create<FlowState>((set, get) => ({
   setRunPanelOpen: (runPanelOpen) => set({ runPanelOpen }),
   setRunPanelHeight: (runPanelHeight) => set({ runPanelHeight: Math.min(560, Math.max(180, runPanelHeight)) }),
   setActiveRun: (activeRunId) => set({ activeRunId }),
-  setManualInputs: (manualInputs) => set({ manualInputs }),
+  setManualInputs: (manualInputs) => {
+    set({ manualInputs })
+    rememberInputs(get().flowId, manualInputs)
+  },
   setSaveDraft: (saveDraft) => set({ saveDraft }),
 
   startRun: async (trigger) => {
@@ -1068,8 +1132,7 @@ export const useFlow = create<FlowState>((set, get) => ({
     const manualTrigger: Record<string, unknown> = {}
     for (const field of get().flowInputs) {
       if (!Object.prototype.hasOwnProperty.call(get().manualInputs, field.key)) continue
-      const raw = get().manualInputs[field.key]
-      manualTrigger[field.key] = field.type === 'integer' ? Number(raw || 0) : field.type === 'boolean' ? raw === 'true' : raw
+      manualTrigger[field.key] = coerceInput(field, get().manualInputs[field.key])
     }
     // 当前表单中的值优先；没有重新填写的字段沿用最近一次完整手动运行。
     const trigger = { ...(triggerRun?.trigger ?? {}), ...manualTrigger }
@@ -1134,11 +1197,19 @@ export const useFlow = create<FlowState>((set, get) => ({
       flowInputs: [...get().flowInputs, { key: `field${get().flowInputs.length + 1}`, title: '', type: 'string', required: false }],
     }),
 
-  updateFlowInput: (i, patch) =>
+  updateFlowInput: (i, patch) => {
+    const flowInputs = get().flowInputs.map((f, idx) => (idx === i ? { ...f, ...patch } : f))
+    // 刚填的默认值要立刻出现在运行表单里（表单那格还空着的话）——
+    // 否则"我设了默认值，怎么运行表单还是空的"，得重开一次流程才对
+    const field = flowInputs[i]
+    const manualInputs = { ...get().manualInputs }
+    if (field && patch.default && !(manualInputs[field.key] ?? '').trim()) manualInputs[field.key] = patch.default
     set({
       ...historyCommit(get(), `flow-input:${i}:${Object.keys(patch).join(',')}`),
-      flowInputs: get().flowInputs.map((f, idx) => (idx === i ? { ...f, ...patch } : f)),
-    }),
+      flowInputs,
+      manualInputs,
+    })
+  },
 
   removeFlowInput: (i) => set({ ...historyCommit(get()), flowInputs: get().flowInputs.filter((_, idx) => idx !== i) }),
 
@@ -1155,7 +1226,7 @@ export const useFlow = create<FlowState>((set, get) => ({
     const properties: Record<string, JsonSchema> = {}
     const required: string[] = []
     for (const f of flowInputs) {
-      properties[f.key] = { type: f.type, title: f.title || f.key }
+      properties[f.key] = inputSchemaOf(f)
       if (f.required) required.push(f.key)
     }
     return {
@@ -1179,6 +1250,10 @@ export const useFlow = create<FlowState>((set, get) => ({
         params: exportParams(n),
         onError: n.data.onError,
         ...(n.data.probedOutput && Object.keys(n.data.probedOutput).length ? { probedOutput: n.data.probedOutput } : {}),
+        // 节点设置只在有值时写出：老流程导出后 diff 里不该凭空多三行
+        ...(n.data.note?.trim() ? { note: n.data.note } : {}),
+        ...(n.data.disabled ? { disabled: true } : {}),
+        ...(n.data.retry !== undefined ? { retry: n.data.retry } : {}),
       })),
       edges: edges.map((e) => ({
         from: e.source,
@@ -1211,14 +1286,8 @@ export const useFlow = create<FlowState>((set, get) => ({
         type: 'flowNode',
         position: { x: layout.x, y: layout.y },
         ...(visualOnly ? { style: { width: layout.width ?? 280, height: layout.height ?? 160 } } : {}),
-        data: {
-          typeId: n.type,
-          typeVersion: n.typeVersion,
-          label: n.name,
-          params: n.params ?? {},
-          onError: n.onError ?? 'fail',
-          ...(n.probedOutput ? { probedOutput: n.probedOutput } : {}),
-        },
+        // 字段清单只在 nodeDataOf 一处 —— worker 的 toGraph 读的是同一份
+        data: nodeDataOf(n),
       }
     })
     const edges: Edge[] = def.edges.map((e, i) => ({
@@ -1231,15 +1300,12 @@ export const useFlow = create<FlowState>((set, get) => ({
       type: 'flowEdge',
     }))
     const maxSeq = nodes.reduce((m, n) => Math.max(m, Number(n.id.replace(/\D/g, '')) || 0), 0)
+    const flowInputs = Object.entries(def.inputs?.properties ?? {}).map(([key, s]) =>
+      inputFieldOf(key, s, (def.inputs?.required ?? []).includes(key)))
     set({
       flowId: def.id,
       flowName: def.name,
-      flowInputs: Object.entries(def.inputs?.properties ?? {}).map(([key, s]) => ({
-        key,
-        title: s.title ?? key,
-        type: (s.type as FlowInputField['type']) ?? 'string',
-        required: (def.inputs?.required ?? []).includes(key),
-      })),
+      flowInputs,
       nodes,
       edges,
       seq: maxSeq,
@@ -1254,7 +1320,9 @@ export const useFlow = create<FlowState>((set, get) => ({
       ),
       runs: [],
       activeRunId: null,
-      manualInputs: {},
+      // 上次填的入参回来了（按流程记在本机），没填过的用默认值 —— 日报的「日期」
+      // 以前是每次打开都要重敲一遍的文本框
+      manualInputs: { ...defaultForm(flowInputs), ...recallInputs(def.id) },
       ndvNodeId: null,
       runPanelOpen: false,
       dirtyNodes: {},

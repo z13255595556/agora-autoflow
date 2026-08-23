@@ -49,6 +49,8 @@ export function toFlowRun(remote: api.RemoteRun): FlowRun {
       output: s.output ?? null,
       ...(s.error ? { error: s.error } : {}),
       ...(iteration === undefined ? {} : { iteration }),
+      // 跳过的原因带回来：「已暂停」和「分支没命中」在面板上要分得开
+      ...(s.skipReason && typeof s.skipReason === 'object' ? { skipReason: s.skipReason as StepRun['skipReason'] } : {}),
       // 服务端跑的一律算真实执行；handle 不外泄，只说在不在等平台
       live: true,
       seq: s.seq,

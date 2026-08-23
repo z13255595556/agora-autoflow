@@ -1,4 +1,5 @@
 import type { FlowInputField } from '../types'
+import { coerceInput } from './runRequest.ts'
 
 /**
  * 生成给上游的调用示例。
@@ -27,7 +28,14 @@ export function sampleBody(inputs: FlowInputField[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const f of inputs) {
     if (!f.key) continue
-    out[f.key] = f.type === 'integer' ? 123 : f.type === 'boolean' ? true : `示例${f.title || f.key}`
+    out[f.key] = f.default !== undefined && f.default !== ''
+      ? coerceInput(f, f.default)
+      : f.type === 'integer' ? 123
+        : f.type === 'number' ? 1.5
+          : f.type === 'boolean' ? true
+            : f.type === 'date' ? '2026-08-21'
+              : f.type === 'select' ? (f.options?.[0] ?? '选项')
+                : `示例${f.title || f.key}`
   }
   return out
 }

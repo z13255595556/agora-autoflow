@@ -202,6 +202,89 @@ test('sort 不改上游数据', () => {
   assert.deepEqual(rows, [{ n: 3 }, { n: 1 }])
 })
 
+// ---------------------------------------------------------------- 第二批：筛选行 / 前 N / 均值极值 / 数字格式
+//
+// 「只发 dc>5 的」「前 10 名」「平均卡顿率 12.3%」三句话以前表达不出来，
+// 只能回去改 SQL —— 而改 SQL 意味着再跑一次几分钟的 Hive。
+
+const many = {
+  ...ctx,
+  nodes: { q1: { output: { rows: [
+    { vid: 1, name: 'a', dc: 10 },
+    { vid: 2, name: 'b', dc: 30 },
+    { vid: 3, name: 'c', dc: 20 },
+  ] } } },
+}
+
+test('where：保留全部匹配行，不是只取第一个', () => {
+  assert.deepEqual(
+    resolveTemplate('{{ $.nodes.q1.output.rows | where(dc, gt, 15) | column(vid) }}', many),
+    [2, 3],
+  )
+  assert.deepEqual(resolveTemplate('{{ $.nodes.q1.output.rows | where(dc, gte, 30) | column(vid) }}', many), [2])
+  assert.deepEqual(resolveTemplate("{{ $.nodes.q1.output.rows | where('name', eq, 'a') | column(vid) }}", many), [1])
+})
+
+test('where：一行都不匹配得到空数组，后面的 count 是 0 不是报错', () => {
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.rows | where(dc, gt, 999) | count }}', many), 0)
+})
+
+test('where：不认识的比较方式报错，不静默当成 eq', () => {
+  assert.throws(() => resolveTemplate('{{ $.nodes.q1.output.rows | where(dc, between, 1) }}', many), /不支持的匹配方式/)
+})
+
+test('limit：前 N 行，配合 sort 就是前 N 名', () => {
+  assert.deepEqual(
+    resolveTemplate('{{ $.nodes.q1.output.rows | sort(dc, desc) | limit(2) | column(name) }}', many),
+    ['b', 'c'],
+  )
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.rows | limit(0) | count }}', many), 0)
+})
+
+test('limit：不是非负整数就报错', () => {
+  assert.throws(() => resolveTemplate('{{ $.nodes.q1.output.rows | limit(-1) }}', many), /非负整数/)
+  assert.throws(() => resolveTemplate('{{ $.nodes.q1.output.rows | limit(abc) }}', many), /非负整数/)
+})
+
+test('avg / min / max：对象数组给列名，标量数组直接算', () => {
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.rows | avg(dc) }}', many), 20)
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.rows | min(dc) }}', many), 10)
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.rows | column(dc) | max }}', many), 30)
+})
+
+test('avg / min / max：空集返回缺值，default 能兜住', () => {
+  // 返回 0 会把"没有数据"伪装成"平均值是 0"发进群里；报错则 default 接不住
+  assert.equal(
+    resolveTemplate("{{ $.nodes.q1.output.rows | where(dc, gt, 999) | avg(dc) | default('—') }}", many),
+    '—',
+  )
+  assert.throws(
+    () => resolveTemplate('{{ $.nodes.q1.output.rows | where(dc, gt, 999) | avg(dc) }}', many),
+    MissingValue,
+  )
+})
+
+test('avg 对非数字报错，并提示可能是漏了列名', () => {
+  assert.throws(() => resolveTemplate('{{ $.nodes.q1.output.rows | avg }}', many), /列名/)
+})
+
+test('round / percent：数字格式化', () => {
+  const c = { ...ctx, nodes: { q1: { output: { ratio: 0.12345, n: 2.5 } } } }
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.ratio | round(2) }}', c), 0.12)
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.n | round }}', c), 3)
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.ratio | percent }}', c), '12.3%')
+  assert.equal(resolveTemplate('{{ $.nodes.q1.output.ratio | percent(0) }}', c), '12%')
+  assert.equal(resolveTemplate('平均 {{ $.nodes.q1.output.rows | avg(dc) | round(1) }}', many), '平均 20')
+})
+
+test('round / percent 对非数字报错，对缺值透传给链尾的 default', () => {
+  assert.throws(() => resolveTemplate("{{ $.nodes.q1.output.rows | first(name) | round }}", many), /只能对数字/)
+  assert.equal(
+    resolveTemplate("{{ $.nodes.q1.output.rows | where(dc, gt, 999) | avg(dc) | round(1) | default('—') }}", many),
+    '—',
+  )
+})
+
 test('default 可以出现在链条中间', () => {
   assert.equal(resolveTemplate("{{ $.trigger.nope | default('—') | count }}", ctx), 1)
 })

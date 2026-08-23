@@ -2,6 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { useFlow, type FNode } from '../store'
 import { validateNode } from '../lib/vars'
+import { pausable } from '../lib/engine-core/decide'
 import { nodeSummary } from '../lib/summary'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL, SCHEDULER_OFF_SHORT } from '../lib/scheduler'
 import { WEBHOOK_MISSING_DETAIL, WEBHOOK_MISSING_SHORT } from '../lib/webhookState'
@@ -24,6 +25,7 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   const toggleNodeSelection = useFlow((s) => s.toggleNodeSelection)
   const testStep = useFlow((s) => s.testStep)
   const updateNodeParam = useFlow((s) => s.updateNodeParam)
+  const setNodeDisabled = useFlow((s) => s.setNodeDisabled)
   const running = useFlow((s) => s.running)
   const { openPicker } = useCanvasCtx()
 
@@ -45,8 +47,10 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
   }
 
   const self = nodes.find((n) => n.id === id)
-  // pinned 节点执行时跳过参数校验（n8n 语义），画布上也不给它挂错误角标
-  const errors = self && !isPinned ? validateNode(self, nodes, edges, flowInputs) : []
+  // 暂停 = 跳过不执行但对下游透明。卡片整体压暗 + 角标，一眼分得出"它不会跑"
+  const paused = Boolean(data.disabled) && !!self && pausable(self)
+  // pinned 节点执行时跳过参数校验（n8n 语义），画布上也不给它挂错误角标；暂停的同理
+  const errors = self && !isPinned && !paused ? validateNode(self, nodes, edges, flowInputs) : []
   const color = CATEGORY_COLOR[t.category] ?? '#64748b'
   const ports = portsOf(t)
   const hasInput = t.hasInput !== false
@@ -69,7 +73,7 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
 
   return (
     <div
-      className={`node${selected ? ' node--selected' : ''}${last ? ` node--run-${last.status}` : ''}`}
+      className={`node${selected ? ' node--selected' : ''}${last ? ` node--run-${last.status}` : ''}${paused ? ' node--paused' : ''}`}
       style={{ '--accent': color } as React.CSSProperties}
       onPointerDown={(event) => {
         if ((!event.metaKey && !event.ctrlKey) || (event.target as Element).closest('button')) return
@@ -117,6 +121,18 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
             <Icon name="copy" size={13} />
           </button>
         )}
+        {self && pausable(self) && (
+          <button
+            className="node__tool"
+            title={paused ? '恢复：让它重新参与运行' : '暂停：跳过不执行，下游照常往下走'}
+            onClick={(e) => {
+              e.stopPropagation()
+              setNodeDisabled(id, !paused)
+            }}
+          >
+            <Icon name={paused ? 'play' : 'pause'} size={13} />
+          </button>
+        )}
         {t.hasInput !== false && (
           <button
             className="node__tool node__tool--danger"
@@ -152,7 +168,9 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
             </span>
           )}
           {last?.status === 'error' && <span className="runbadge runbadge--error" title={last.error}>✗</span>}
-          {last?.status === 'skipped' && <span className="runbadge runbadge--skipped" title="分支未命中，已跳过">⊘</span>}
+          {last?.status === 'skipped' && (
+            <span className="runbadge runbadge--skipped" title={last.skipReason?.kind === 'disabled' ? '已暂停，这次没跑' : '分支未命中，已跳过'}>⊘</span>
+          )}
         </div>
       )}
 
@@ -161,10 +179,22 @@ export default function FlowNodeView({ id, data, selected }: NodeProps<FNode>) {
         <div className="node__titles">
           <div className="node__name">
             {data.label}
-            <span className="node__nid">{id}</span>
           </div>
           {/* 副标题写"配成了什么"而不是类型名 —— 类型名图标已经说了 */}
-          <div className="node__summary">{nodeSummary(t, data.params)}</div>
+          <div className="node__summary">{paused ? '已暂停 · 不会执行' : nodeSummary(t, data.params)}</div>
+          {data.note?.trim() && <div className="node__note" title={data.note}>{data.note}</div>}
+          {t.hasInput === false && (
+            <button
+              className="node__swap"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                openPicker({ anchor: anchorOf(e.currentTarget), target: { kind: 'trigger' } })
+              }}
+            >
+              更换触发方式
+            </button>
+          )}
         </div>
       </div>
 

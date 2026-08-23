@@ -2,6 +2,7 @@
  * 节点定义 / 流程定义的类型契约。
  * 这里的结构就是后端注册表和流程 DSL 的形状，前端只是它的一个视图。
  */
+import type { SkipReason } from './lib/engine-core/types'
 
 export type UiWidget = 'text' | 'textarea' | 'code' | 'select' | 'number' | 'kv' | 'switch' | 'conditions'
 
@@ -32,8 +33,10 @@ export interface UiHint {
   /**
    * 挂在整个 input schema 上的实时预览面板。
    * - 'date' —— 按当前参数当场算出日期，连同各种格式和引用路径一起显示
+   * - 'schedule' —— 接下来三次触发时刻（「明天 09:00 · 后天 09:00」），
+   *   「每天 09:00」是翻译，这个才是事实
    */
-  preview?: 'date'
+  preview?: 'date' | 'schedule'
   placeholder?: string
   rows?: number
   /**
@@ -43,10 +46,13 @@ export interface UiHint {
    * 的死条目了，再加一个只有一个字段用的只会让它更虚构。插入器是叠加在
    * textarea 上的能力，不是另一种控件。
    *
-   * - 'table'   —— 选上游节点和列，生成 {{ … | table(列…) }}
    * - 'message' —— 下方实时渲染消息成品 + 字节数
+   *
+   * 这里曾经还有 'table'（选上游和列生成 table(...)），声明了但从来没被任何组件
+   * 消费，对应的 TablePicker.tsx 是死代码 —— 表格插入由取值面板的「表格」页签承担。
+   * 一个声明了没效果的注解比没有更糟：manifest 的作者会以为它在工作
    */
-  inserters?: Array<'table' | 'message'>
+  inserters?: Array<'message'>
   /** KV 编辑器中按敏感键名遮罩 value，适用于 HTTP headers。 */
   sensitiveKeys?: boolean
   /**
@@ -59,6 +65,12 @@ export interface UiHint {
   expressionFrom?: string
   /** 单值凭证输入，默认用密码态显示且禁止浏览器自动填充。 */
   secret?: boolean
+  /**
+   * 挂在整个 input schema 上：表单顶部长出哪些导入器。
+   * - 'curl' —— 粘一段 curl 命令，自动填 method / url / headers / body
+   * 以前是 SchemaForm 里按 `typeId === 'http.request'` 判断，是表单里最后一个特判
+   */
+  importers?: Array<'curl'>
 }
 
 /**
@@ -103,6 +115,8 @@ export interface JsonSchema {
   description?: string
   default?: unknown
   enum?: string[]
+  /** JSON Schema 的 format。入参的「日期」种类就是 string + 'date' */
+  format?: string
   minimum?: number
   maximum?: number
   items?: JsonSchema
@@ -136,11 +150,29 @@ export interface NodePort {
   label: string
 }
 
+/**
+ * 节点类型的重试策略 —— **worker 重试的唯一出处**。
+ *
+ * 四要素来自 Temporal 的 RetryPolicy：第 n 次等
+ * `min(initialMs × backoffCoefficient^(n-1), maximumIntervalMs)`。
+ *
+ * 以前这里是 `{maxAttempts, backoff, initialMs}`，而 worker 另有一份写死的
+ * `DEFAULT_RETRY` 表，两边数字还不一样（sql.query 这边说 2 次、那边跑 3 次），
+ * 且这里这份**没有任何消费者**。现在只剩这一份：manifest 里声明了就按它重试，
+ * 没声明就不重试（http.request 在节点内自己重试，故意不声明）。
+ */
 export interface RetryPolicy {
   maxAttempts: number
-  backoff: 'fixed' | 'exponential'
   initialMs: number
+  backoffCoefficient: number
+  maximumIntervalMs: number
 }
+
+/**
+ * 节点实例对重试的覆盖。`null` = 这个节点不重试；缺省 = 按类型的 policy.retry。
+ * 只能改次数和首次间隔 —— 系数和上限是类型级的判断，没有理由按节点改。
+ */
+export type NodeRetryOverride = { maxAttempts?: number; initialMs?: number } | null
 
 /**
  * 节点怎么执行。
@@ -172,6 +204,13 @@ export interface NodeType {
   category: string
   icon: string
   description?: string
+  /**
+   * 搜索别名：用户在加节点时想的是动作（「发群」「查数」「调接口」），不是节点名。
+   * 没有它的节点只能按名字和描述搜到
+   */
+  keywords?: string[]
+  /** 说明文档。Inspector 标题栏的 ? 链到这里 */
+  docsUrl?: string
   input: JsonSchema
   output: JsonSchema
   /** 缺省 [{ id: 'out', label: '' }] */
@@ -189,8 +228,28 @@ export interface NodeType {
   }
 }
 
+/**
+ * 节点实例级的设置（参数之外、每种节点都有的那几项）。
+ *
+ * 对齐 n8n 的 Settings 标签 / Dify 的节点描述 / Activepieces 的 Skip step。
+ * 以前只有 onError 一项 —— 调 SQL 时想让企微节点先别发，只能把它删掉再加回来。
+ */
+export interface NodeSettings {
+  /** 备注。卡片下一行灰字，不参与执行，也不算「逻辑改动」（和拖位置同类） */
+  note?: string
+  /**
+   * 暂停：跳过不执行，但对下游**透明** —— 它的上游活，它的下游就活
+   * （n8n Deactivate / AP Skip 的语义）。控制节点（条件 / 循环）不能暂停：
+   * 引擎要读它们的判定结果，没有这行下游永远卡住。
+   * 下游引用它的输出会在校验期报错，不会静默拿到空值。
+   */
+  disabled?: boolean
+  /** 重试覆盖，见 NodeRetryOverride */
+  retry?: NodeRetryOverride
+}
+
 /** 挂在画布节点上的业务数据 */
-export interface FlowNodeData extends Record<string, unknown> {
+export interface FlowNodeData extends Record<string, unknown>, NodeSettings {
   typeId: string
   typeVersion: string
   label: string
@@ -200,12 +259,30 @@ export interface FlowNodeData extends Record<string, unknown> {
   probedOutput?: Record<string, JsonSchema>
 }
 
+/**
+ * 流程入参的**种类**（表单怎么画），不是 JSON Schema 的 type。
+ *
+ * date / select 不是 JSON Schema 类型：落到定义里是 `string + format: 'date'` /
+ * `string + enum`（见 flowGraph.inputSchemaOf），这样 webhook 入参校验、导出 JSON、
+ * 老版本前端都能照常读。
+ */
+export type FlowInputKind = 'string' | 'integer' | 'number' | 'boolean' | 'date' | 'select'
+
 /** 流程入参的一行（渲染成手动运行表单 + $.trigger.* 变量） */
 export interface FlowInputField {
   key: string
   title: string
-  type: 'string' | 'integer' | 'boolean'
+  type: FlowInputKind
   required: boolean
+  /**
+   * 默认值，存表单里的原始文本（运行时按 type 转换）。
+   * 日报的「日期」以前是每天手敲一遍的文本框 —— 有默认值之后打开就能点运行
+   */
+  default?: string
+  /** 给填表单的人看的一句话，当 placeholder */
+  description?: string
+  /** type === 'select' 时的候选项 */
+  options?: string[]
 }
 
 /** 导出的流程定义 —— 逻辑与布局分离 */
@@ -216,7 +293,7 @@ export interface FlowDefinition {
   inputs: JsonSchema
   /** schedule 时额外带上 mode / at / cron 等排程参数，供调度器读取 */
   trigger: { kind: 'manual' | 'schedule' | 'webhook' } & Record<string, unknown>
-  nodes: Array<{
+  nodes: Array<NodeSettings & {
     id: string
     type: string
     typeVersion: string
@@ -249,6 +326,11 @@ export type StepStatus = 'waiting' | 'running' | 'success' | 'error' | 'skipped'
 export interface StepRun {
   nodeId: string
   status: StepStatus
+  /**
+   * status='skipped' 时为什么没跑。和 worker 写进 steps.skip_reason 的是同一个词表。
+   * 没有它的话「暂停的」和「分支没命中的」在界面上长得一模一样
+   */
+  skipReason?: SkipReason
   startedAt: number
   durationMs: number
   /** 表达式解析后的实际入参 —— 服务真正收到的东西 */

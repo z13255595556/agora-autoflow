@@ -203,6 +203,8 @@ export interface RemoteFlow {
   triggerKind: string
   /** 草稿和已发布那一版不一致（只比逻辑不比布局） */
   hasUnpublishedChanges: boolean
+  /** 调度器记的下次触发时刻（ISO）。没发布 / 没定时 / 调度停用时为 null */
+  nextFireAt?: string | null
   /**
    * 归属（邮箱）。null = 还没有主 —— 是 owner 那次迁移之前建的流程。
    *
@@ -425,6 +427,27 @@ export function updateFlowWebhook(flowId: string, settings: WebhookSettings) {
   return req<RemoteWebhook>(`/api/flows/${encodeURIComponent(flowId)}/webhook`, {
     method: 'PUT',
     body: JSON.stringify(settings),
+  })
+}
+
+// ---------------------------------------------------------------- 失败通知
+//
+// 告警链路（worker/alerts.ts：登记、600 秒抑制、3 次重试）一直在，只是 flows.notify_config
+// 这一列没有任何接口能写。这是它的入口。单独一个子资源而不是挂在草稿保存上：
+// 草稿几秒存一次、不记审计；通知配置改一次记一次
+
+export interface NotifyConfig {
+  webhook: string
+}
+
+export function getFlowNotify(flowId: string) {
+  return req<{ notifyConfig: NotifyConfig | null }>(`/api/flows/${encodeURIComponent(flowId)}/notify`)
+}
+
+export function setFlowNotify(flowId: string, webhook: string | null) {
+  return req<{ notifyConfig: NotifyConfig | null }>(`/api/flows/${encodeURIComponent(flowId)}/notify`, {
+    method: 'PUT',
+    body: JSON.stringify({ webhook }),
   })
 }
 

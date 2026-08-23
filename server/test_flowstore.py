@@ -124,6 +124,18 @@ moved["layout"]["n2"] = {"x": 400, "y": 80}
 flowstore.save_draft(fid, moved, "alice")
 ok("只改布局不算未发布改动", flowstore.get_flow(fid)["hasUnpublishedChanges"], False)
 
+# 节点上的备注和拖位置同类 —— 不参与执行，改了不算"有未发布的改动"；
+# 暂停（disabled）会改变线上跑出来的结果，必须算
+noted = definition(sql="SELECT 3")
+noted["nodes"][1]["note"] = "这条 SQL 只看昨天"
+flowstore.save_draft(fid, noted, "alice")
+ok("只改备注不算未发布改动", flowstore.get_flow(fid)["hasUnpublishedChanges"], False)
+paused = definition(sql="SELECT 3")
+paused["nodes"][1]["disabled"] = True
+flowstore.save_draft(fid, paused, "alice")
+ok("暂停节点算未发布改动", flowstore.get_flow(fid)["hasUnpublishedChanges"], True)
+flowstore.save_draft(fid, definition(sql="SELECT 3"), "alice")
+
 # ★ 版本号是"线上跑的是哪一份"，不是"这个按钮被点过几次"。连点五下发布
 #   产生五个内容相同的版本之后，版本列表和运行记录里的版本号就不说明任何事了
 same = flowstore.publish(fid, "alice")
@@ -213,6 +225,38 @@ ok("审计记下了建 / 六次发布 / 两次切版本 / 归档",
 ok("审计记下了是谁", [r[1] for r in got], ["alice"] * 10)
 # 编辑器防抖自动保存几秒一次，每次记一条会把审计表变成击键日志
 ok("存草稿不进审计", "flow.save" in [r[0] for r in got], False)
+
+# ---------------------------------------------------------------- 失败通知
+#
+# 这一列 worker 一直在读（alerts.ts），但在此之前没有任何接口能写它
+
+nfid = new_id()
+flowstore.create_flow(nfid, definition("要告警的流程"), "alice")
+ok("默认没有通知配置", flowstore.get_flow(nfid)["notifyConfig"], None)
+ok("列表里也带着这个字段",
+   next(f for f in flowstore.list_flows(viewer="alice") if f["id"] == nfid)["notifyConfig"], None)
+good_hook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdefgh-1234"
+ok("设置企微地址", flowstore.set_notify_config(nfid, {"webhook": good_hook}, "alice"),
+   {"notifyConfig": {"webhook": good_hook}})
+ok("读回来是存进去的", flowstore.get_flow(nfid)["notifyConfig"], {"webhook": good_hook})
+raises("★ 不是企微机器人地址一律拒绝 —— 填错了告警会静默发不出去", FlowDefError,
+       lambda: flowstore.set_notify_config(nfid, {"webhook": "https://example.com/hook"}, "alice"))
+raises("空地址拒绝", FlowDefError,
+       lambda: flowstore.set_notify_config(nfid, {"webhook": "   "}, "alice"))
+ok("传 None 关掉", flowstore.set_notify_config(nfid, None, "alice"), {"notifyConfig": None})
+ok("关掉后读回 None", flowstore.get_flow(nfid)["notifyConfig"], None)
+raises("别人的流程设不了", flowstore.NotFound,
+       lambda: flowstore.set_notify_config(nfid, {"webhook": good_hook}, "bob", viewer="bob"))
+with db.pool().connection() as conn:
+    nrows = conn.execute(
+        "SELECT detail FROM audit WHERE target_id = %s AND action = 'flow.notify' ORDER BY id", (nfid,)
+    ).fetchall()
+ok("改通知配置记审计（开、关各一条）", [r[0]["enabled"] for r in nrows], [True, False])
+ok("★ 审计里不存整条地址 —— 它等同凭证", "abcdefgh-1234" in str(nrows[0][0]), False)
+with db.pool().connection() as conn:
+    conn.execute("DELETE FROM audit WHERE target_id = %s", (nfid,))
+    conn.execute("DELETE FROM flows WHERE id = %s", (nfid,))
+    conn.commit()
 
 # ---------------------------------------------------------------- 归属与隔离
 #

@@ -39,6 +39,11 @@ export interface DecideStep {
    * 而且条件里可能引用了已经被清理的大 output
    */
   matched?: boolean
+  /**
+   * skipped 的原因。只有一种会影响判定：`disabled`（用户暂停的）——
+   * 它是「活着但没跑」，下游要照常判活；其余 skipped 都是死的
+   */
+  skipReason?: SkipReason
 }
 
 export interface DecideRun {
@@ -74,6 +79,25 @@ export interface DecideResult {
 }
 
 const TOP: number[] = []
+
+/**
+ * 这个节点能不能被暂停。条件 / 循环节点不能：decide 要读它们的 matched / fanout，
+ * 没有这行下游永远 stuck；触发器不能：它是运行的起点。
+ * 界面上不给这些节点画开关，这里再挡一道 —— 导入的 JSON 能写任何东西
+ */
+export function pausable(n: FNode): boolean {
+  const t = NODE_TYPE_MAP.get(n.data.typeId)
+  if (!t || t.hasInput === false || t.visualOnly) return false
+  return n.data.typeId !== 'flow.if' && n.data.typeId !== 'flow.foreach'
+}
+
+/** 一个源步骤算不算「活」：成功、失败但 continue、或**暂停**（活着但没跑） */
+function sourceAlive(s: DecideStep | undefined, srcNode: FNode | undefined): boolean {
+  if (s?.status === 'success') return true
+  if (s?.status === 'skipped') return s.skipReason?.kind === 'disabled'
+  if (s?.status !== 'failed') return false
+  return srcNode?.data.onError === 'continue'
+}
 
 /** 同一路径下的那一行 */
 function stepAt(steps: readonly DecideStep[], nodeId: string, loopPath: number[]): DecideStep | undefined {
@@ -205,13 +229,10 @@ export function decide(input: DecideInput): DecideResult {
         continue
       }
 
-      // 活 = ∃ 入边源 success，或（源 failed 且**该源节点** onError='continue'）。
+      // 活 = ∃ 入边源 success，或（源 failed 且**该源节点** onError='continue'），
+      // 或源是**暂停**的（skipped{disabled}：它自己活着才会被记成这种 skipped）。
       // canceled 一律不算活 —— 否则取消过程中 reaper 写的 canceled 会放行下游
-      const alive = srcSteps.some(({ e, s }) => {
-        if (s?.status === 'success') return true
-        if (s?.status !== 'failed') return false
-        return nodes.find((x) => x.id === e.source)?.data.onError === 'continue'
-      })
+      const alive = srcSteps.some(({ e, s }) => sourceAlive(s, nodes.find((x) => x.id === e.source)))
       if (!alive) {
         const failedSrc = srcSteps.find(({ s }) => s?.status === 'failed')
         toSkip.push({
@@ -221,6 +242,15 @@ export function decide(input: DecideInput): DecideResult {
             ? { kind: 'upstream_failed', src: failedSrc.e.source }
             : { kind: 'unreachable' },
         })
+        continue
+      }
+
+      // 暂停的节点：走到这里说明它是活的，但用户说了别跑。记成 skipped{disabled}
+      // 而不是什么都不记 —— 下游靠这一行判活，运行详情也得能看出"是你自己暂停的"。
+      // 只在判完活性之后才这么做：否则上游还没跑完就把它记成 skipped，
+      // 下游会拿一个"终态"的源去判，把 pending 当成 dead
+      if (n.data.disabled && pausable(n)) {
+        if (!existing) toSkip.push({ nodeId: n.id, loopPath, reason: { kind: 'disabled' } })
         continue
       }
 

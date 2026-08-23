@@ -122,6 +122,16 @@ def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "nodeCount": len(draft.get("nodes") or []),
         "nodeTypes": flowdef.node_types(draft),
         "triggerKind": (draft.get("trigger") or {}).get("kind", "manual"),
+        # 调度器记的下次触发时刻（含 misfire / 重叠之后的实际值）。
+        # 列表页的「下次 明天 09:00」只能从这来 —— 从草稿算出来的是"发布后会怎样"，
+        # 而且本机没缓存过的流程在列表里只是个没有 trigger 的壳
+        "nextFireAt": (
+            row["next_fire_at"].isoformat()
+            if row.get("next_fire_at") and row.get("schedule_enabled") else None
+        ),
+        # 失败时通知到哪。这一列 worker 一直在读（alerts.ts），但在此之前没有任何
+        # 接口能写它 —— 告警链路是条修好了路没有入口的死路
+        "notifyConfig": row.get("notify_config"),
         # 「草稿和线上不一致」：定时和 webhook 跑的是已发布那一版，
         # 改了不发布线上不会变 —— 这件事必须能在列表页看见，否则
         # "我明明改了怎么没生效" 是一定会发生的
@@ -131,10 +141,57 @@ def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# 企微群机器人的 webhook 长这样；别的地址一律拒绝 —— 这一列是 worker 拿来直接 POST 的，
+# 填错了告警会静默发不出去，而告警发不出去这件事本身没人会知道
+WECOM_WEBHOOK_PREFIX = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
+
+
+def set_notify_config(flow_id: str, config: Optional[Dict[str, Any]], actor: Optional[str],
+                      viewer: Any = ANY) -> Dict[str, Any]:
+    """失败时通知到哪。**不走草稿保存那条路**：草稿是编辑器每几秒一次的自动保存，
+    刻意不记审计；通知配置是运维设置，改一次记一次。
+
+    config 为 None 或 {} = 关掉。只收 {webhook}；webhook 必须是企微机器人地址。
+    """
+    cleaned: Optional[Dict[str, Any]] = None
+    if config:
+        hook = config.get("webhook")
+        if not isinstance(hook, str) or not hook.strip():
+            raise flowdef.FlowDefError("notifyConfig.webhook 必须是非空字符串")
+        hook = hook.strip()
+        if not hook.startswith(WECOM_WEBHOOK_PREFIX):
+            raise flowdef.FlowDefError(f"notifyConfig.webhook 必须是企微群机器人地址（{WECOM_WEBHOOK_PREFIX}?key=…）")
+        cleaned = {"webhook": hook}
+    with db.pool().connection() as conn:
+        _assert_visible(conn, flow_id, viewer)
+        conn.execute(
+            "UPDATE flows SET notify_config = %s WHERE id = %s",
+            (Jsonb(cleaned) if cleaned else None, flow_id),
+        )
+        # 审计只记开关和地址的末几位：整条地址等同凭证，不进审计表
+        _audit(conn, actor, "flow.notify", flow_id,
+               {"enabled": bool(cleaned), "webhook": _mask(cleaned["webhook"]) if cleaned else None})
+        conn.commit()
+    return {"notifyConfig": cleaned}
+
+
+def _mask(hook: str) -> str:
+    key = hook.split("key=")[-1] if "key=" in hook else hook
+    return f"…key={key[:4]}***{key[-2:]}" if len(key) > 8 else "…key=***"
+
+
 def _differs(draft: Any, published: Any) -> bool:
-    # 只比逻辑，不比布局：拖了一下节点位置不该显示成"有未发布的改动"
+    # 只比逻辑，不比布局：拖了一下节点位置不该显示成"有未发布的改动"。
+    # 节点上的备注（note）和拖位置同类 —— 它不参与执行。disabled **算**改动：
+    # 暂停一个节点会改变线上跑出来的结果
     def logic(d: Any) -> str:
         rest = {k: v for k, v in (d or {}).items() if k not in {"layout", "version"}}
+        nodes = rest.get("nodes")
+        if isinstance(nodes, list):
+            rest["nodes"] = [
+                {k: v for k, v in n.items() if k != "note"} if isinstance(n, dict) else n
+                for n in nodes
+            ]
         return json.dumps(rest, ensure_ascii=False, sort_keys=True)
 
     return logic(draft) != logic(published)
@@ -197,10 +254,12 @@ def list_flows(include_archived: bool = False, viewer: Any = None) -> List[Dict[
         rows = _rows(
             conn,
             "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
-            "       v.definition AS published_definition"
+            "       f.notify_config, v.definition AS published_definition,"
+            "       s.next_fire_at, s.enabled AS schedule_enabled"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
             "    ON v.flow_id = f.id AND v.version = f.active_version"
+            "  LEFT JOIN schedules s ON s.flow_id = f.id"
             + (" WHERE " + VISIBLE if clause else " WHERE true")
             + ("" if include_archived else " AND f.archived_at IS NULL")
             + " ORDER BY f.updated_at DESC",
@@ -214,10 +273,12 @@ def get_flow(flow_id: str, viewer: Optional[str] = ANY) -> Dict[str, Any]:
         row = _one(
             conn,
             "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
-            "       v.definition AS published_definition"
+            "       f.notify_config, v.definition AS published_definition,"
+            "       s.next_fire_at, s.enabled AS schedule_enabled"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
             "    ON v.flow_id = f.id AND v.version = f.active_version"
+            "  LEFT JOIN schedules s ON s.flow_id = f.id"
             " WHERE f.id = %s" + ("" if viewer is ANY else " AND " + VISIBLE),
             (flow_id,) if viewer is ANY else (flow_id, viewer),
         )

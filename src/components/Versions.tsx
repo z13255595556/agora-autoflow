@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listRemoteVersions, type FlowVersionMeta } from '../lib/client'
 import { formatDate } from '../lib/datefn'
+import { pushToast } from '../lib/toast'
 import Icon from './Icon'
 
 /**
@@ -32,7 +33,7 @@ export function PublishDialog({
     setBusy(true)
     const err = await onPublish(note)
     setBusy(false)
-    if (err) window.alert(`发布失败：${err}`)
+    if (err) pushToast({ tone: 'error', text: `发布失败：${err}` })
     else onCancel()
   }
 
@@ -127,7 +128,7 @@ export function VersionHistory({
     setBusy(v.version)
     const err = await onRollback(v.version)
     setBusy(null)
-    if (err) window.alert(`切换失败：${err}`)
+    if (err) pushToast({ tone: 'error', text: `切换失败：${err}` })
     else onClose()
   }
 

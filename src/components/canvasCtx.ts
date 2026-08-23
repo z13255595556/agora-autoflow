@@ -12,6 +12,7 @@ import { createContext, useContext } from 'react'
 export type PickTarget =
   /** 落在画布空白处（坐标是屏幕坐标，由 picker 换算） */
   | { kind: 'free' }
+  | { kind: 'trigger' }
   /** 接在某个节点的某个出口后面 */
   | { kind: 'after'; nodeId: string; port: string }
   /** 从出口拖到空白画布后，在松手位置创建并连接节点 */
