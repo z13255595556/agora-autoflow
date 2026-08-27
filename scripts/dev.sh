@@ -35,9 +35,14 @@ if lsof -tiTCP:"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   sleep 1
 fi
 
-echo "→ 启动 SQL 节点服务 :$API_PORT"
+# --reload：改一行 Python 就自动重起。不加的话每次改后端都要整个停掉再起，
+# 而"改了没生效"这种问题查起来很贵 —— 现象是代码明明改了行为却是旧的。
+# --reload-dir 限定只看 sql_service：不限的话 reloader 会去遍历 .venv 和
+# node_modules，启动慢好几秒，还会因为文件数过多在 macOS 上撞 fd 上限。
+echo "→ 启动 SQL 节点服务 :$API_PORT（改 server/ 下的代码会自动重载）"
 (cd server && exec ../"$VENV"/bin/python -m uvicorn sql_service.main:app \
-  --port "$API_PORT" --host 127.0.0.1 --log-level warning) &
+  --port "$API_PORT" --host 127.0.0.1 --log-level warning \
+  --reload --reload-dir sql_service) &
 API_PID=$!
 
 cleanup() {
@@ -45,6 +50,9 @@ cleanup() {
   echo "→ 收掉 SQL 节点服务"
   kill "$API_PID" 2>/dev/null || true
   wait "$API_PID" 2>/dev/null || true
+  # reloader 是父子两个进程。父进程收到 TERM 时一般会带走子进程，但它没来得及
+  # （或者被 -9 掉）时子进程会继续占着端口，下次启动就撞端口。按端口再扫一遍兜底
+  lsof -tiTCP:"$API_PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
