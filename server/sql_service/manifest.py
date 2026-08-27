@@ -32,7 +32,7 @@ SQL_QUERY: Dict[str, Any] = {
     "docsUrl": "https://github.com/z13255595556/agora-autoflow#sql-节点真实执行",
     "category": "数据查询",
     "icon": "▤",
-    "description": "在 DataLego 数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接",
+    "description": "在 DataLego 上跑只读 SQL，参数按类型渲染",
     "input": {
         "type": "object",
         "required": ["engine", "sql"],
@@ -47,14 +47,13 @@ SQL_QUERY: Dict[str, Any] = {
             "sql": {
                 "type": "string",
                 "title": "SQL",
-                "description": "键入 \"/\" 增加变量",
                 # 裸 {{name}} 由本服务渲染，前端别碰；值从兄弟字段 params 取
                 "x-placeholders": {"valuesFrom": "params"},
                 "x-ui": {
                     "widget": "code",
                     "language": "sql",
                     "rows": 8,
-                    "placeholder": "SELECT vid, name FROM ods.vendor WHERE vid = {{vid}}",
+                    "placeholder": "SELECT vid, name FROM ods.vendor WHERE vid = {{vid}}\n\n键入 / 引用上游变量",
                 },
             },
             "params": {
@@ -81,7 +80,6 @@ SQL_QUERY: Dict[str, Any] = {
                 "default": SQL_TIMEOUT_MINUTES,
                 "minimum": 1,
                 "maximum": SQL_TIMEOUT_MAX_MINUTES,
-                "description": "跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源",
                 "x-ui": {"group": "advanced"},
             },
             "queue": {
@@ -110,7 +108,7 @@ SQL_QUERY: Dict[str, Any] = {
             "rowCount": {
                 "type": "integer",
                 "title": "返回行数",
-                "description": "实际取回的行数（已受行数上限截断），不是匹配总数。truncated 为真时二者不相等",
+                "description": "实际取回的行数（已受行数上限截断），不是匹配总数",
             },
             "columns": {"type": "array", "title": "列信息", "items": {"type": "object"}},
             "truncated": {"type": "boolean", "title": "是否触到行数上限"},
@@ -154,8 +152,9 @@ NOTIFY_WECOM: Dict[str, Any] = {
     "docsUrl": "https://github.com/z13255595556/agora-autoflow#企微通知节点真实发送",
     "category": "输出",
     "icon": "✉",
-    "description": "推到企微群。填群机器人的 webhook 地址",
-    "ports": [],
+    "description": "推消息到企微群",
+    # 是「输出」类，但**不是**终点：通知可以发生在流程任意一步（跑完一段先播报，
+    # 再接着查下一段）。省略 ports 就落到默认的单出口 out。
     "input": {
         "type": "object",
         "required": ["webhook", "msgtype", "content"],
@@ -179,19 +178,17 @@ NOTIFY_WECOM: Dict[str, Any] = {
             "content": {
                 "type": "string",
                 "title": "内容",
-                # 描述写给新手看：先说怎么用，别一上来甩一串过滤器语法。
-                # 过滤器的完整清单在下面的选列器和预览里都能看到。
-                "description": "点下面的「插入表格」把查询结果放进来，不用手写表达式",
                 "x-ui": {
                     "widget": "textarea",
                     "rows": 10,
-                    # 实时预览：发之前先看看成品和字节数。表格插入走取值面板的「表格」页签
-                    # （这里曾经声明过 "table"，但前端从没消费过它）
+                    # 实时预览：发之前先看看成品和字节数。表格从取值面板的「表格」页签插，
+                    # 没有单独的「插入表格」按钮 —— 曾经声明过的 "table" inserter 前端从没消费过。
                     "inserters": ["message"],
                     "placeholder": (
                         "## 卡顿排查结果\n"
                         "共 {{ $.nodes.n2.output.rowCount }} 条\n\n"
-                        "{{ $.nodes.n2.output.rows | table(uid, avg_dc, cnt_dc) }}"
+                        "{{ $.nodes.n2.output.rows | table(uid, avg_dc, cnt_dc) }}\n\n"
+                        "键入 / 引用上游变量"
                     ),
                 },
             },
@@ -369,16 +366,16 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
     "keywords": ["建表", "存结果", "自建库", "pg", "postgres"],
     "category": "数据查询",
     "icon": "▤",
-    "description": "在你自己的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库",
+    "description": "在你的独立工作区建表和增删改查，不访问系统库",
     "input": {
         "type": "object", "required": ["sql"],
         "properties": {
             "sql": {
                 "type": "string", "title": "SQL",
-                "description": "一次执行一条 SQL；可在个人工作区创建、查询和修改表",
+                "description": "一次只执行一条 SQL",
                 "x-placeholders": {"valuesFrom": "params"},
                 "x-ui": {"widget": "code", "language": "sql", "rows": 8,
-                           "placeholder": "CREATE TABLE report (id bigint, name text)"},
+                           "placeholder": "CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量"},
             },
             "params": {"type": "object", "title": "占位符参数", "additionalProperties": True, "x-ui": {"widget": "kv"}},
             "limit": {

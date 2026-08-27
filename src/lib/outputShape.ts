@@ -207,7 +207,9 @@ export function describeOutput(node: FNode, ctx: DescribeCtx = {}): OutputShape 
 
   const rootUi = uiOf(t.output)
   // ports 为空 = 没有出口 = 连不出去 = 永远不可能是别人的上游。
-  // flow.end / notify.wecom / canvas.note 都是这样，不需要额外注解。
+  // flow.end / canvas.note 是这样，不需要额外注解。
+  // notify.wecom **不**在此列：它有出口，sent / bytes / target 下游引用得到
+  //（"没发出去就走另一条分支"要靠它）。
   const hidden = Boolean(t.visualOnly) || portsOf(t).length === 0 || Boolean(rootUi.notASource)
   const probeable = t.output['x-dynamic'] === 'probe'
 

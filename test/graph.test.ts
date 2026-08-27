@@ -19,6 +19,7 @@ const def = (edges: FlowDefinition['edges']): FlowDefinition => ({
     { id: 'n1', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' },
     { id: 'n2', type: 'flow.if', typeVersion: '1.0.0', name: '条件', params: {}, onError: 'fail' },
     { id: 'n3', type: 'notify.wecom', typeVersion: '1.0.0', name: '企微', params: {}, onError: 'fail' },
+    { id: 'n4', type: 'flow.end', typeVersion: '1.0.0', name: '结束', params: {}, onError: 'fail' },
   ],
   edges,
   layout: {},
@@ -58,10 +59,21 @@ test('★ 反过来也拦：单口节点的边挂在 true 上同样是错的', (
 })
 
 test('终点节点（ports: []）不能有出边', () => {
+  // 样本用 flow.end。notify.wecom 曾经也在这条规则里，但通知是可以发生在
+  // 流程中段的（播报完接着跑），它现在有出口了。
+  const msgs = problemsOf([
+    { from: 'n1', to: 'n2' },
+    { from: 'n2', to: 'n4', port: 'true' },
+    { from: 'n4', to: 'n2' },
+  ])
+  assert.ok(msgs.some((m) => m.includes('终点节点')), msgs.join(' | '))
+})
+
+test('★ 企微通知不是终点：它的出边合法，通知可以发生在流程中段', () => {
   const msgs = problemsOf([
     { from: 'n1', to: 'n2' },
     { from: 'n2', to: 'n3', port: 'true' },
-    { from: 'n3', to: 'n2' },
+    { from: 'n3', to: 'n4' },
   ])
-  assert.ok(msgs.some((m) => m.includes('终点节点')), msgs.join(' | '))
+  assert.deepEqual(msgs.filter((m) => m.includes('出口') || m.includes('终点')), [])
 })

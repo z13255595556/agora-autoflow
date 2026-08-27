@@ -122,11 +122,14 @@ test('variable.assign：spread 之后用户看到的是自己起的名字，路�
   assert.deepEqual(shape.root.fields.map((f) => f.label).sort(), ['customerId', 'token'])
 })
 
-test('notify.wecom：全是运行元数据 → status 形态，默认折叠，且不作为数据源', () => {
+test('notify.wecom：全是运行元数据 → status 形态，默认折叠；但**是**可用的数据源', () => {
   const shape = describeOutput(mkNode('n4', 'notify.wecom'), { run: mkRun('n4', { sent: true, bytes: 120, target: 'xx' }) })
   assert.equal(shape.root.kind, 'status')
   assert.equal(shape.root.collapsed, true)
-  assert.equal(shape.hidden, true)     // ports: [] → 连不出去
+  // 通知可以发生在流程中段，所以它有出口 → 下游引用得到 sent / bytes / target。
+  // 「运行元数据」只决定默认折叠，不决定藏不藏 —— 两件事别混。
+  assert.equal(shape.hidden, false)
+  assert.deepEqual(shape.root.fields.map((f) => f.path).sort(), ['bytes', 'sent', 'target'])
 })
 
 test('flow.end 不作为上游数据源', () => {

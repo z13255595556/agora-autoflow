@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useFlow } from '../store'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
 import { availableVars } from '../lib/vars'
@@ -9,6 +9,8 @@ import SchemaForm from './SchemaForm'
 import WebhookPanel from './WebhookPanel'
 import { formatDate } from '../lib/datefn'
 import { pushToast } from '../lib/toast'
+import DataReferenceDrawer from './DataReferenceDrawer'
+import { useReferenceHost } from './ReferencePickerContext'
 
 /**
  * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
@@ -29,6 +31,11 @@ export default function NodeDetailView() {
   const testStep = useFlow((s) => s.testStep)
   const updateNodeParam = useFlow((s) => s.updateNodeParam)
   const dirtyNodes = useFlow((s) => s.dirtyNodes)
+
+  const { request, close } = useReferenceHost(ndvNodeId ?? '')
+  // 收回的 180ms 里内容得留着，理由同侧栏
+  const lastRequest = useRef(request)
+  if (request) lastRequest.current = request
 
   const [outMode, setOutMode] = useState<'table' | 'json'>('table')
   const [iterIdx, setIterIdx] = useState<number | null>(null)
@@ -87,7 +94,7 @@ export default function NodeDetailView() {
 
   return (
     <div className="ndv__mask" onClick={() => openNdv(null)}>
-      <div className="ndv" onClick={(e) => e.stopPropagation()}>
+      <div className={`ndv${request ? ' is-open' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="ndv__head">
           <span className="ins__icon" style={{ background: color }}>{t.icon}</span>
           <span className="ndv__title">{node.data.label}</span>
@@ -105,7 +112,7 @@ export default function NodeDetailView() {
 
         <div className="ndv__cols">
           {/* -------- 输入 -------- */}
-          <section className="ndv__col ndv__col--input">
+          <section className="ndv__col ndv__col--input" style={{ flex: `0 0 ${request ? 200 : 300}px` }}>
             <div className="ndv__coltitle">输入</div>
             <div className="ndv__colbody">
               <div className="ndv__sec">解析后入参 <em>服务实际收到的</em></div>
@@ -137,6 +144,13 @@ export default function NodeDetailView() {
             </div>
           </section>
 
+          {/* -------- 取值（抽屉） --------
+              放在「参数」前面：输出栏是 order:-1，所以视觉上就是
+              输出 | 输入 | 取值 | 参数，取值栏正好贴着正在填的那一栏 */}
+          <section className="ndv__col ndv__col--pick">
+            <DataReferenceDrawer request={request ?? lastRequest.current} inert={!request} onClose={close} />
+          </section>
+
           {/* -------- 参数 -------- */}
           <section className="ndv__col ndv__col--params">
             <div className="ndv__coltitle">参数</div>
@@ -155,7 +169,7 @@ export default function NodeDetailView() {
           </section>
 
           {/* -------- 输出 -------- */}
-          <section className="ndv__col ndv__col--output">
+          <section className="ndv__col ndv__col--output" style={{ flex: `0 0 ${request ? 240 : 400}px` }}>
             <div className="ndv__coltitle">
               输出
               {steps.length > 1 && (

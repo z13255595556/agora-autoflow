@@ -499,9 +499,8 @@ button { cursor: pointer; padding: 0; }
   width: 24px; height: 24px; display: grid; place-items: center;
   background: none; border: none; border-radius: var(--r-sm);
   color: var(--text-faint); font-size: 15px; line-height: 1;
-  opacity: 0; transition: opacity .14s, background .14s;
+  transition: background .14s, color .14s;
 }
-.fcard:hover .fcard__more, .fcard__more:focus-visible { opacity: 1; }
 .fcard__more:hover { background: var(--surface-3); color: var(--text); }
 
 /* 一条流程都没有时的首屏 */
@@ -1533,25 +1532,86 @@ body.is-dragging-node * { cursor: grabbing !important; user-select: none !import
 .vardrawer__copy { flex: none; font-size: 10px; color: var(--primary); opacity: 0; min-width: 26px; text-align: right; }
 .vardrawer__row:hover .vardrawer__copy { opacity: 1; }
 
-/* ================================================================ 可视化数据引用 */
-.dataref {
-  position: fixed;
-  z-index: 75;
-  top: 52px;
-  right: 424px;
-  bottom: 0;
-  width: min(560px, calc(100vw - 448px));
-  min-width: 420px;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border-left: 1px solid var(--border);
-  box-shadow: -12px 0 32px color-mix(in srgb, var(--text) 8%, transparent);
-  animation: dataref-in 160ms ease-out;
+/* ================================================================ 取值抽屉
+ *
+ * 取值栏不是浮在编辑器上的面板，是编辑器自己的一栏 —— 同一张卡、同一层
+ * 阴影、同一个圆角，中间只有一道 1px。以前它是 `position: fixed; right: 424px`，
+ * 于是两件事同时成立：侧栏态里它和配置卡片长得不一样、中间还空一条画布；
+ * 放大态里它 z-index 75 压在 z-index 60 的 NDV 上，从弹窗上下两头戳出去、
+ * 把「输入」整栏盖死。
+ *
+ * 三条规矩决定了它像不像抽屉，缺一条都不像：
+ *
+ * 1. 参数栏钉死。卡片 `right` 不动、只动 `width`，所以拉出的整个过程，
+ *    正在填的那个字段一个像素都不挪 —— 抽屉是从它左边被拽出来的。
+ * 2. 抽屉里的内容宽度写死，靠外层裁切露出来。跟着容器宽度排版的话，文字
+ *    每一帧都在重排，那是"栏在长大"，不是"抽屉被拉出来"。
+ * 3. 拉和收用不同的曲线。拉出减速（有重量地停住），收回加速（干脆离开）；
+ *    收比拉快 60ms —— 同一条曲线来回会显得黏。
+ */
+.nx-drawer-host {
+  flex-direction: row;
+  width: 400px;
+  transition: width 180ms cubic-bezier(.4, 0, 1, 1);
 }
-@keyframes dataref-in { from { opacity: 0; transform: translateX(16px); } }
+.nx-drawer-host.is-open { width: 908px; transition: width 240ms cubic-bezier(.16, 1, .3, 1); }
+.nx-drawer { flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
+/* 定宽的一层。398 而不是 400：卡片 box-sizing 是 border-box，400 里有 2px 边框，
+   差这 2px，拉出的瞬间参数栏会左右各抖一下 */
+.nx-col-params { flex: none; width: 398px; display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+.nx-drawer__inner {
+  flex: none; width: 507px;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+  transform: translateX(-18px);
+  transition: transform 180ms cubic-bezier(.4, 0, 1, 1);
+}
+.is-open .nx-drawer__inner { transform: none; transition: transform 240ms cubic-bezier(.16, 1, .3, 1); }
+
+/* 放大态：弹窗自己变宽，取值栏从「参数」左边拉出来。
+   谁也不盖谁 —— 它是弹窗里的一栏，不是浮在它上面的东西 */
+.ndv { transition: width 180ms cubic-bezier(.4, 0, 1, 1); }
+.ndv.is-open { width: min(1300px, 96vw); transition: width 240ms cubic-bezier(.16, 1, .3, 1); }
+.ndv__col { transition: flex-basis 180ms cubic-bezier(.4, 0, 1, 1); }
+.ndv.is-open .ndv__col { transition: flex-basis 240ms cubic-bezier(.16, 1, .3, 1); }
+.ndv__col--pick { flex: 0 0 0; min-width: 0; overflow: hidden; }
+.ndv.is-open .ndv__col--pick { flex-basis: 400px; }
+.ndv__col--pick > .nx-drawer__inner { flex: 1 1 auto; width: 399px; }
+/* 弹窗里它是四栏之一，栏头就得和另外三栏的标题严丝合缝 —— 差 16px 的参差，
+   正是"两块东西凑一起"看起来的样子。副标题在这一行塞不下，收掉：
+   钻进哪个节点，面包屑已经在下面写着了 */
+.ndv__col--pick .dataref__head { min-height: 0; height: 38px; padding: 0 6px 0 13px; }
+.ndv__col--pick .dataref__head strong { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; }
+.ndv__col--pick .dataref__head > div > span { display: none; }
+
+/* 正在填的那个字段：抽屉拉开时跟着亮起来，晚 60ms —— 视线先跟抽屉走 */
+.field--picking {
+  margin: -8px -10px; padding: 8px 10px; border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 38%, transparent);
+}
+.field { transition: background 200ms ease, box-shadow 200ms ease; }
+.field--picking { transition-delay: 60ms; }
+
+/* 说了不要动画的人，就别给他动画 */
+@media (prefers-reduced-motion: reduce) {
+  .nx-drawer-host, .nx-drawer-host.is-open, .nx-drawer__inner, .is-open .nx-drawer__inner,
+  .ndv, .ndv.is-open, .ndv__col, .ndv.is-open .ndv__col, .field {
+    transition-duration: 0ms !important;
+  }
+}
+
+/* 「为「内容」」那枚药丸：把抽屉和字段拴在一起 */
+.nx-for {
+  flex: none; display: inline-flex; align-items: center;
+  padding: 2px 9px; border-radius: 20px;
+  background: var(--primary-soft); color: var(--primary);
+  font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+
 .dataref__head {
-  min-height: 58px;
+  flex: none; min-height: 58px;
   padding: 10px 14px 9px 16px;
   display: flex;
   align-items: center;
@@ -1564,7 +1624,7 @@ body.is-dragging-node * { cursor: grabbing !important; user-select: none !import
 .dataref__head .iconbtn { margin-left: auto; }
 .dataref__search { padding: 10px 14px; border-bottom: 1px solid var(--border-soft); }
 .dataref__search input { width: 100%; height: 34px; }
-.dataref__body { min-height: 0; flex: 1; overflow: auto; padding: 12px 14px 110px; }
+.dataref__body { min-height: 0; flex: 1; overflow: auto; padding: 12px 14px 16px; }
 .dataref__section { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
 .dataref__section h3 { margin: 2px 2px 7px; color: var(--text-faint); font-size: 11px; font-weight: 600; }
 .dataref__source, .dataref__row {
@@ -1666,15 +1726,17 @@ body.is-dragging-node * { cursor: grabbing !important; user-select: none !import
 .dataref__array b { color: var(--text-faint); font: 500 10px var(--mono); }
 .dataref__array span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dataref__empty { padding: 24px 12px; color: var(--text-faint); font-size: 11px; text-align: center; }
-.dataref__preview { position: absolute; left: 0; right: 0; bottom: 0; min-height: 86px; padding: 11px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 96%, transparent); backdrop-filter: blur(10px); }
-.dataref__preview-main { min-width: 0; display: grid; gap: 2px; }
-.dataref__preview-main span { color: var(--text-faint); font-size: 9px; }
-.dataref__preview-main strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.dataref__preview-main em { overflow: hidden; color: var(--primary); font: normal 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.dataref__foot { flex: none; padding: 11px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.dataref__foot .dataref__preview-main { min-width: 0; display: grid; gap: 2px; }
+.dataref__foot .dataref__preview-main span { color: var(--text-faint); font-size: 9px; }
+.dataref__foot .dataref__preview-main strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.dataref__foot .dataref__preview-main em { overflow: hidden; color: var(--primary); font: normal 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .dataref__compat { grid-column: 1 / -1; color: var(--danger); font-size: 10px; }
 
+/* 窄屏：抽屉拉出来会把参数栏挤出屏幕，所以让卡片贴着可用宽度长 */
 @media (max-width: 1080px) {
-  .dataref { right: 0; top: 52px; width: min(560px, 92vw); min-width: 0; box-shadow: -16px 0 40px color-mix(in srgb, var(--text) 16%, transparent); }
+  .nx-drawer-host.is-open { width: calc(100vw - 24px); }
+  .nx-drawer__inner { width: calc(100vw - 24px - 398px); min-width: 320px; }
 }
 
 /* JSON 抽屉 */
@@ -1926,69 +1988,6 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 }
 
 /* ================================================================ 选列器 */
-/* 插入表格的入口。内容空着时是整条召唤按钮，写过东西之后收敛成普通条目 */
-.tpick__cta {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  margin-top: 8px; padding: 9px 11px; text-align: left; cursor: pointer;
-  background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--r);
-  transition: background .14s, border-color .14s;
-}
-.tpick__cta:hover { border-color: var(--primary); background: var(--primary-soft); }
-.tpick__cta-icon { font-size: 15px; color: var(--primary); flex: none; }
-.tpick__cta-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.tpick__cta-text b { font-size: 12px; font-weight: 600; }
-.tpick__cta-text em { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
-.tpick__cta--hero {
-  border-color: var(--primary); border-style: dashed; border-width: 1.5px;
-  background: var(--primary-soft);
-  padding: 12px 13px;
-}
-.tpick__cta--hero .tpick__cta-icon { font-size: 18px; }
-.tpick__cta--hero .tpick__cta-text b { font-size: 13px; }
-.tpick__cta--hero .tpick__cta-text em { color: var(--text-dim); }
-.tpick {
-  margin-top: 7px; padding: 10px 11px;
-  border: 1px solid var(--border-strong); border-radius: var(--r);
-  background: var(--surface-2);
-}
-.tpick__head { display: flex; align-items: center; font-size: 11.5px; font-weight: 600; margin-bottom: 9px; }
-.tpick__x {
-  margin-left: auto; background: none; border: none; cursor: pointer;
-  color: var(--text-faint); font-size: 15px; line-height: 1; padding: 0 2px;
-}
-.tpick__row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; margin-bottom: 8px; }
-.tpick__row select { flex: 1; }
-.tpick__filter { margin-bottom: 8px; font-size: 11.5px; padding: 4px 8px; }
-.tpick__cols { display: flex; flex-wrap: wrap; gap: 4px; max-height: 160px; overflow-y: auto; margin-bottom: 9px; }
-.tpick__col {
-  display: inline-flex; align-items: baseline; gap: 4px;
-  padding: 2px 8px; border-radius: 20px; cursor: pointer;
-  background: var(--surface); border: 1px solid var(--border);
-  font-size: 11px;
-}
-.tpick__col.is-on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
-.tpick__col code { font-family: var(--mono); }
-.tpick__col em { font-style: normal; font-size: 9.5px; color: var(--text-faint); }
-.tpick__actions { display: flex; gap: 6px; align-items: center; }
-.tpick__actions .btn--primary { margin-left: auto; }
-.tpick__empty { font-size: 11.5px; line-height: 1.65; color: var(--text-dim); }
-.tpick__probes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
-.tpick__warn {
-  margin-top: 9px; padding: 7px 9px; border-radius: var(--r);
-  background: var(--warn-soft);
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
-  font-size: 11px; line-height: 1.65;
-  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-}
-.tpick__warnsub { flex-basis: 100%; color: var(--text-faint); font-size: 10.5px; }
-.tpick__snippet {
-  display: block; margin-top: 9px; padding: 6px 8px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm);
-  font-family: var(--mono); font-size: 10px; color: var(--text-faint);
-  word-break: break-all;
-}
-
 /* ================================================================ 消息预览 */
 .mprev { margin-top: 9px; }
 .mprev--empty {
@@ -2387,10 +2386,6 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 .btn--ghost { background: transparent; border: none; color: var(--primary); font-size: 13px; }
 .fcard__nodes, .fcard__draft { display: block; font-size: 11.5px; color: var(--text-dim); margin-top: 4px; }
 .fcard__draft { color: var(--warn); }
-.fcard__history {
-  position: absolute; left: 12px; bottom: 10px;
-  border: none; background: none; color: var(--primary); font-size: 11.5px; padding: 0;
-}
 .editor-skeleton { display: flex; flex-direction: column; height: 100%; }
 .editor-skeleton__bar { height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .editor-skeleton__canvas { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--bg); }

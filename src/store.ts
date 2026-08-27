@@ -740,7 +740,7 @@ export const useFlow = create<FlowState>((set, get) => ({
     // 画布上没有对应的 Handle（看不见它存在），而引擎里 portOf 得到 'out'
     // 既不匹配 true 也不匹配 false，branchKill 永远杀不掉它：
     // **条件分支静默失效，且校验全绿**。
-    // 没有出口的节点（notify.wecom、flow.end）就不建这条出边，下游会显示
+    // 没有出口的节点（flow.end）就不建这条出边，下游会显示
     // 「没有连接上游」—— 让人看见，比留一条挂在不存在端口上的边强。
     const t = NODE_TYPE_MAP.get(typeId)
     const outPort = t ? portsOf(t)[0]?.id : 'out'

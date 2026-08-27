@@ -17,6 +17,14 @@ import Icon from './Icon'
 
 interface Props {
   request: ReferenceTarget | null
+  /**
+   * 抽屉正在收回去。
+   *
+   * 收回是一段 180ms 的宽度动画，这期间内容必须还在 —— 立刻卸掉的话，
+   * 缩回去的是一条空灰条，抽屉感全没了。所以宿主在收起时把**上一次**的
+   * request 继续传进来，只是打上 inert：照常渲染，但不再自作主张地关自己。
+   */
+  inert?: boolean
   onClose: () => void
 }
 
@@ -42,7 +50,7 @@ function previewAggregate(fn: AggregateFn, values: unknown[]): number | undefine
   return Math.max(...nums)
 }
 
-export default function DataReferenceDrawer({ request, onClose }: Props) {
+export default function DataReferenceDrawer({ request, inert, onClose }: Props) {
   const nodes = useFlow((s) => s.nodes)
   const edges = useFlow((s) => s.edges)
   const flowInputs = useFlow((s) => s.flowInputs)
@@ -107,8 +115,9 @@ export default function DataReferenceDrawer({ request, onClose }: Props) {
 
   const requestHasMatches = !keyword || quickHits.length > 0 || hits.length > 0
   useEffect(() => {
+    if (inert) return
     if (request && request.query.trim() && !requestHasMatches) onClose()
-  }, [request, requestHasMatches, onClose])
+  }, [inert, request, requestHasMatches, onClose])
 
   if (!request) return null
 
@@ -135,13 +144,16 @@ export default function DataReferenceDrawer({ request, onClose }: Props) {
   }
 
   return (
-    <aside className="dataref" aria-label="选择数据">
+    // 定宽的一层，靠外面那层 .nx-drawer 裁切露出来 —— 宽度跟着容器走的话，
+    // 拉出的每一帧文字都在重排，看起来是"栏在长大"而不是"抽屉被拉出来"
+    <aside className="nx-drawer__inner" aria-label="选择数据" aria-hidden={inert || undefined}>
       <header className="dataref__head">
         <div>
-          <strong>选择数据</strong>
+          <strong>取值</strong>
           <span>{sourceId ? selected?.shape.nodeLabel : '从上游节点中取值'}</span>
         </div>
-        <button className="iconbtn" title="关闭" onClick={onClose}><Icon name="close" /></button>
+        {request.fieldLabel && <span className="nx-for">为「{request.fieldLabel}」</span>}
+        <button className="iconbtn" title="收起取值栏" onClick={onClose}><Icon name="close" /></button>
       </header>
 
       <div className="dataref__search">
@@ -201,7 +213,7 @@ export default function DataReferenceDrawer({ request, onClose }: Props) {
       </div>
 
       {candidate && (
-        <footer className="dataref__preview">
+        <footer className="dataref__foot">
           <div className="dataref__preview-main">
             <span>将插入</span>
             <strong>{selectionDisplayLabel(candidate.selection) || candidate.selection.label}</strong>

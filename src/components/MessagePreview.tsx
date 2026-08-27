@@ -115,7 +115,7 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
   }, [content, run])
 
   if (!content.trim()) {
-    return <div className="mprev mprev--empty">内容还是空的。写点文字，或点上面的「▦ 插入表格」把查询结果放进来。</div>
+    return <div className="mprev mprev--empty">内容还是空的。写点文字，或键入 / 引用上游变量。</div>
   }
   if (rendered?.error) {
     return (

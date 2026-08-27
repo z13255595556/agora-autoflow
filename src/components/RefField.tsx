@@ -75,6 +75,8 @@ export interface RefFieldProps {
   autoComplete?: string
   /** 当前字段所属节点，供右侧数据选择器过滤上游并回填。 */
   nodeId?: string
+  /** 字段的显示名，取值栏顶上要写出来 */
+  fieldLabel?: string
   expectedType?: JsonType
 }
 
@@ -106,7 +108,7 @@ export default RefField
 // ------------------------------------------------------------------ 朴素模式
 
 const PlainField = forwardRef<RefFieldHandle, RefFieldProps>(function PlainField(
-  { value, onChange, multiline, rows, mono, secret, placeholder, className, ariaLabel, ariaInvalid, autoComplete, nodeId, expectedType },
+  { value, onChange, multiline, rows, mono, secret, placeholder, className, ariaLabel, ariaInvalid, autoComplete, nodeId, fieldLabel, expectedType },
   ref,
 ) {
   const elRef = useRef<TextEl | null>(null)
@@ -159,6 +161,7 @@ const PlainField = forwardRef<RefFieldHandle, RefFieldProps>(function PlainField
     if (picker && nodeId) {
       picker.open({
         nodeId,
+        fieldLabel,
         query: match.query,
         mixed: (nextValue.slice(0, match.start) + nextValue.slice(match.end)).trim().length > 0,
         expectedType,
@@ -221,7 +224,7 @@ interface ChipFieldProps extends RefFieldProps {
 }
 
 const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
-  { value, onChange, multiline, rows, mono, placeholder, className, ariaLabel, ariaInvalid, labelCtx, tokenizeOpts, nodeId, expectedType },
+  { value, onChange, multiline, rows, mono, placeholder, className, ariaLabel, ariaInvalid, labelCtx, tokenizeOpts, nodeId, fieldLabel, expectedType },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -347,6 +350,7 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
     if (picker && nodeId) {
       picker.open({
         nodeId,
+        fieldLabel,
         query: match.query,
         mixed: (text.slice(0, match.start) + text.slice(match.end)).trim().length > 0,
         expectedType,
@@ -496,7 +500,10 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
     if (r) commit(value.slice(0, r.start) + value.slice(r.end), r.start)
   }
 
-  const empty = value === ''
+  // 清空之后 DOM 里剩一个 <br>，序列化回来是 '\n' 而不是 ''。只比 '' 的话，
+  // 字段看着空空如也、占位说明却永远不出现 —— 和 MessagePreview 的 .trim()
+  // 对不上，就是「空输入框 + 内容还是空的」同时出现的那一幕
+  const empty = value.trim() === ''
 
   return (
     <>
@@ -556,6 +563,7 @@ const ChipField = forwardRef<RefFieldHandle, ChipFieldProps>(function ChipField(
             slashActive.current = false
             picker.open({
               nodeId,
+              fieldLabel,
               query: '',
               mixed: (value.slice(0, span.start) + value.slice(span.end)).trim().length > 0,
               expectedType,

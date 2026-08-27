@@ -35,7 +35,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['定时', '每天', '日报', 'cron', '排程'],
     category: '触发器',
     icon: '⏰',
-    description: '按固定时间自动发起运行，不用人盯着',
+    description: '按固定时间自动发起运行',
     hasInput: false,
     input: {
       type: 'object',
@@ -58,7 +58,7 @@ export const NODE_TYPES: NodeType[] = [
           type: 'string',
           title: '每天几点',
           default: '09:00',
-          description: '24 小时制，默认按北京时间（UTC+8）执行',
+          description: '24 小时制，按北京时间（UTC+8）',
           'x-show': { mode: ['daily'] },
           'x-ui': { placeholder: '09:00' },
         },
@@ -67,7 +67,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '时区',
           default: 'Asia/Shanghai',
           enum: ['Asia/Shanghai'],
-          description: '所有定时表达式按北京时间（UTC+8）计算',
+          description: '定时表达式按这个时区计算',
           'x-ui': { widget: 'select', labels: { 'Asia/Shanghai': '北京时间（UTC+8）' }, group: 'advanced' },
         },
         minute: {
@@ -91,7 +91,7 @@ export const NODE_TYPES: NodeType[] = [
           title: 'Cron 表达式',
           description: '五段式：分 时 日 月 周。例：0 9 * * 1 = 每周一 09:00',
           'x-show': { mode: ['cron'] },
-          'x-ui': { placeholder: '0 9 * * 1' },
+          'x-ui': { placeholder: '30 8 * * *' },
         },
       },
     },
@@ -113,7 +113,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['接口触发', '外部调用', 'POST', 'http 入口'],
     category: '触发器',
     icon: '🔗',
-    description: '外部系统 POST 一下就运行，body 里的同名字段自动当流程入参',
+    description: '外部系统 POST 触发，body 同名字段自动当入参',
     hasInput: false,
     input: {
       type: 'object',
@@ -124,7 +124,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '认证方式',
           default: 'secret',
           enum: ['secret', 'hmac', 'none'],
-          description: '路径里的 token 不是认证 —— 它会进日志、进上游配置文件',
+          description: '路径里的 token 不是认证，它会进日志和上游配置',
           'x-ui': {
             widget: 'select',
             labels: {
@@ -154,7 +154,7 @@ export const NODE_TYPES: NodeType[] = [
           default: 300,
           minimum: 1,
           maximum: 1800,
-          description: '超过后返回 202 和运行 ID，工作流仍会继续执行',
+          description: '超过后返回 202 和运行 ID',
           'x-show': { responseMode: ['lastNode'] },
           'x-ui': { group: 'advanced' },
         },
@@ -164,7 +164,7 @@ export const NODE_TYPES: NodeType[] = [
           default: 60,
           minimum: 1,
           maximum: 600,
-          description: '任何能 POST 的人都能触发一条 Hive 查询，这道闸不能不设',
+          description: '任何能 POST 的人都能触发一次查询',
           'x-ui': { group: 'advanced' },
         },
       },
@@ -192,7 +192,7 @@ export const NODE_TYPES: NodeType[] = [
     docsUrl: 'https://github.com/z13255595556/agora-autoflow#sql-节点真实执行',
     category: '数据查询',
     icon: '▤',
-    description: '在 DataLego 数据平台上跑只读 SQL，参数由服务端按类型渲染，不做字符串拼接',
+    description: '在 DataLego 上跑只读 SQL，参数按类型渲染',
     input: {
       type: 'object',
       required: ['engine', 'sql'],
@@ -207,13 +207,12 @@ export const NODE_TYPES: NodeType[] = [
         sql: {
           type: 'string',
           title: 'SQL',
-          description: '键入 "/" 增加变量',
           'x-placeholders': { valuesFrom: 'params' },
           'x-ui': {
             widget: 'code',
             language: 'sql',
             rows: 8,
-            placeholder: 'SELECT vid, name FROM ods.vendor WHERE vid = {{vid}}',
+            placeholder: 'SELECT vid, name FROM ods.vendor WHERE vid = {{vid}}\n\n键入 / 引用上游变量',
           },
         },
         params: {
@@ -238,7 +237,6 @@ export const NODE_TYPES: NodeType[] = [
           default: 15,
           minimum: 1,
           maximum: 120,
-          description: '跑过这个时间就判失败，并向平台撤销任务 —— 不撤的话它会继续白烧集群资源',
           'x-ui': { group: 'advanced' },
         },
         queue: { type: 'string', title: '队列', default: 'share', 'x-show': { engine: ['hive'] }, 'x-ui': { widget: 'text', group: 'advanced' } },
@@ -256,7 +254,7 @@ export const NODE_TYPES: NodeType[] = [
         rowCount: {
           type: 'integer',
           title: '返回行数',
-          description: '实际取回的行数（已受行数上限截断），不是匹配总数。truncated 为真时二者不相等',
+          description: '实际取回的行数（已受行数上限截断），不是匹配总数',
         },
         columns: { type: 'array', title: '列信息', items: { type: 'object' } },
         truncated: { type: 'boolean', title: '是否触到行数上限' },
@@ -281,15 +279,15 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['建表', '存结果', '自建库', 'pg', 'postgres'],
     category: '数据查询',
     icon: '▤',
-    description: '在你自己的隔离 PostgreSQL 工作区建表、增删改查；不访问 AutoFlow 系统数据库',
+    description: '在你的独立工作区建表和增删改查，不访问系统库',
     input: {
       type: 'object', required: ['sql'],
       properties: {
         sql: {
           type: 'string', title: 'SQL',
-          description: '一次执行一条 SQL；可在个人工作区创建、查询和修改表',
+          description: '一次只执行一条 SQL',
           'x-placeholders': { valuesFrom: 'params' },
-          'x-ui': { widget: 'code', language: 'sql', rows: 8, placeholder: 'CREATE TABLE report (id bigint, name text)' },
+          'x-ui': { widget: 'code', language: 'sql', rows: 8, placeholder: 'CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量' },
         },
         params: { type: 'object', title: '占位符参数', additionalProperties: true, 'x-ui': { widget: 'kv' } },
         limit: { type: 'integer', title: '返回行数上限', default: 1000, minimum: 1, maximum: 1000, 'x-ui': { group: 'advanced' } },
@@ -358,7 +356,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['遍历', '循环', '每个', '逐条', 'loop'],
     category: '控制',
     icon: '↻',
-    description: '对数组逐项执行下游；每项串行跑，超过 1000 项整个节点失败',
+    description: '对数组逐项执行下游，串行；超过 1000 项失败',
     ports: [
       { id: 'each', label: '每一项' },
       { id: 'done', label: '完成' },
@@ -370,7 +368,7 @@ export const NODE_TYPES: NodeType[] = [
         items: {
           type: 'string',
           title: '遍历对象',
-          'x-ui': { widget: 'text', placeholder: '{{ $.nodes.n1.output.rows }}' },
+          'x-ui': { widget: 'text', placeholder: '键入 / 引用上游变量，选一个数组' },
         },
         // 这里曾经有 concurrency / batchSize / continueOnItemError 三个「高级设置」。
         // **故意删掉的**：引擎和 worker 一行都没读过它们 —— 用户把并发调到 10
@@ -423,7 +421,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['结束', '返回', '输出', '结果'],
     category: '控制',
     icon: '■',
-    description: '结束当前分支，并把指定内容作为流程结果',
+    description: '结束当前分支，指定内容作为流程结果',
     ports: [],
     input: {
       type: 'object',
@@ -431,8 +429,7 @@ export const NODE_TYPES: NodeType[] = [
         result: {
           type: 'string',
           title: '流程结果',
-          description: '可以输入固定文本，也可以输入 / 引用上游变量',
-          'x-ui': { widget: 'textarea', rows: 5, placeholder: '/ 选择上游输出' },
+          'x-ui': { widget: 'textarea', rows: 5, placeholder: '写固定文本，或键入 / 引用上游变量' },
         },
       },
     },
@@ -457,7 +454,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['昨天', '日期', '时间', '分区', '今天', 'date'],
     category: '处理',
     icon: '📅',
-    description: '选出昨天 / 本月 1 号这类日期，一次给出 yyyyMMdd、时间戳等各种格式，下游直接引用',
+    description: '算出昨天、本月 1 号这类日期，各种格式一并输出',
     input: {
       type: 'object',
       required: ['mode', 'format'],
@@ -468,7 +465,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '要哪个时间',
           default: 'yesterday',
           enum: DATE_MODES,
-          description: '基准是本次运行的开始时刻，一条流程里所有日期节点同源，不会跨零点算差一天',
+          description: '基准是本次运行的开始时刻，同一流程内所有日期节点同源',
           'x-ui': { widget: 'select', labels: DATE_MODE_LABELS },
         },
         days: {
@@ -501,7 +498,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '输出格式',
           default: 'compact',
           enum: DATE_FORMATS,
-          description: '这个格式出现在 value 里。其它常用格式一并输出，不用为此多摆一个节点',
+          description: '这个格式出现在 value 里，其它常用格式一并输出',
           'x-ui': { widget: 'select', labels: dateFormatLabels() },
         },
         customFormat: {
@@ -546,7 +543,7 @@ export const NODE_TYPES: NodeType[] = [
         expression: {
           type: 'string',
           title: '表达式',
-          'x-ui': { widget: 'code', language: 'cel', rows: 6, placeholder: '{ "vids": $.nodes.n1.output.rows.map(r, r.vid) }' },
+          'x-ui': { widget: 'code', language: 'cel', rows: 6, placeholder: '{ "vids": $.nodes.n1.output.rows.map(r, r.vid) }\n\n键入 / 引用上游变量' },
         },
       },
     },
@@ -567,8 +564,7 @@ export const NODE_TYPES: NodeType[] = [
         template: {
           type: 'string',
           title: '模板',
-          description: '输入 / 可直接选择上游变量',
-          'x-ui': { widget: 'textarea', rows: 8, placeholder: '查询到 {{ $.nodes.n2.output.rowCount }} 条数据' },
+          'x-ui': { widget: 'textarea', rows: 8, placeholder: '查询到 {{ $.nodes.n2.output.rowCount }} 条数据\n\n键入 / 引用上游变量' },
         },
       },
     },
@@ -582,14 +578,13 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['变量', '赋值', '常量', '设置'],
     category: '处理',
     icon: '=',
-    description: '集中定义一组供下游使用的变量',
+    description: '定义一组供下游使用的变量',
     input: {
       type: 'object',
       properties: {
         values: {
           type: 'object',
           title: '变量',
-          description: '值支持输入 / 引用上游输出',
           additionalProperties: true,
           'x-ui': { widget: 'kv' },
         },
@@ -621,8 +616,7 @@ export const NODE_TYPES: NodeType[] = [
         items: {
           type: 'string',
           title: '输入列表',
-          description: '输入 / 选择一个数组变量',
-          'x-ui': { widget: 'text', placeholder: '/ 选择上游数组' },
+          'x-ui': { widget: 'text', placeholder: '键入 / 引用上游变量，选一个数组' },
         },
         operation: {
           type: 'string',
@@ -752,8 +746,9 @@ export const NODE_TYPES: NodeType[] = [
     docsUrl: 'https://github.com/z13255595556/agora-autoflow#企微通知节点真实发送',
     category: '输出',
     icon: '✉',
-    description: '推到企微群。填群机器人的 webhook 地址',
-    ports: [],
+    description: '推消息到企微群',
+    // 是「输出」类，但**不是**终点：通知可以发生在流程任意一步（跑完一段先播报，
+    // 再接着查下一段）。省略 ports 就落到默认的单出口 out。
     input: {
       type: 'object',
       required: ['webhook', 'msgtype', 'content'],
@@ -775,12 +770,11 @@ export const NODE_TYPES: NodeType[] = [
         content: {
           type: 'string',
           title: '内容',
-          description: '点下面的「插入表格」把查询结果放进来，不用手写表达式',
           'x-ui': {
             widget: 'textarea',
             rows: 10,
             inserters: ['message'],
-            placeholder: '## 卡顿排查结果\n共 {{ $.nodes.n2.output.rowCount }} 条\n\n{{ $.nodes.n2.output.rows | table(uid, avg_dc, cnt_dc) }}',
+            placeholder: '## 卡顿排查结果\n共 {{ $.nodes.n2.output.rowCount }} 条\n\n{{ $.nodes.n2.output.rows | table(uid, avg_dc, cnt_dc) }}\n\n键入 / 引用上游变量',
           },
         },
         mentioned: {
@@ -815,7 +809,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['备注', '说明', '贴纸', '注释'],
     category: '辅助',
     icon: 'N',
-    description: '在画布上记录说明、约定和待办，不参与流程执行',
+    description: '画布上的备注，不参与执行',
     visualOnly: true,
     ports: [],
     input: {

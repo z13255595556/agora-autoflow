@@ -13,6 +13,7 @@ import DatePreview from './DatePreview'
 import SchedulePreview from './SchedulePreview'
 import MessagePreview from './MessagePreview'
 import RefField from './RefField'
+import { useReferenceHost } from './ReferencePickerContext'
 import ConditionsEditor from './ConditionsEditor'
 import Icon from './Icon'
 import CurlImport from './CurlImport'
@@ -50,6 +51,8 @@ export default function SchemaForm({
   const importers = schema['x-ui']?.importers ?? []
   const nodes = useFlow((s) => s.nodes)
   const flowInputs = useFlow((s) => s.flowInputs)
+  // 抽屉正开着给哪个字段取值 —— 那个字段要套上高亮环，跟抽屉是一对
+  const { request: picking } = useReferenceHost(nodeId ?? '')
   // 所有可写引用的字符串字段都使用变量胶囊；凭证字段保持 password input。
   const chipField = (sub: JsonSchema) => sub.type === 'string' && !sub['x-ui']?.secret
 
@@ -115,7 +118,11 @@ export default function SchemaForm({
         const fieldErrors = validationErrors.filter((error) => validationFieldKey(error, schema) === key)
 
         return (
-          <div className={`field${fieldErrors.length ? ' field--invalid' : ''}`} key={key} data-field-key={key}>
+          <div
+            className={`field${fieldErrors.length ? ' field--invalid' : ''}${picking?.fieldLabel === (sub.title ?? key) ? ' field--picking' : ''}`}
+            key={key}
+            data-field-key={key}
+          >
             <label className="field__label">
               {sub.title ?? key}
               {required.includes(key) && <span className="req">*</span>}
@@ -168,6 +175,7 @@ export default function SchemaForm({
                   chip={chipField(sub)}
                   labelCtx={labelCtx}
                   nodeId={nodeId}
+                  fieldLabel={sub.title ?? key}
                   expectedType="string"
                 />
                 {inserters.includes('message') && nodeId && (
@@ -192,6 +200,7 @@ export default function SchemaForm({
                 chip={chipField(sub)}
                 labelCtx={labelCtx}
                 nodeId={nodeId}
+                fieldLabel={sub.title ?? key}
                 expectedType="string"
               />
             )}
@@ -440,7 +449,7 @@ function KvEditor({
               value={v}
               onChange={(next) => set(i, k, next)}
               vars={vars}
-              placeholder="value / {{ }}"
+              placeholder="值，键入 / 引用上游变量"
               ariaLabel={`${k || `第 ${i + 1} 项`}的值`}
               autoComplete="off"
               chip={!sensitive || showing}

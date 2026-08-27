@@ -1,6 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { closeOwned, type ReferenceTarget } from '../lib/referencePicker'
-import DataReferenceDrawer from './DataReferenceDrawer'
 
 export type { ReferenceTarget }
 
@@ -9,28 +8,45 @@ export type { ReferenceTarget }
  *
  * 这个对象必须恒等：字段那边有个"卸载时收起自己"的效果，它的依赖里有这个对象。
  * 一旦它跟着 request 变，效果每敲一个字就重跑一次清理 —— 面板刚开就被自己关掉。
- * 面板要的 request 由提供者直接传给 DataReferenceDrawer，不经过 context。
+ * 当前 request 走**另一个** context，只有取值栏的宿主（节点侧栏 / NDV）订阅它。
  */
 interface PickerActions {
   open: (target: ReferenceTarget) => void
   closeIfOwner: (owner: string) => void
+  close: () => void
 }
 
 const ReferencePickerContext = createContext<PickerActions | null>(null)
+const ReferenceRequestContext = createContext<ReferenceTarget | null>(null)
 
 export function ReferencePickerProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<ReferenceTarget | null>(null)
   const open = useCallback((target: ReferenceTarget) => setRequest(target), [])
   const closeIfOwner = useCallback((owner: string) => setRequest((cur) => closeOwned(cur, owner)), [])
   const close = useCallback(() => setRequest(null), [])
-  const actions = useMemo(() => ({ open, closeIfOwner }), [open, closeIfOwner])
+  const actions = useMemo(() => ({ open, closeIfOwner, close }), [open, closeIfOwner, close])
 
   return (
     <ReferencePickerContext.Provider value={actions}>
-      {children}
-      <DataReferenceDrawer request={request} onClose={close} />
+      <ReferenceRequestContext.Provider value={request}>
+        {children}
+      </ReferenceRequestContext.Provider>
     </ReferencePickerContext.Provider>
   )
+}
+
+/**
+ * 取值栏宿主拿的句柄。
+ *
+ * 取值栏不再挂在应用根上浮在所有东西前面 —— 它是编辑器卡片自己的一栏，
+ * 所以由卡片（节点侧栏 / NDV）渲染，从这里取当前请求。
+ */
+export function useReferenceHost(nodeId: string): { request: ReferenceTarget | null; close: () => void } {
+  const request = useContext(ReferenceRequestContext)
+  const actions = useContext(ReferencePickerContext)
+  const close = useCallback(() => actions?.close(), [actions])
+  // 只认自己这个节点的请求：NDV 开着的时候侧栏是卸掉的，但两边都订阅同一个 context
+  return { request: request && request.nodeId === nodeId ? request : null, close }
 }
 
 /** 字段拿到的句柄。`owner` 由 hook 自己补上，调用方不用管 */
