@@ -148,14 +148,12 @@ export default function RunHistory({ flow, initialRunId, onClose }: { flow: Save
           </button>
         </div>
         <div className="modal__note">
-          服务端保留最近 14 天，含每个节点解析后的输入和真实输出。
-          编辑器里那个「历史」只有本次会话跑过的，刷新就没了 —— 要查以前的看这里。
+          服务端保留最近 14 天，含每个节点解析后的输入与实际输出。编辑器里的「历史」只有本次会话，刷新即失。
         </div>
 
         {localOnly ? (
           <div className="empty">
-            这条流程只存在这台浏览器里，没有同步到服务端，因此没有服务端运行记录。
-            在首页把它「上传到服务器」之后，之后的每次运行才会被记下来。
+            流程只存在本浏览器，未同步到服务端，因此没有运行记录。在首页「上传到服务器」后才开始记录。
           </div>
         ) : (
           <div className="rhist">

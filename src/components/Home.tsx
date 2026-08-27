@@ -102,7 +102,7 @@ export default function Home({
         openedRun.current = true
         const target = got.flows.find((f) => f.id === openRun.flowId)
         if (target) setHistory(target)
-        else pushToast({ tone: 'warn', text: '链接里的流程不在你的列表里 —— 可能已归档，或者不是你的' })
+        else pushToast({ tone: 'warn', text: '链接里的流程不在你的列表里：可能已归档，或不属于你' })
         // 消费掉 query，刷新页面不再重复弹
         window.history.replaceState({}, '', window.location.pathname)
       }
@@ -163,10 +163,10 @@ export default function Home({
   const remove = async (f: SavedFlow) => {
     // 服务端上没有的那些，删掉就是真没了 —— 不能套用"服务端会归档"那句话
     const warn = f.origin === 'local' && list.mode === 'server'
-      ? `删除「${f.name}」？它只存在这台机器上，服务端没有备份，删了就没了。\n想留个底的话先「导出 JSON」。`
+      ? `删除「${f.name}」？只存在本机，服务端无备份，删除不可恢复。\n需留底请先「导出 JSON」。`
       : list.mode === 'server'
-      ? `删除「${f.name}」？服务端会归档（运行历史还查得到），本地那份直接删掉。`
-      : `删除「${f.name}」？删了就没了，本地存的没有回收站。`
+      ? `删除「${f.name}」？服务端归档（运行历史仍可查），本地副本直接删除。`
+      : `删除「${f.name}」？不可恢复，本地存储没有回收站。`
     if (!confirm(warn)) return
     // ★ origin==='local' 必须传下去：服务端上同 id 那条可能是**别人的**流程，
     //   而管理员的 viewer 是 ANY，去归档它会成功
@@ -199,9 +199,9 @@ export default function Home({
 
         if (r.code === 'flow_exists_archived') {
           const go = confirm(
-            `「${f.name}」在服务器上其实是已归档，不是不存在。\n\n` +
+            `「${f.name}」在服务器上是已归档，不是不存在。\n\n` +
             '恢复它，并用本机这份覆盖服务器上的草稿？\n' +
-            '注意：它如果配了定时触发，恢复之后定时会重新开始跑。',
+            '注意：配了定时触发的话，恢复后定时会重新开始跑。',
           )
           if (!go) continue
           const done = await restoreAndUpload(f)
@@ -212,8 +212,7 @@ export default function Home({
         if (r.code === 'flow_exists_other_owner') {
           const name = `${f.name} 副本`
           const go = confirm(
-            `「${f.name}」的 id 在服务器上被另一个人的流程占着 —— 它不在你的流程里，` +
-            '这个 id 也要不回来了。\n\n' +
+            `「${f.name}」的 id 被服务器上另一个人的流程占用，且要不回来。\n\n` +
             `上传成一条新流程「${name}」（换一个 id），并清掉本机这条旧记录？`,
           )
           if (!go) continue
@@ -225,7 +224,7 @@ export default function Home({
         }
 
         if (r.code === 'flow_exists') {
-          pushToast({ tone: 'warn', text: `「${f.name}」服务器上已经有了，本机这份列表是旧的 —— 刷新一下就看得到。` })
+          pushToast({ tone: 'warn', text: `「${f.name}」服务器上已存在，本机列表是旧的，刷新即可看到。` })
           continue
         }
 
@@ -337,7 +336,7 @@ export default function Home({
             )}
             <p className="home__sub">
               {tab === 'all'
-                ? '按归属分组。这里能看到、也能改所有人的流程 —— 动别人的东西之前先确认一下。'
+                ? '按归属分组。可查看和修改所有人的流程，改动他人流程前请先确认。'
                 : '把 SQL、通知这些现成服务当积木搭起来。'}
               {saved.length > 0 && (
                 <em>
@@ -375,8 +374,7 @@ export default function Home({
               下面的列表里，标着「只在本机」，不想传的直接删掉就行 */}
           {tab === 'mine' && list.localOnly.length > 0 && (
             <div className="home__notice">
-              有 {list.localOnly.length} 条流程只存在这台机器上（下面标了「只在本机」）——
-              可能从没上传过，也可能归属了别人。不想留的话，用卡片上的删除清掉。
+              {list.localOnly.length} 条流程只存在本机（卡片标「只在本机」）：未上传过，或归属他人。不需要的用卡片上的删除清掉。
               <button className="btn btn--sm" disabled={uploading} onClick={() => void upload()}>
                 {uploading ? '上传中…' : '全部上传到服务器'}
               </button>
@@ -390,7 +388,7 @@ export default function Home({
               <div className="home__blankicon">◆</div>
               <div className="home__blanktitle">还没有流程</div>
               <div className="home__blanktext">
-                用做好的日报模板最快 —— 节点已经连好，填上 SQL 和群机器人地址就能跑。也可以先选一个触发器从空白开始。
+                日报模板已连好节点，填 SQL 和群机器人地址即可运行；也可选一个触发器从空白开始。
               </div>
               <div className="home__blankcards">
                 {TEMPLATES.filter((t) => t.kind === 'recipe').map((t) => (

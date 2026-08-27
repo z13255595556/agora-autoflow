@@ -358,7 +358,7 @@ export default function App() {
       <ToastHost />
       {gone && (
         <div className="gonebar" role="status">
-          这条流程已在服务端删除，之后的改动不会再保存。想留下的话先导出流程 JSON。
+          流程已在服务端删除，后续改动不再保存。需保留请先导出流程 JSON。
           <button className="btn btn--sm" onClick={() => { setDock('json') }}>导出 JSON</button>
           <button className="btn btn--sm" onClick={() => void goHome()}>回首页</button>
         </div>

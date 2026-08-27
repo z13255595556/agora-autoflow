@@ -106,8 +106,8 @@ export default function FlowInputsEditor({ context = 'flow' }: FlowInputsEditorP
       {flowInputs.length === 0 && (
         <div className="empty">
           {webhook
-            ? '还没有入参。添加后，POST body 顶层的同名字段会自动传入流程。'
-            : '还没有入参。入参用于每次运行时传入不同的值；固定值可以直接写在节点配置里。'}
+            ? '还没有入参。添加后 POST body 顶层同名字段自动传入。'
+            : '还没有入参。入参用于每次运行传入不同的值；固定值直接写在节点配置里。'}
         </div>
       )}
 
@@ -116,18 +116,18 @@ export default function FlowInputsEditor({ context = 'flow' }: FlowInputsEditorP
       {webhook ? (
         <div className="inputs__where">
           <b>从请求 body 取值</b>
-          <span>POST body 顶层字段名需要和参数名一致；未声明的字段会忽略，缺少必填项或类型不符会返回 400。</span>
+          <span>POST body 顶层字段名须与参数名一致；未声明字段忽略，缺必填或类型不符返回 400。</span>
         </div>
       ) : flowInputs.length > 0 ? (
         <div className="inputs__where">
           <b>值不在这里填</b>
           <span>
-            这里只定义「有哪些参数」。具体的值每次运行前在底部
+            这里只定义参数，具体的值每次运行前在底部
             <button className="linkbtn" onClick={() => setRunPanelOpen(true)}>手动运行</button>
             表单里填。
           </span>
           <span className="inputs__where-sub">
-            SQL 里写 {'{{'}{flowInputs[0].key}{'}}'} 或 :{flowInputs[0].key}，运行时会自动代入。
+            SQL 里写 {'{{'}{flowInputs[0].key}{'}}'} 或 :{flowInputs[0].key}，运行时自动代入。
           </span>
         </div>
       ) : null}

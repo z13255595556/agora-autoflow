@@ -133,14 +133,13 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
               <div className="wh__secret">
                 <div className="wh__secret-head">
                   <b>密钥</b>
-                  <span>可以随时在这里查看和复制。</span>
+                  <span>可随时查看和复制。</span>
                 </div>
                 <CopyRow label="" value={secret} mono />
               </div>
             ) : authMode !== 'none' && (
               <div className="wh__hint">
-                这是旧版本生成的地址，当时没有保存可回显的密钥。请<b>轮换</b>一次；
-                轮换后新密钥会持续显示，但旧地址和旧密钥会立即失效。
+                旧版本生成的地址，未保存可回显的密钥。<b>轮换</b>一次后新密钥持续显示，旧地址与旧密钥立即失效。
               </div>
             )}
 
@@ -157,7 +156,7 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
                 <b>节点上改了配置，但还没生效。</b>
                 <span>{drift.join('；')}</span>
                 <span className="wh__warn-sub">
-                  改认证方式会让上游当前的调用<b>立刻 401</b>，所以它不跟着保存走，得点一下。
+                  改认证方式会让上游调用<b>立刻 401</b>，故不随保存生效，需手动应用。
                 </span>
                 <button
                   className="btn btn--sm"
@@ -181,8 +180,7 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
               block
             />
             <div className="wh__hint">
-              body 顶层<b>同名</b>字段自动当流程入参，<b>没声明过的字段直接丢掉</b>；
-              类型对不上或缺必填会被 400 挡在门外，不会产生运行记录。
+              body 顶层<b>同名</b>字段自动作为流程入参，<b>未声明字段丢弃</b>；类型不符或缺必填返回 400，不产生运行记录。
             </div>
 
             <Deliveries rows={view?.deliveries ?? []} onRefresh={load} />
@@ -286,7 +284,7 @@ function Deliveries({ rows, onRefresh }: { rows: api.WebhookDelivery[]; onRefres
             <span>不记录 body 原文 —— 里面可能有用户 id、手机号</span>
           </div>
           {rows.length === 0 ? (
-            <div className="empty">还没有收到过请求。上游打一次这里就有记录，被拒的也会记。</div>
+            <div className="empty">还没有收到过请求。上游调用一次即有记录，被拒的也记。</div>
           ) : (
             <table className="wh__table">
               <tbody>

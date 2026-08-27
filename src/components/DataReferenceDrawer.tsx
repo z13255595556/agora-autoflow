@@ -328,7 +328,7 @@ function RegionView({ shape, region, dirty, running, backendOnline, onBack, onRe
       {(shape.unknown || shape.source === 'schema' || dirty) && (
         <div className="dataref__runbox">
           <strong>{dirty ? '参数已修改，预览已过期' : '还没有真实运行结果'}</strong>
-          <span>{shape.unknown ? '试运行后才能看到实际字段和值。' : '当前只能看到声明或已学习的字段结构。'}</span>
+          <span>{shape.unknown ? '试运行后可见实际字段和值。' : '当前仅有声明或已学习的字段结构。'}</span>
           {(shape.typeId === 'sql.query' || shape.typeId === 'http.request') && (
             <button className="btn btn--primary" disabled={running || !backendOnline} onClick={onRun}>{running ? '运行中…' : backendOnline ? '试运行并获取数据' : '节点服务未连接'}</button>
           )}
@@ -483,7 +483,7 @@ function TableRegion({ shape, region, onChoose }: { shape: OutputShape; region: 
         </div>
       )}
       {table.orderUnstable && (mode === 'cell' || mode === 'row') && <div className="dataref__warning">SQL 没有 ORDER BY，按行号取值的结果顺序可能变化。</div>}
-      {table.truncated && mode === 'row' && <div className="dataref__warning">结果已截断，“最后一行”只是已取回结果的最后一行。</div>}
+      {table.truncated && mode === 'row' && <div className="dataref__warning">结果已截断，「最后一行」只是已取回结果的最后一行。</div>}
 
       <div className="dataref__tablewrap">
         <table className="dataref__table">
@@ -502,7 +502,7 @@ function TableRegion({ shape, region, onChoose }: { shape: OutputShape; region: 
             ))}</tr>
           ))}</tbody>
         </table>
-        {table.sampleRows.length === 0 && <div className="dataref__empty">已经识别字段，但还没有真实样例行</div>}
+        {table.sampleRows.length === 0 && <div className="dataref__empty">已识别字段，暂无真实样例行</div>}
       </div>
 
       <div className="dataref__tableactions">
@@ -548,7 +548,7 @@ const parentPath = (path: string) => path.includes('.') ? path.slice(0, path.las
 const blockReason = (target: ReferenceTarget, selection: ReferenceSelection) =>
   fitReason(selection, target.expectedType)
   ?? (target.mixed && (selection.valueType === 'array' || selection.valueType === 'object')
-    ? '对象或列表不能直接混在文字中，请改选具体字段或格式化结果。'
+    ? '对象 / 列表不能混在文字中，请改选具体字段或格式化结果。'
     : null)
 const incompatible = (target: ReferenceTarget, type: JsonType) => target.mixed && (type === 'array' || type === 'object')
 const asJsonType = (type: string): JsonType => type.endsWith('[]') ? 'array' : ['string', 'integer', 'number', 'boolean', 'object', 'array'].includes(type) ? type as JsonType : 'unknown'

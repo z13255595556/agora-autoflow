@@ -391,7 +391,7 @@ function PlaceholderEditor({
         )
       })}
       <div className="phe__hint">
-        留空即自动取同名流程入参。填了就以填的为准（支持 {'{{ $.nodes.n1.output.x }}'} 引用上游）。
+        留空取同名流程入参；填了以填的为准（支持 {'{{ $.nodes.n1.output.x }}'} 引用上游）。
       </div>
     </div>
   )

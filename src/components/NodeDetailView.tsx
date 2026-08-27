@@ -68,7 +68,7 @@ export default function NodeDetailView() {
   // n8n：对 pinned 节点执行 Test step 会覆盖固定数据 → 先弹确认（Unpin and test）
   const onTestStep = () => {
     if (isPinned) {
-      if (!confirm('该节点输出已固定。试运行会取消固定并真正执行，继续？')) return
+      if (!confirm('该节点输出已固定。试运行将取消固定并真实执行，继续？')) return
       unpinNode(node.id)
     }
     void testStep(node.id)
@@ -193,12 +193,12 @@ export default function NodeDetailView() {
             <div className="ndv__colbody">
               {isPinned && (
                 <div className="pinnote">
-                  这份数据已固定，调试运行不会真正执行该节点。
+                  数据已固定，调试运行不会真正执行该节点。
                   <button onClick={() => unpinNode(node.id)}>取消固定</button>
                 </div>
               )}
               {isDirty && !isPinned && (
-                <div className="stalenote">参数改过了，下面的输出可能已过期 —— 重新试运行刷新。</div>
+                <div className="stalenote">参数已改，下方输出可能过期，重新试运行刷新。</div>
               )}
               {step?.status === 'error' && <div className="errors">✗ {step.error}</div>}
 
@@ -309,8 +309,8 @@ function ResultBanner({ output, rows }: { output: Record<string, unknown> | null
   if (!truncated) return <div className="ndv__sec">返回 {rowCount} 行</div>
   return (
     <div className="trunc">
-      ⚠ 只取回前 <b>{rowCount}</b> 行 —— 已达「行数上限」，这不是全部匹配结果。
-      下游节点和消息里拿到的就是这 {rowCount} 行；要全量请调大上限或收窄查询条件。
+      ⚠ 已达「行数上限」，只取回前 <b>{rowCount}</b> 行，非全部匹配结果。
+      下游节点和消息拿到的就是这 {rowCount} 行；要全量请调大上限或收窄查询。
     </div>
   )
 }
@@ -364,7 +364,7 @@ function RowsTable({ rows, nodeId, container }: { rows: unknown[]; nodeId: strin
       </div>
       {copied && (
         <div className="ndv__copied">
-          已复制 <code>{copied}</code> —— 粘到消息内容、SQL 或任何输入框里
+          已复制 <code>{copied}</code>，可粘进消息内容、SQL 等任意输入框
         </div>
       )}
       <div className="ndv__tablewrap">

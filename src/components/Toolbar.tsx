@@ -155,7 +155,7 @@ export default function Toolbar({
           className={`conn conn--${backend ? (backend.ok ? 'ok' : 'warn') : 'off'}`}
           title={
             !backend
-              ? '节点服务未连接，所有节点走本地 mock。启动 server 后刷新即可'
+              ? '节点服务未连接，全部节点走本地 mock；启动 server 后刷新'
               : backend.ok
                 ? `节点服务已连接 · ${backend.endpoint}`
                 : `节点服务在，但缺凭证：${backend.missingCredentials.join('、')}`
@@ -280,7 +280,7 @@ export default function Toolbar({
                 className="menu__item menu__item--danger"
                 onClick={() => {
                   setMenuOpen(false)
-                  if (confirm('清空画布？画布上的节点、连线和入参都会没掉。')) clear()
+                  if (confirm('清空画布？节点、连线和入参都会删除。')) clear()
                 }}
               >
                 清空画布
@@ -317,9 +317,9 @@ export default function Toolbar({
               || (publish.activeVersion !== null && !publish.hasUnpublishedChanges && !dirty)}
             title={
               publish.activeVersion === null
-                ? '发布后才会有第一个版本。定时和 Webhook 触发的都是已发布的那一版'
+                ? '发布后才有第一个版本；定时 / Webhook 触发已发布版本'
                 : publish.hasUnpublishedChanges
-                  ? `当前生效的是 v${publish.activeVersion}，草稿有改动还没发布 —— 定时/Webhook 跑的仍是 v${publish.activeVersion}`
+                  ? `生效中 v${publish.activeVersion}，草稿有未发布改动；定时 / Webhook 仍跑 v${publish.activeVersion}`
                   : `已发布 v${publish.activeVersion}，草稿与它一致，没有需要发布的改动（只挪动节点位置不算）`
             }
           >
@@ -354,8 +354,8 @@ export default function Toolbar({
             }}
             title={
               backend?.ok
-                ? '运行当前草稿（不是已发布的那一版）。有必填入参时会先打开底部面板'
-                : '运行当前草稿（mock）。有必填入参时会先打开底部面板'
+                ? '运行当前草稿（非已发布版本）。有必填入参时先打开底部面板'
+                : '运行当前草稿（mock）。有必填入参时先打开底部面板'
             }
           >
             <Icon name="play" size={12} /> 运行

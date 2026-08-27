@@ -115,7 +115,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
   const runStep = useCallback(() => {
     if (running || errors.length) return
     if (isPinned) {
-      if (!confirm('该节点输出已固定。运行本节点会取消固定并真实执行，继续？')) return
+      if (!confirm('该节点输出已固定。运行本节点将取消固定并真实执行，继续？')) return
       unpinNode(node.id)
     }
     void testStep(node.id)
@@ -230,10 +230,10 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                 </>
               )}
               {dynamicMode === 'run' && responseFields.length === 0 && (
-                <div className="probe__text">成功运行一次后，这里会列出响应体字段，下游可直接从变量菜单选择。</div>
+                <div className="probe__text">成功运行一次后列出响应体字段，下游可从变量菜单选择。</div>
               )}
               {columns.length === 0 && responseFields.length === 0 && !dynamicMode && (
-                <div className="probe__text">这个节点的输出结构是固定的，下游输入 / 即可选择。</div>
+                <div className="probe__text">输出结构固定，下游输入 / 即可选择。</div>
               )}
             </div>
           )}
@@ -255,7 +255,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                     <input type="checkbox" checked={paused} onChange={(e) => setNodeDisabled(node.id, e.target.checked)} />
                     <span>{paused ? '已暂停：跳过不执行，下游照常往下走' : '暂停此节点'}</span>
                   </label>
-                  {paused && <div className="field__desc">调试期间先别跑它。引用了它输出的下游节点会在校验时报错 —— 那些节点也得一起暂停，或者改引用。</div>}
+                  {paused && <div className="field__desc">跳过该节点。引用其输出的下游节点会校验报错，需一并暂停或改引用。</div>}
                 </div>
               )}
               <div className="field">
@@ -285,10 +285,10 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                       <label>首次间隔 <input type="number" min={0} max={typeRetry.maximumIntervalMs / 1000} value={Math.round(retrySpec.initialMs / 1000)} onChange={(e) => setNodeRetry(node.id, { ...node.data.retry, initialMs: Number(e.target.value) * 1000 })} /> 秒</label>
                     </div>
                   )}
-                  <div className="field__desc">只在基础设施类错误上重试（平台抖动、限流、超时）；SQL 语法错这类改了参数才能解决的不会重试。间隔按 ×{typeRetry.backoffCoefficient} 递增，最长 {Math.round(typeRetry.maximumIntervalMs / 1000)} 秒。</div>
+                  <div className="field__desc">仅重试基础设施类错误（抖动、限流、超时）；SQL 语法错等改参数才能解决的不重试。间隔 ×{typeRetry.backoffCoefficient} 递增，上限 {Math.round(typeRetry.maximumIntervalMs / 1000)} 秒。</div>
                 </div>
               ) : (
-                node.data.typeId === 'http.request' && <div className="field__desc">这个节点的重试在「高级设置」里自己配（网络错 / 429 / 5xx）。</div>
+                node.data.typeId === 'http.request' && <div className="field__desc">该节点重试在「高级设置」里单独配（网络错 / 429 / 5xx）。</div>
               )}
               <div className="field">
                 <label className="field__label">备注</label>
@@ -357,8 +357,8 @@ export function FlowInspector({ onClose }: { onClose: () => void }) {
         <NotifySettings />
 
         <div className="tip">
-          入参会出现在底部「运行」表单里，下游用触发器变量引用。<br />
-          定时 / Webhook 跑的是已发布版本，不是眼前这份草稿。
+          入参出现在底部「运行」表单，下游用触发器变量引用。<br />
+          定时 / Webhook 跑已发布版本，不是当前草稿。
         </div>
       </div>
     </>
@@ -413,10 +413,9 @@ function NotifySettings() {
           toastFor={(saved) => (saved ? '这条流程的失败通知已单独设置' : '已改回跟随个人设置')}
           desc={
             <>
-              <b>只给这条流程用</b>，填了就覆盖你在首页「失败通知」里配的个人默认地址。
-              留空并保存 = 改回跟随个人设置。
+              <b>仅本流程</b>，覆盖个人默认地址。留空保存 = 跟随个人设置。
               <br />
-              整条运行失败（不管定时、Webhook 还是手动）才发；同一原因 10 分钟内只发一条。
+              整条运行失败才发（定时 / Webhook / 手动同）；同一原因 10 分钟内抑制重复。
             </>
           }
         />

@@ -75,7 +75,7 @@ export default function DatePreview({
       </div>
 
       <div className="dpv__foot">
-        下游节点引用 <code>{ref('compact')}</code> 这样的路径即可；也能在变量选择器里选到。
+        下游按 <code>{ref('compact')}</code> 这样的路径引用，也可在变量选择器里选。
       </div>
     </div>
   )

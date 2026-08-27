@@ -47,7 +47,7 @@ export function PublishDialog({
           </button>
         </div>
         <div className="modal__note">
-          把当前草稿定为 v{nextVersion} 并设为生效。定时和 Webhook 触发的都是这一版。
+          当前草稿定为 v{nextVersion} 并生效，定时 / Webhook 触发此版本。
         </div>
 
         <label className="vpub__label" htmlFor="publish-note">
@@ -71,13 +71,13 @@ export function PublishDialog({
         />
         {/* 只在快满时出现。一个常驻的字数计数器会把"选填"这件事说成一道考题 */}
         {note.length > NOTE_MAX - 80 && (
-          <div className="vpub__count">还能写 {NOTE_MAX - note.length} 个字</div>
+          <div className="vpub__count">剩 {NOTE_MAX - note.length} 字</div>
         )}
 
         <div className="vpub__foot">
           {/* 说出不填的后果，而不是催着填。空着是诚实的，
               随手敲一个「更新」比空着更糟 */}
-          <span className="vpub__hint">不填也能发，只是这一版在历史里说不出改了什么。</span>
+          <span className="vpub__hint">留空也能发，版本历史里这一版就没有改动说明。</span>
           <button className="btn" onClick={onCancel} disabled={busy}>取消</button>
           <button className="btn btn--primary" onClick={() => void go()} disabled={busy}>
             {busy ? '发布中…' : `发布 v${nextVersion}`}
@@ -119,10 +119,10 @@ export function VersionHistory({
   const rollback = async (v: FlowVersionMeta) => {
     const ok = window.confirm(
       `把线上切回 v${v.version}？\n\n` +
-      `· 定时和 Webhook 下一次触发就跑 v${v.version}\n` +
-      '· 编辑器里的草稿会被 v' + v.version + ' 覆盖 —— 你现在画布上的内容会没掉\n' +
-      `· 不会产生新版本，当前的 v${activeVersion} 仍然留在历史里，随时能切回来\n\n` +
-      '想留个底的话，先取消，用「流程 JSON」导出一份。',
+      `· 定时 / Webhook 下一次触发跑 v${v.version}\n` +
+      '· 编辑器草稿被 v' + v.version + ' 覆盖，当前画布内容丢失\n' +
+      `· 不产生新版本，v${activeVersion} 仍在历史里可随时切回\n\n` +
+      '需留底请先取消，用「流程 JSON」导出一份。',
     )
     if (!ok) return
     setBusy(v.version)
@@ -142,8 +142,7 @@ export function VersionHistory({
           </button>
         </div>
         <div className="modal__note">
-          线上（定时 / Webhook）跑的是标着「生效中」的那一版。切换会<b>立刻</b>改变线上行为，
-          并覆盖编辑器里的草稿。
+          线上（定时 / Webhook）跑「生效中」那一版。切换<b>立刻</b>改变线上行为，并覆盖编辑器草稿。
         </div>
 
         {error ? (
@@ -151,7 +150,7 @@ export function VersionHistory({
         ) : versions === null ? (
           <div className="empty">正在读取…</div>
         ) : versions.length === 0 ? (
-          <div className="empty">还没有发布过。发布一次就会有 v1。</div>
+          <div className="empty">还没有发布过，发布一次即得 v1。</div>
         ) : (
           <div className="vhist">
             {versions.map((v) => {

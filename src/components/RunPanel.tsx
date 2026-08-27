@@ -200,7 +200,7 @@ export default function RunPanel() {
               missingRequired.length
                 ? `先填必填项：${missingRequired.map((f) => f.title || f.key).join('、')}`
                 : workflowProblems[0]
-                  ?? '运行画布上的当前草稿（调试）。不影响线上 —— 定时和 Webhook 跑的是已发布的那一版'
+                  ?? '运行当前草稿（调试），不影响线上；定时 / Webhook 跑已发布版本'
             }
             onClick={doRun}
           >
@@ -227,7 +227,7 @@ export default function RunPanel() {
       <div className="runpanel__right">
         <div className="runpanel__title">分步执行 {run && <code className="runpanel__runid">{run.id}</code>}</div>
         <div className="runpanel__steps">
-          {!run && <div className="empty">运行一次，这里出现每个节点的输入输出。</div>}
+          {!run && <div className="empty">运行一次，这里显示每个节点的输入输出。</div>}
           {run &&
             Object.entries(run.steps).map(([nodeId, steps]) => {
               const last = steps.at(-1)!

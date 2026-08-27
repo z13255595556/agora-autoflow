@@ -115,7 +115,7 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
   }, [content, run])
 
   if (!content.trim()) {
-    return <div className="mprev mprev--empty">内容还是空的。写点文字，或键入 / 引用上游变量。</div>
+    return <div className="mprev mprev--empty">内容为空。输入文字，或键入 / 引用上游变量。</div>
   }
   if (rendered?.error) {
     return (
@@ -143,37 +143,34 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
       <pre className="mono prewrap mprev__body">{text}</pre>
       {missingNodes.length > 0 && (
         <div className="mprev__warn">
-          ⚠ {missingNodes.join('、')} 还没有数据，引用它的地方现在是空的（表格会显示「（无数据）」）。
-          跑一次流程，或对它点「试运行本节点」，这里就是真实内容了。
+          ⚠ {missingNodes.join('、')} 还没有数据，引用处为空（表格显示「（无数据）」）。运行流程或试运行该节点后即为真实内容。
         </div>
       )}
       {/* 没有"只预览不发送"开关了，运行到这个节点就是真发。说在最显眼的地方 */}
-      <div className="mprev__live">⚡ 点「运行」就会真的发到群里，先在上面确认内容</div>
+      <div className="mprev__live">⚡ 点「运行」即真实发送到群，先确认上方内容</div>
       {over && (
         <div className="mprev__err">
-          ✗ 超出 {msgtype} 的 {limit} 字节上限，服务端会拒收。减少列、调小行数上限，或改发文件。
+          ✗ 超出 {msgtype} 的 {limit} 字节上限，服务端拒收。减少列、调小行数上限，或改发文件。
         </div>
       )}
       {needsV2 && msgtype !== 'markdown_v2' && (
         <div className="mprev__warn">
-          ⚠ 内容里有表格，但消息类型是 {msgtype || '（未选）'} —— 企微只有 markdown_v2 会把它渲染成表格，
-          其他类型会原样显示成一堆竖线。
+          ⚠ 内容含表格，但消息类型是 {msgtype || '（未选）'}：企微仅 markdown_v2 渲染表格，其他类型原样输出竖线。
         </div>
       )}
       {outOfRange.length > 0 && (
         <div className="mprev__warn">
-          ⚠ 这些引用的行号超出了实际行数，会<b>静默渲染成空</b>：{outOfRange.join('；')}。
-          只想要一个值就用第一行 <code>[0]</code>，想把整列发出去用 <code>| lines(列名)</code>。
+          ⚠ 行号超出实际行数，将<b>静默渲染为空</b>：{outOfRange.join('；')}。取单值用 <code>[0]</code>，取整列用 <code>| lines(列名)</code>。
         </div>
       )}
       {unknownCols.length > 0 && (
         <div className="mprev__warn">
-          ⚠ 这些列名在上游数据里没找到：{unknownCols.join('、')}。它们会渲染成空单元格。
+          ⚠ 上游数据里没有这些列：{unknownCols.join('、')}，将渲染为空单元格。
         </div>
       )}
       {truncatedFrom.map((id) => (
         <div className="mprev__warn" key={id}>
-          ⚠ 引用的 {id} 结果被行数上限截断了，表格里只有前一部分。别在文案里把它写成全部。
+          ⚠ {id} 结果已被行数上限截断，表格只含前一部分，勿在文案里当作全量。
         </div>
       ))}
     </div>

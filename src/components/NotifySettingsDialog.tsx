@@ -41,10 +41,8 @@ export default function NotifySettingsDialog({ onClose }: { onClose: () => void 
           <button className="modal__x" onClick={onClose} title="关闭"><Icon name="close" /></button>
         </div>
         <div className="modal__note">
-          你名下的流程整条运行失败时，往这个企微群发一条：流程名、失败在哪个节点、
-          具体原因、触发方式，以及一个能点开运行记录的链接。
-          <br />
-          同一个原因 10 分钟内只发一条 —— 数据平台挂半小时的话，群里不会刷出几十条。
+          名下流程整条运行失败时推送该企微群：流程名、失败节点、原因、触发方式、运行记录链接。
+          同一原因 10 分钟内抑制重复。
         </div>
         {error && <div className="errors">读不到通知设置：{error}</div>}
         <WecomWebhookField
@@ -57,11 +55,9 @@ export default function NotifySettingsDialog({ onClose }: { onClose: () => void 
           toastFor={(saved) => (saved ? '失败通知已开启' : '失败通知已关闭')}
           desc={
             <>
-              群设置 → 群机器人 → 添加后复制。<b>等同凭证</b>，别贴到公开的地方。
-              留空并保存 = 关掉。
+              群设置 → 群机器人 → 添加后复制，<b>等同凭证</b>。留空保存 = 关闭。
               <br />
-              某条流程想单独发到别的群，去那条流程的「流程设置 → 失败时通知」填，
-              填了就以它为准。
+              单条流程可在「流程设置 → 失败时通知」覆盖此地址。
             </>
           }
         />

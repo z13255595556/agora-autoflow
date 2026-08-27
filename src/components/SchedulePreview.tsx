@@ -25,7 +25,7 @@ export default function SchedulePreview({ values }: { values: Record<string, unk
       </div>
     )
   }
-  if (!times.length) return <div className="spv spv--off">这个表达式算不出下一次触发时刻 —— 它可能永远不会触发</div>
+  if (!times.length) return <div className="spv spv--off">该表达式算不出下一次触发时刻，可能永不触发</div>
 
   return (
     <div className="spv">
@@ -33,7 +33,7 @@ export default function SchedulePreview({ values }: { values: Record<string, unk
       <b>{times.join(' · ')}</b>
       <span className="spv__tz">{tz}</span>
       {String(values.mode) === 'interval' && (
-        <span className="spv__note">按整点对齐（每 30 分钟 = :00 和 :30），不是从启用那一刻起算</span>
+        <span className="spv__note">按整点对齐（每 30 分钟 = :00 / :30），非从启用时刻起算</span>
       )}
     </div>
   )

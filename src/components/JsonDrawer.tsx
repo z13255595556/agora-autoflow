@@ -43,7 +43,7 @@ export default function JsonDrawer({ onClose }: { onClose: () => void }) {
       {tab === 'export' ? (
         <>
           <div className="dock__note">
-            逻辑（nodes / edges）与布局（layout）分开存，流程才能 diff、能 code review、能用 API 生成。
+            逻辑（nodes / edges）与布局（layout）分开存，便于 diff、code review 和 API 生成。
           </div>
           <pre className="drawer__code mono">{json}</pre>
         </>
