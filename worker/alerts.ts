@@ -43,20 +43,27 @@ export function runLink(flowId: string, runId: string): string {
 export async function recordRunAlert(runId: string): Promise<void> {
   const { rows } = await pool.query(
     `SELECT r.flow_id, r.status, r.error, r.trigger_kind, r.scheduled_time,
-            f.name AS flow_name, f.notify_config,
+            f.name AS flow_name, f.notify_config, uns.webhook AS user_webhook,
             (SELECT s.node_id FROM steps s
               WHERE s.run_id = r.id AND s.status = 'failed'
               ORDER BY s.seq LIMIT 1) AS failed_node,
             (SELECT s.error FROM steps s
               WHERE s.run_id = r.id AND s.status = 'failed'
               ORDER BY s.seq LIMIT 1) AS failed_error
-       FROM runs r JOIN flows f ON f.id = r.flow_id
+       FROM runs r
+       JOIN flows f ON f.id = r.flow_id
+       -- 流程主人自己配的默认地址。owner 为 NULL（008 之前建的无主流程）
+       -- join 不上 → 没有用户级地址 → 下面的守卫会让它不登记
+       LEFT JOIN user_notify_settings uns ON uns.email = f.owner
       WHERE r.id = $1`,
     [runId],
   )
   const r = rows[0]
   if (!r || r.status === 'success' || r.status === 'canceled') return
-  if (!r.notify_config?.webhook) return   // 没配通知就不登记，避免堆一堆发不出去的
+  // **流程级覆盖用户级。** 语义是"这条关键流程单独发到值班群，其余都进我的个人群"。
+  // 合并只在这一处发生 —— 存储层两张表各存各的，让"谁覆盖谁"只有一个实现。
+  const webhook: string | undefined = r.notify_config?.webhook ?? r.user_webhook ?? undefined
+  if (!webhook) return   // 没配通知就不登记，避免堆一堆发不出去的
 
   const reason = String(r.failed_error ?? r.error ?? '未知错误').slice(0, 120)
   const dedup = `${r.flow_id}:${r.failed_node ?? '-'}:${reason.slice(0, 60)}`
@@ -73,7 +80,7 @@ export async function recordRunAlert(runId: string): Promise<void> {
         reason,
         triggerKind: r.trigger_kind,
         scheduledTime: r.scheduled_time,
-        webhook: r.notify_config.webhook,
+        webhook,
       }),
     ],
   )

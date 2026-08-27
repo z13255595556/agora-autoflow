@@ -11,6 +11,7 @@ import type { FlowDefinition } from '../types'
 import Icon from './Icon'
 import RunHistory from './RunHistory'
 import UsageDashboard from './UsageDashboard'
+import NotifySettingsDialog from './NotifySettingsDialog'
 import { normalizeFlowDefinition } from '../lib/flowImport'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
 import { flowCardMeta } from '../lib/flowCardMeta'
@@ -68,6 +69,7 @@ export default function Home({
    */
   const [admin, setAdmin] = useState(false)
   const [usageOpen, setUsageOpen] = useState(false)
+  const [notifyOpen, setNotifyOpen] = useState(false)
   /**
    * 看哪一屏。**默认永远是「我的」** —— 管理员身份不该悄悄把他自己的工作台
    * 换成全公司的流程：那样他每天真正在用的那一屏就再也回不去了。
@@ -286,6 +288,14 @@ export default function Home({
             用量看板
           </button>
         )}
+        {/* 失败通知是**服务端模式且认得出你是谁**才有意义的：本地模式没有 worker、
+            也就没有告警；认不出身份的话这份设置无处可存（见 /api/me/notify 的 403）。
+            和「流程设置」里那块同一个理由 —— 不画一个存不了的输入框。 */}
+        {list.mode === 'server' && me && (
+          <button className="btn" onClick={() => setNotifyOpen(true)} title="我的流程失败时通知我">
+            失败通知
+          </button>
+        )}
         <button className="btn" onClick={() => fileRef.current?.click()}>
           导入 JSON
         </button>
@@ -472,6 +482,7 @@ export default function Home({
 
       {history && <RunHistory flow={history} initialRunId={openRun?.flowId === history.id ? openRun.runId : undefined} onClose={() => setHistory(null)} />}
       {usageOpen && <UsageDashboard onClose={() => setUsageOpen(false)} />}
+      {notifyOpen && <NotifySettingsDialog onClose={() => setNotifyOpen(false)} />}
     </div>
   )
 }
@@ -539,7 +550,6 @@ function FlowCard({
         </span>
       </button>
 
-      <button className="fcard__history" onClick={onHistory}>运行记录</button>
       <div className="menu fcard__menu" ref={ref}>
         <button className="fcard__more" onClick={() => setMenu((v) => !v)} title="更多操作">
           <Icon name="more" />

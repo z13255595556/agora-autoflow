@@ -20,7 +20,20 @@ os.environ.update(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from sql_service import datalego, http_request, identity, main, manifest, robot, wecom  # noqa: E402
+# 先只导入包本体：它会读 server/.env。清掉本地假身份**必须在这一步之后、
+# 导入 main 之前** —— .env 是包导入时才读进来的（早清等于没清），而 main
+# 在导入时会按当时的环境打一条"假身份已开启"的横幅（晚清的话测试输出会说谎）。
+import sql_service  # noqa: E402,F401
+
+# **基线：没有身份。** 这个文件里一整类用例的前提是"认不出登录身份"
+#（机器人账号权限、WORKER_TOKEN 委派、缺身份 403 …）。而 server/.env 是
+# sql_service/__init__ 在导入时自动加载的 —— 开发机上只要配了本地假身份，
+# 这些用例会一次挂掉八条，而报错（KeyError: 'detail'）完全指不到真正的原因。
+# 所以在这里显式清掉；要用假身份的那一节自己临时打开。
+for _k in ("DEV_IDENTITY_EMAIL", "DEV_IDENTITY_ADMIN"):
+    os.environ.pop(_k, None)
+
+from sql_service import datalego, db, http_request, identity, main, manifest, robot, wecom  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -366,7 +379,27 @@ ok("没有登录态就不带 creator（= 用机器人账号的权限）", SUBMIT
 # 这两条是权限隔离的全部依据，错一条就是越权：
 #   1. Athena 验证的邮箱要真的发出去；
 #   2. 请求体里带的 creator 一律无视 —— 那是编流程的人能随手改的字符串。
+def _dev_env(**kw):
+    """临时改环境变量，跑完还原（含原本就没有的键）"""
+    old = {k: os.environ.get(k) for k in kw}
+    for k, v in kw.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    return old
+
+
+def _restore(old):
+    for k, v in old.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 _COOKIE = {"HCIAuthToken": "opaque-session"}
+_GOOD_HOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdefgh-1234"
 
 client.post("/nodes/sql.query/submit", json={"params": {
     "engine": "hive", "sql": "SELECT 1", "params": {},
@@ -630,6 +663,125 @@ finally:
 # 还原之后一切照旧 —— 上面那些替换没留下后遗症
 ok("平台恢复后照常提交",
    client.post("/nodes/sql.query/submit", json=SUBMIT_PARAMS).status_code, 200)
+
+# ---------------------------------------------------------------- 本地开发身份
+#
+# 这是个**安全开关**，所以测的重点是它什么时候**不**生效。三道闸缺一不认：
+# 写了合法邮箱、PGHOST 没设、这次请求没带 cookie。
+# 误开的代价是本地看到的权限样子和线上不一样，而且看不出来。
+
+ok("没有 DEV_IDENTITY_EMAIL 就认不出身份",
+   client.get("/whoami").json()["creator"], None)
+
+_saved = _dev_env(DEV_IDENTITY_EMAIL="dev@agora.io", PGHOST=None, DEV_IDENTITY_ADMIN=None)
+try:
+    _w = client.get("/whoami").json()
+    ok("开了之后认得出这个人", _w["creator"], "dev@agora.io")
+    ok("★ source 报 dev，不冒充 athena", _w["source"], "dev")
+    truthy("note 明说这是假身份", _w["note"] and "本地开发身份" in _w["note"])
+    ok("默认不是管理员", _w["isAdmin"], False)
+
+    # 闸 3：带 cookie 就走真实那条路。这里的 cookie 会被假 Athena 认成 _ATHENA_EMAIL，
+    # 证明假身份没有盖掉它
+    _w2 = client.get("/whoami", cookies=_COOKIE).json()
+    ok("★ 带 cookie 时以真实登录为准", (_w2["creator"], _w2["source"]), (_ATHENA_EMAIL, "athena"))
+
+    # 带一个会被 Athena 拒掉的 cookie：结论必须是"认不出"，不能退回假身份
+    _w3 = client.get("/whoami", cookies={"HCIAuthToken": "rejected-session"}).json()
+    ok("★ Athena 拒了不会退回假身份", _w3["creator"], None)
+
+    # 闸 2：PGHOST 在 = 生产形态，直接不认
+    _s2 = _dev_env(PGHOST="db.internal")
+    ok("★ PGHOST 一在就不认（生产形态）", client.get("/whoami").json()["creator"], None)
+    _restore(_s2)
+
+    # 邮箱格式不对也不认 —— 别让 DEV_IDENTITY_EMAIL=1 这种写法蒙混过去
+    _s3 = _dev_env(DEV_IDENTITY_EMAIL="not-an-email")
+    ok("★ 不是合法邮箱就不认", client.get("/whoami").json()["creator"], None)
+    _restore(_s3)
+
+    # 管理员开关
+    _s4 = _dev_env(DEV_IDENTITY_ADMIN="1")
+    ok("显式打开才是管理员", client.get("/whoami").json()["isAdmin"], True)
+    _restore(_s4)
+
+    # 假身份能用来配自己的失败通知（这正是它存在的理由之一）
+    if db.configured():
+        with db.pool().connection() as _c:
+            _c.execute("DELETE FROM user_notify_settings WHERE email = %s", ("dev@agora.io",))
+            _c.commit()
+        ok("用假身份能配通知设置",
+           client.put("/api/me/notify", json={"webhook": _GOOD_HOOK}).json(),
+           {"notifyConfig": {"webhook": _GOOD_HOOK}})
+        with db.pool().connection() as _c:
+            _c.execute("DELETE FROM user_notify_settings WHERE email = %s", ("dev@agora.io",))
+            _c.execute("DELETE FROM audit WHERE target_id = %s", ("dev@agora.io",))
+            _c.commit()
+finally:
+    _restore(_saved)
+
+ok("还原之后又认不出身份了", client.get("/whoami").json()["creator"], None)
+
+
+# ---------------------------------------------------------------- 用户级失败通知
+#
+# 这一对端点的身份**只能**来自 Athena 校验过的 cookie。它存的是等同凭证的群机器人
+# 地址，一旦能按参数指定是谁，谁都能读别人的 —— 而"被读走了"在界面上和正常使用
+# 没有任何区别。所以这里锁三件事：认不出身份就 403、地址前缀必须对、存了能读回来。
+#
+# 没有数据库时这些端点回 503（_guard 翻译 DbUnavailable），那时只验 403 那一条 ——
+# 它在鉴权阶段就返回了，根本走不到存储层。
+
+ok("★ 认不出登录身份时，读通知设置 403", client.get("/api/me/notify").status_code, 403)
+ok("★ 认不出登录身份时，写通知设置 403",
+   client.put("/api/me/notify", json={"webhook": _GOOD_HOOK}).status_code, 403)
+ok("403 带结构化 code，前端不靠匹配文案分支",
+   client.get("/api/me/notify").json()["detail"]["code"], "NOTIFY_IDENTITY")
+
+if db.configured():
+    with db.pool().connection() as _c:
+        _c.execute("DELETE FROM user_notify_settings WHERE email = %s", (_ATHENA_EMAIL,))
+        _c.commit()
+
+    ok("带 cookie 时默认没配",
+       client.get("/api/me/notify", cookies=_COOKIE).json(), {"notifyConfig": None})
+
+    _r = client.put("/api/me/notify", json={"webhook": _GOOD_HOOK}, cookies=_COOKIE)
+    ok("设置成功", (_r.status_code, _r.json()), (200, {"notifyConfig": {"webhook": _GOOD_HOOK}}))
+    ok("读回来是存进去的",
+       client.get("/api/me/notify", cookies=_COOKIE).json(), {"notifyConfig": {"webhook": _GOOD_HOOK}})
+
+    ok("★ 非企微地址 400",
+       client.put("/api/me/notify", json={"webhook": "https://evil.example/hook"},
+                  cookies=_COOKIE).status_code, 400)
+    ok("被拒之后原值没被改掉",
+       client.get("/api/me/notify", cookies=_COOKIE).json(), {"notifyConfig": {"webhook": _GOOD_HOOK}})
+
+    # **存的是 cookie 解出来的那个人，不是任何请求头说的人。**
+    # X-Run-Creator 是 worker 委派用的，浏览器这条路上它必须没有话语权
+    _r = client.put("/api/me/notify", json={"webhook": _GOOD_HOOK + "9"},
+                    headers={"X-Run-Creator": "attacker@agora.io"}, cookies=_COOKIE)
+    ok("★ 请求头改不了这行是谁的", _r.json(), {"notifyConfig": {"webhook": _GOOD_HOOK + "9"}})
+    if db.configured():
+        with db.pool().connection() as _c:
+            _n = _c.execute(
+                "SELECT count(*) FROM user_notify_settings WHERE email = %s",
+                ("attacker@agora.io",)).fetchone()[0]
+        ok("★ 攻击者那一行根本不存在", _n, 0)
+
+    ok("传 null 关掉",
+       client.put("/api/me/notify", json={"webhook": None}, cookies=_COOKIE).json(),
+       {"notifyConfig": None})
+    ok("关掉后读回 None",
+       client.get("/api/me/notify", cookies=_COOKIE).json(), {"notifyConfig": None})
+
+    with db.pool().connection() as _c:
+        _c.execute("DELETE FROM user_notify_settings WHERE email = %s", (_ATHENA_EMAIL,))
+        _c.execute("DELETE FROM audit WHERE target_id = %s", (_ATHENA_EMAIL,))
+        _c.commit()
+else:
+    print("（没配数据库，用户级通知只验了 403 那几条；存取要 Postgres）")
+
 
 for name, got, want in FAIL:
     print(f"✗ {name}\n    实际: {got!r}\n    期望: {want!r}")

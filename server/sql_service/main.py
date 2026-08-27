@@ -29,6 +29,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 假身份开着这件事必须**在启动时就吵一次**。它在界面上和真登录一模一样，
+# 唯一能提醒人的时机就是这里 —— 否则某天有人拿本地看到的权限样子去下结论，
+# 而那个结论错在哪没有任何线索。
+if identity.dev_user() is not None:
+    _dev = identity.dev_user()
+    print("=" * 72, flush=True)
+    print(f"⚠ 本地开发身份已开启：所有请求都会被当成 {_dev.email}"
+          f"{'（管理员）' if _dev.is_admin else ''}", flush=True)
+    print("  这不是真的登录。去掉 server/.env 里的 DEV_IDENTITY_EMAIL 即可关闭。", flush=True)
+    print("=" * 72, flush=True)
+
 PROBE_LIMIT = 1
 
 
@@ -216,8 +227,14 @@ def whoami(request: Request) -> Dict[str, Any]:
             "permissions": list(user.permissions),
             "isAdmin": user.is_admin,
         },
-        # 认不出身份不报错，但要把后果说清楚：走机器人账号 = 没有按人隔离
-        "note": None if creator else "认不出登录身份，查询将使用服务端机器人账号的权限",
+        # 认不出身份不报错，但要把后果说清楚：走机器人账号 = 没有按人隔离。
+        # dev 身份也要说 —— 它在界面上和真登录一模一样，不说的话很容易拿本地
+        # 看到的样子去推断线上的样子
+        "note": (
+            "认不出登录身份，查询将使用服务端机器人账号的权限" if not creator
+            else "本地开发身份（DEV_IDENTITY_EMAIL），不是真的登录用户"
+            if identity.source_of(request) == "dev" else None
+        ),
     }
 
 
@@ -788,6 +805,52 @@ def set_notify(
     _guard(flowstore.get_flow, flow_id, viewer)
     config = {"webhook": body.webhook} if body.webhook else None
     return _guard(flowstore.set_notify_config, flow_id, config, _actor(request, x_forwarded_user), viewer)
+
+
+# ---------------------------------------------------------------- 用户级失败通知
+#
+# 上面那对是「这条流程发到哪个群」；这一对是「我名下的流程失败了通知我」。
+# 分成两个资源而不是给 /notify 加个 scope 参数：它们的**身份来源不一样** ——
+# 流程级按 flow_id 鉴权（_guard + _viewer），用户级只认 cookie 解出来的那个人。
+
+
+def _me_or_403(request: Request, x_forwarded_user: Optional[str]) -> str:
+    """这次请求是谁。认不出就 403。
+
+    **绝不接受调用方传 email。** 这一列存的是等同凭证的群机器人地址，
+    按参数取行等于谁都能读别人的；而"读到了"这件事在界面上和正常使用没有区别。
+
+    匿名（本地开发没有 cookie）不是一个人，不能有自己的通知设置 ——
+    给匿名留一行的话，同一台机器上所有认不出身份的人会共用一个地址。
+    """
+    email = _actor(request, x_forwarded_user)
+    if not email:
+        raise HTTPException(403, errors.payload("NOTIFY_IDENTITY", "无法识别登录邮箱，不能设置失败通知"))
+    return email
+
+
+@app.get("/api/me/notify")
+def get_my_notify(
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    email = _me_or_403(request, x_forwarded_user)
+    return {"notifyConfig": _guard(flowstore.get_user_notify, email)}
+
+
+@app.put("/api/me/notify")
+def set_my_notify(
+    body: NotifyConfigBody,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """我名下所有流程失败时通知到哪。webhook 为空 = 关掉。
+
+    流程自己配了地址的话，**以流程的为准**（合并在 worker/alerts.ts）——
+    语义是"这条关键流程单独发到值班群，其余都进我的个人群"。
+    """
+    email = _me_or_403(request, x_forwarded_user)
+    return _guard(flowstore.set_user_notify, email, body.webhook, email)
 
 
 @app.post("/api/flows/{flow_id}/webhook/rotate")

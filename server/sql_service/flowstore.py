@@ -92,11 +92,15 @@ def _one(conn, sql: str, args=()) -> Optional[Dict[str, Any]]:
     return got[0] if got else None
 
 
-def _audit(conn, actor: Optional[str], action: str, target_id: str, detail: Any = None) -> None:
+def _audit(conn, actor: Optional[str], action: str, target_id: str, detail: Any = None,
+           target_type: str = "flow") -> None:
+    """target_type 默认 flow —— 这个文件里绝大多数审计都是流程。
+    用户级通知设置的目标是**人**，它显式传 "user"，否则审计表里会出现一条
+    target_type=flow 但 target_id 是邮箱的记录，按流程查审计时凭空多出来一条。"""
     conn.execute(
         "INSERT INTO audit (actor, action, target_type, target_id, detail)"
-        " VALUES (%s, %s, 'flow', %s, %s)",
-        (actor, action, target_id, Jsonb(detail) if detail else None),
+        " VALUES (%s, %s, %s, %s, %s)",
+        (actor, action, target_type, target_id, Jsonb(detail) if detail else None),
     )
 
 
@@ -146,6 +150,21 @@ def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
 WECOM_WEBHOOK_PREFIX = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send"
 
 
+def _clean_wecom_webhook(hook: Any, field: str) -> str:
+    """校验一个企微群机器人地址，返回去掉首尾空白的那份。
+
+    **流程级和用户级共用这一条规则。** 分成两份写的话，两边迟早会漂
+    （通常是新加的那份忘了校验前缀），而症状是告警静默发不出去 ——
+    见 WECOM_WEBHOOK_PREFIX 上面那段。
+    """
+    if not isinstance(hook, str) or not hook.strip():
+        raise flowdef.FlowDefError(f"{field} 必须是非空字符串")
+    hook = hook.strip()
+    if not hook.startswith(WECOM_WEBHOOK_PREFIX):
+        raise flowdef.FlowDefError(f"{field} 必须是企微群机器人地址（{WECOM_WEBHOOK_PREFIX}?key=…）")
+    return hook
+
+
 def set_notify_config(flow_id: str, config: Optional[Dict[str, Any]], actor: Optional[str],
                       viewer: Any = ANY) -> Dict[str, Any]:
     """失败时通知到哪。**不走草稿保存那条路**：草稿是编辑器每几秒一次的自动保存，
@@ -155,13 +174,7 @@ def set_notify_config(flow_id: str, config: Optional[Dict[str, Any]], actor: Opt
     """
     cleaned: Optional[Dict[str, Any]] = None
     if config:
-        hook = config.get("webhook")
-        if not isinstance(hook, str) or not hook.strip():
-            raise flowdef.FlowDefError("notifyConfig.webhook 必须是非空字符串")
-        hook = hook.strip()
-        if not hook.startswith(WECOM_WEBHOOK_PREFIX):
-            raise flowdef.FlowDefError(f"notifyConfig.webhook 必须是企微群机器人地址（{WECOM_WEBHOOK_PREFIX}?key=…）")
-        cleaned = {"webhook": hook}
+        cleaned = {"webhook": _clean_wecom_webhook(config.get("webhook"), "notifyConfig.webhook")}
     with db.pool().connection() as conn:
         _assert_visible(conn, flow_id, viewer)
         conn.execute(
@@ -178,6 +191,50 @@ def set_notify_config(flow_id: str, config: Optional[Dict[str, Any]], actor: Opt
 def _mask(hook: str) -> str:
     key = hook.split("key=")[-1] if "key=" in hook else hook
     return f"…key={key[:4]}***{key[-2:]}" if len(key) > 8 else "…key=***"
+
+
+# ---------------------------------------------------------------- 用户级失败通知
+#
+# 按流程配（上面那对函数）解决的是"这条流程发到哪个群"；这里解决的是
+# "我名下的流程失败了要有人知道"。两者的关系是**流程级覆盖用户级**，
+# 合并发生在 worker/alerts.ts 取地址那一步，不在这里 —— 存储层只管存，
+# 让"谁覆盖谁"这条规则只有一个实现。
+
+
+def get_user_notify(email: str) -> Optional[Dict[str, Any]]:
+    """这个人配的失败通知地址。没配 = None。
+
+    email 由服务端从登录 cookie 解出来（main._actor），**绝不接受调用方传** ——
+    这一列存的是等同凭证的群机器人地址，按请求参数取行等于谁都能读别人的。
+    """
+    with db.pool().connection() as conn:
+        row = _one(conn, "SELECT webhook FROM user_notify_settings WHERE email = %s", (email,))
+    return {"webhook": row["webhook"]} if row else None
+
+
+def set_user_notify(email: str, webhook: Optional[str], actor: Optional[str]) -> Dict[str, Any]:
+    """设置 / 清空这个人的失败通知地址。webhook 为 None 或空 = 关掉（删行）。
+
+    地址校验和流程级共用 _clean_wecom_webhook：填错了告警会静默发不出去，
+    而"告警发不出去"这件事本身没人会知道。
+    """
+    cleaned = _clean_wecom_webhook(webhook, "webhook") if webhook else None
+    with db.pool().connection() as conn:
+        if cleaned:
+            conn.execute(
+                "INSERT INTO user_notify_settings (email, webhook, updated_at)"
+                " VALUES (%s, %s, now())"
+                " ON CONFLICT (email) DO UPDATE SET webhook = EXCLUDED.webhook, updated_at = now()",
+                (email, cleaned),
+            )
+        else:
+            conn.execute("DELETE FROM user_notify_settings WHERE email = %s", (email,))
+        # 和流程级一样：只记开关和末几位。整条地址等同凭证，不进审计表
+        _audit(conn, actor, "user.notify", email,
+               {"enabled": bool(cleaned), "webhook": _mask(cleaned) if cleaned else None},
+               target_type="user")
+        conn.commit()
+    return {"notifyConfig": {"webhook": cleaned} if cleaned else None}
 
 
 def _differs(draft: Any, published: Any) -> bool:

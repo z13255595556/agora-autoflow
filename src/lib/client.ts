@@ -451,6 +451,23 @@ export function setFlowNotify(flowId: string, webhook: string | null) {
   })
 }
 
+// 用户级默认：我名下**所有**流程失败都发到这里。流程自己配了的话以流程的为准
+//（合并在 worker/alerts.ts 取地址那一步）。
+//
+// 路径里没有 email —— 身份由服务端从登录 cookie 解出来。这一列存的是等同凭证的
+// 群机器人地址，让调用方指定是谁等于谁都能读别人的。
+
+export function getMyNotify() {
+  return req<{ notifyConfig: NotifyConfig | null }>('/api/me/notify')
+}
+
+export function setMyNotify(webhook: string | null) {
+  return req<{ notifyConfig: NotifyConfig | null }>('/api/me/notify', {
+    method: 'PUT',
+    body: JSON.stringify({ webhook }),
+  })
+}
+
 export function rotateFlowWebhook(flowId: string) {
   return req<RemoteWebhook>(`/api/flows/${encodeURIComponent(flowId)}/webhook/rotate`, {
     method: 'POST',

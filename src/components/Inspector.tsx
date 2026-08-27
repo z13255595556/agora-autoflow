@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFlow } from '../store'
 import { CATEGORY_COLOR, NODE_TYPE_MAP } from '../registry'
 import { availableVars, validateNode } from '../lib/vars'
@@ -12,7 +12,9 @@ import FlowInputsEditor from './FlowInputsEditor'
 import Icon from './Icon'
 import { storageMode } from '../lib/library'
 import { getFlowNotify, setFlowNotify } from '../lib/client'
-import { pushToast } from '../lib/toast'
+import WecomWebhookField from './WecomWebhookField'
+import DataReferenceDrawer from './DataReferenceDrawer'
+import { useReferenceHost } from './ReferencePickerContext'
 
 /**
  * 选中节点时浮在画布右侧的配置面板。
@@ -36,9 +38,29 @@ export default function Inspector() {
   )
 
   if (!node || !t) return null
+  return <InspectorCard nodeId={node.id} vars={vars} />
+}
+
+/**
+ * 卡片本身就是抽屉的外壳：右边固定 398 是参数栏，左边被拉出来的是取值栏。
+ *
+ * 卡片 `right` 钉在 12px 不动、只动 `width`，所以拉出的整个过程参数栏
+ * **一个像素都不挪** —— 抽屉是从它左边拽出来的，不是它被挤走。
+ */
+function InspectorCard({ nodeId, vars }: { nodeId: string; vars: ReturnType<typeof availableVars> }) {
+  const { request, close } = useReferenceHost(nodeId)
+  // 收回的 180ms 里内容得留着，否则缩回去的是一条空灰条
+  const last = useRef(request)
+  if (request) last.current = request
+
   return (
-    <aside className="dock" data-node-id={node.id}>
-      <NodeInspector key={node.id} vars={vars} />
+    <aside className={`dock nx-drawer-host${request ? ' is-open' : ''}`} data-node-id={nodeId}>
+      <div className="nx-drawer">
+        <DataReferenceDrawer request={request ?? last.current} inert={!request} onClose={close} />
+      </div>
+      <div className="nx-col-params">
+        <NodeInspector key={nodeId} vars={vars} />
+      </div>
     </aside>
   )
 }
@@ -356,8 +378,6 @@ function NotifySettings() {
   const flowId = useFlow((s) => s.flowId)
   const serverMode = storageMode() === 'server'
   const [loaded, setLoaded] = useState<string | null>(null)   // 服务端当前的值（'' = 没配）
-  const [draft, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -365,12 +385,7 @@ function NotifySettings() {
     let alive = true
     setError(null)
     getFlowNotify(flowId)
-      .then((r) => {
-        if (!alive) return
-        const hook = r.notifyConfig?.webhook ?? ''
-        setLoaded(hook)
-        setDraft(hook)
-      })
+      .then((r) => { if (alive) setLoaded(r.notifyConfig?.webhook ?? '') })
       .catch((err) => {
         if (alive) setError(err instanceof Error ? err.message : String(err))
       })
@@ -380,52 +395,31 @@ function NotifySettings() {
   // 本地模式没有 worker，也就没有告警 —— 不画一个存不了的输入框
   if (!serverMode) return null
 
-  const dirty = loaded !== null && draft.trim() !== loaded
-  const save = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const r = await setFlowNotify(flowId, draft.trim() || null)
-      const hook = r.notifyConfig?.webhook ?? ''
-      setLoaded(hook)
-      setDraft(hook)
-      pushToast({ tone: 'ok', text: hook ? '失败通知已开启' : '失败通知已关闭' })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <div className="section">
       <div className="section__head section__head--static">
         失败时通知
-        <em>{loaded ? '已开启' : loaded === null ? '读取中…' : '未开启'}</em>
+        <em>{loaded ? '已开启' : loaded === null ? '读取中…' : '跟随个人设置'}</em>
       </div>
       <div className="section__body">
-        <div className="field">
-          <label className="field__label">企微群机器人地址</label>
-          <input
-            type="password"
-            autoComplete="off"
-            value={draft}
-            placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"
-            disabled={loaded === null || busy}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <div className="field__desc">
-            整条运行失败（不管是定时、Webhook 还是手动）就往这个群发一条；同一原因 10 分钟内只发一条。
-            留空并保存 = 关掉。
-          </div>
-          {error && <div className="field__errors" role="alert">{error}</div>}
-        </div>
-        <div className="notify__actions">
-          <button className="btn btn--sm btn--primary" disabled={!dirty || busy} onClick={() => void save()}>
-            {busy ? '保存中…' : draft.trim() ? '保存' : loaded ? '关闭通知' : '保存'}
-          </button>
-          {dirty && !busy && <button className="btn btn--sm" onClick={() => setDraft(loaded ?? '')}>撤销修改</button>}
-        </div>
+        {error && <div className="field__errors" role="alert">{error}</div>}
+        <WecomWebhookField
+          loaded={loaded}
+          onSave={async (hook) => {
+            const r = await setFlowNotify(flowId, hook)
+            return r.notifyConfig?.webhook ?? ''
+          }}
+          onSaved={setLoaded}
+          toastFor={(saved) => (saved ? '这条流程的失败通知已单独设置' : '已改回跟随个人设置')}
+          desc={
+            <>
+              <b>只给这条流程用</b>，填了就覆盖你在首页「失败通知」里配的个人默认地址。
+              留空并保存 = 改回跟随个人设置。
+              <br />
+              整条运行失败（不管定时、Webhook 还是手动）才发；同一原因 10 分钟内只发一条。
+            </>
+          }
+        />
       </div>
     </div>
   )

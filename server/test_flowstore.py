@@ -530,9 +530,64 @@ ok("无主的对谁都在", flowstore.owner_visible(None, "alice@agora.io"), Tru
 ok("★ 认不出身份时，有主的一律不算我的",
    flowstore.owner_visible("alice@agora.io", None), False)
 
+# ---------------------------------------------------------------- 用户级失败通知
+#
+# 按流程配（上面那组）是"这条流程发到哪个群"；这一组是"我名下的流程失败了通知我"。
+# 两者的合并（流程级覆盖用户级）在 worker/alerts.ts，由 test/alerts.test.ts 锁住；
+# 这里只管存取本身。
+
+USER_A = f"notify_a_{uuid.uuid4().hex[:8]}@agora.io"
+USER_B = f"notify_b_{uuid.uuid4().hex[:8]}@agora.io"
+USERS_MADE = [USER_A, USER_B]
+
+ok("默认没配", flowstore.get_user_notify(USER_A), None)
+
+ok("设置后返回存进去的", flowstore.set_user_notify(USER_A, good_hook, USER_A),
+   {"notifyConfig": {"webhook": good_hook}})
+ok("读回来一致", flowstore.get_user_notify(USER_A), {"webhook": good_hook})
+
+# 校验和流程级共用 _clean_wecom_webhook —— 填错了告警会静默发不出去
+raises("★ 非企微地址被拒", FlowDefError,
+       lambda: flowstore.set_user_notify(USER_A, "https://example.com/hook", USER_A))
+raises("空白地址被拒", FlowDefError,
+       lambda: flowstore.set_user_notify(USER_A, "   ", USER_A))
+ok("被拒之后原值还在", flowstore.get_user_notify(USER_A), {"webhook": good_hook})
+
+# 首尾空白要吃掉：粘贴地址时很容易带一个换行，带着的话前缀判断照样过，
+# 但 worker 拿它去 POST 就未必了
+ok("首尾空白被吃掉", flowstore.set_user_notify(USER_A, f"  {good_hook}\n", USER_A),
+   {"notifyConfig": {"webhook": good_hook}})
+
+# 改一次覆盖一次（ON CONFLICT DO UPDATE），不是插出第二行
+other_hook = good_hook + "2"
+ok("改地址是覆盖", flowstore.set_user_notify(USER_A, other_hook, USER_A),
+   {"notifyConfig": {"webhook": other_hook}})
+with db.pool().connection() as _c:
+    _n = _c.execute("SELECT count(*) FROM user_notify_settings WHERE email = %s", (USER_A,)).fetchone()[0]
+ok("一个人只有一行", _n, 1)
+
+ok("★ 别人的读不到自己的", flowstore.get_user_notify(USER_B), None)
+
+ok("传 None 关掉", flowstore.set_user_notify(USER_A, None, USER_A), {"notifyConfig": None})
+ok("关掉后读回 None", flowstore.get_user_notify(USER_A), None)
+
+# 审计只记开关和末几位 —— 整条地址等同凭证，不进审计表
+flowstore.set_user_notify(USER_A, good_hook, USER_A)
+with db.pool().connection() as _c:
+    _row = _c.execute(
+        "SELECT target_type, detail FROM audit WHERE action = 'user.notify' AND target_id = %s"
+        " ORDER BY id DESC LIMIT 1", (USER_A,)).fetchone()
+ok("审计的 target_type 是 user", _row[0], "user")
+ok("★ 审计里没有完整地址", good_hook in str(_row[1]), False)
+ok("审计记了是开着的", _row[1]["enabled"], True)
+
+
 # ---------------------------------------------------------------- 收拾
 
 with db.pool().connection() as conn:
+    for _u in USERS_MADE:
+        conn.execute("DELETE FROM user_notify_settings WHERE email = %s", (_u,))
+        conn.execute("DELETE FROM audit WHERE target_id = %s", (_u,))
     for made in MADE:
         conn.execute("DELETE FROM audit WHERE target_id = %s", (made,))
         # runs → flow_versions 有外键，先收运行记录再删流程
