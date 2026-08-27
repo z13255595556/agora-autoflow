@@ -73,8 +73,7 @@ export default function VarDrawer({
         </div>
 
         <div className="dock__note">
-          点任意一条复制为 <code>{'{{ … }}'}</code>，可粘进 SQL、消息内容等任意输入框。
-          节点字段仅<b>下游</b>可引用；运行过一次后显示实际值。
+          点一条复制为 <code>{'{{ … }}'}</code>。下游才能引用。
         </div>
 
         <div className="dock__search">

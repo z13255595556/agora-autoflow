@@ -64,11 +64,8 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
           <div className="section__head section__head--static">触发地址</div>
           <div className="section__body">
             <div className="wh__warn">
-              <b>未连接流程存储，webhook 用不了。</b>
-              <span>
-                触发地址、密钥、投递记录都存在服务端；而且外部系统要打得到的是服务器，
-                不是你这台浏览器。给服务端配上 <code>DATABASE_URL</code> 后这里会出现地址。
-              </span>
+              <b>本地模式没有触发地址。</b>
+              <span>连上服务端后可生成。</span>
             </div>
           </div>
         </div>
@@ -97,8 +94,7 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
         {!hook ? (
           <>
             <div className="wh__empty">
-              地址还没生成。它不是配置出来的 —— 要先在服务端建一条记录，
-              拿到一段不可枚举的 token 和调用密钥。生成后可以随时回来查看、复制。
+              点下方生成地址和密钥。
             </div>
             <button
               className="btn btn--primary"
@@ -119,10 +115,9 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
             {/* ★ 没发布 = 打过来必然 409。放在最上面，别让用户从上游的报错里发现 */}
             {!published && (
               <div className="wh__warn">
-                <b>流程尚未发布，这个地址现在打过来会返回 409。</b>
+                <b>未发布，现在 POST 会 409。</b>
                 <span>
-                  webhook 只触发<b>已发布</b>的那一版 —— 草稿改坏了不该影响线上调用。
-                  顶栏点一次「发布」它就生效。
+                  先点顶栏「发布」。webhook 只跑已发布版本。
                 </span>
               </div>
             )}
@@ -139,7 +134,7 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
               </div>
             ) : authMode !== 'none' && (
               <div className="wh__hint">
-                旧版本生成的地址，未保存可回显的密钥。<b>轮换</b>一次后新密钥持续显示，旧地址与旧密钥立即失效。
+                旧地址没有可复制的密钥，轮换一次后可复制。
               </div>
             )}
 
@@ -156,7 +151,7 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
                 <b>节点上改了配置，但还没生效。</b>
                 <span>{drift.join('；')}</span>
                 <span className="wh__warn-sub">
-                  改认证方式会让上游调用<b>立刻 401</b>，故不随保存生效，需手动应用。
+                  改认证会立刻 401，需手动应用。
                 </span>
                 <button
                   className="btn btn--sm"
@@ -179,9 +174,6 @@ export default function WebhookPanel({ nodeParams }: { nodeParams: Record<string
               value={curlExample({ url, authMode, secret, inputs: flowInputs })}
               block
             />
-            <div className="wh__hint">
-              body 顶层<b>同名</b>字段自动作为流程入参，<b>未声明字段丢弃</b>；类型不符或缺必填返回 400，不产生运行记录。
-            </div>
 
             <Deliveries rows={view?.deliveries ?? []} onRefresh={load} />
 
@@ -284,7 +276,7 @@ function Deliveries({ rows, onRefresh }: { rows: api.WebhookDelivery[]; onRefres
             <span>不记录 body 原文 —— 里面可能有用户 id、手机号</span>
           </div>
           {rows.length === 0 ? (
-            <div className="empty">还没有收到过请求。上游调用一次即有记录，被拒的也记。</div>
+            <div className="empty">还没收到请求。被拒的也会记。</div>
           ) : (
             <table className="wh__table">
               <tbody>

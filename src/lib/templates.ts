@@ -26,7 +26,7 @@ export const TEMPLATES: Template[] = [
     key: 'scheduled-sql',
     kind: 'recipe',
     name: '定时查询 SQL',
-    desc: '定时触发 → DataLego SQL → 企微通知，填好 SQL 和通知内容即可使用',
+    desc: '已连好 SQL → 企微，填 SQL 就能跑',
     icon: '⏰',
     build: () => ({
       ...base('定时查询 SQL'),
@@ -60,7 +60,7 @@ export const TEMPLATES: Template[] = [
     key: 'manual',
     kind: 'blank',
     name: '手动触发',
-    desc: '从编辑器手动运行，适合调试和临时任务',
+    desc: '点运行，适合调试',
     icon: '▶',
     build: () => ({
       ...base('手动流程'),
@@ -76,7 +76,7 @@ export const TEMPLATES: Template[] = [
     key: 'schedule',
     kind: 'blank',
     name: '定时器触发',
-    desc: '默认每天北京时间 09:00 自动运行，可在节点参数中调整',
+    desc: '默认每天 09:00（北京时间）',
     icon: '⏰',
     build: () => ({
       ...base('定时流程'),
@@ -95,7 +95,7 @@ export const TEMPLATES: Template[] = [
     key: 'webhook',
     kind: 'blank',
     name: 'Webhook 触发',
-    desc: '外部系统通过 HTTP POST 触发流程',
+    desc: '外部 HTTP POST 触发',
     icon: '🔗',
     build: () => ({
       ...base('Webhook 流程'),

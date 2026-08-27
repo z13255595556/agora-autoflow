@@ -255,7 +255,7 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                     <input type="checkbox" checked={paused} onChange={(e) => setNodeDisabled(node.id, e.target.checked)} />
                     <span>{paused ? '已暂停：跳过不执行，下游照常往下走' : '暂停此节点'}</span>
                   </label>
-                  {paused && <div className="field__desc">跳过该节点。引用其输出的下游节点会校验报错，需一并暂停或改引用。</div>}
+                  {paused && <div className="field__desc">下游若引用本节点输出会校验失败</div>}
                 </div>
               )}
               <div className="field">
@@ -285,11 +285,9 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                       <label>首次间隔 <input type="number" min={0} max={typeRetry.maximumIntervalMs / 1000} value={Math.round(retrySpec.initialMs / 1000)} onChange={(e) => setNodeRetry(node.id, { ...node.data.retry, initialMs: Number(e.target.value) * 1000 })} /> 秒</label>
                     </div>
                   )}
-                  <div className="field__desc">仅重试基础设施类错误（抖动、限流、超时）；SQL 语法错等改参数才能解决的不重试。间隔 ×{typeRetry.backoffCoefficient} 递增，上限 {Math.round(typeRetry.maximumIntervalMs / 1000)} 秒。</div>
+                  <div className="field__desc">只重试抖动 / 限流 / 超时</div>
                 </div>
-              ) : (
-                node.data.typeId === 'http.request' && <div className="field__desc">该节点重试在「高级设置」里单独配（网络错 / 429 / 5xx）。</div>
-              )}
+              ) : null}
               <div className="field">
                 <label className="field__label">备注</label>
                 <textarea
@@ -298,7 +296,6 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
                   placeholder="写给下一个打开它的人：这条 SQL 只看昨天、这个群是测试群……"
                   onChange={(e) => setNodeNote(node.id, e.target.value)}
                 />
-                <div className="field__desc">显示在卡片下面，不参与执行，改它不算「未发布的改动」。</div>
               </div>
             </div>
           </details>
@@ -357,7 +354,6 @@ export function FlowInspector({ onClose }: { onClose: () => void }) {
         <NotifySettings />
 
         <div className="tip">
-          入参出现在底部「运行」表单，下游用触发器变量引用。<br />
           定时 / Webhook 跑已发布版本，不是当前草稿。
         </div>
       </div>
@@ -411,13 +407,7 @@ function NotifySettings() {
           }}
           onSaved={setLoaded}
           toastFor={(saved) => (saved ? '这条流程的失败通知已单独设置' : '已改回跟随个人设置')}
-          desc={
-            <>
-              <b>仅本流程</b>，覆盖个人默认地址。留空保存 = 跟随个人设置。
-              <br />
-              整条运行失败才发（定时 / Webhook / 手动同）；同一原因 10 分钟内抑制重复。
-            </>
-          }
+          desc="覆盖个人默认；留空=跟随。整条失败才发，10 分钟内不重复。"
         />
       </div>
     </div>

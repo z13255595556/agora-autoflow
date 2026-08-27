@@ -47,7 +47,7 @@ export function PublishDialog({
           </button>
         </div>
         <div className="modal__note">
-          当前草稿定为 v{nextVersion} 并生效，定时 / Webhook 触发此版本。
+          当前草稿定为 v{nextVersion}。定时 / Webhook 将跑这一版。
         </div>
 
         <label className="vpub__label" htmlFor="publish-note">
@@ -75,9 +75,6 @@ export function PublishDialog({
         )}
 
         <div className="vpub__foot">
-          {/* 说出不填的后果，而不是催着填。空着是诚实的，
-              随手敲一个「更新」比空着更糟 */}
-          <span className="vpub__hint">留空也能发，版本历史里这一版就没有改动说明。</span>
           <button className="btn" onClick={onCancel} disabled={busy}>取消</button>
           <button className="btn btn--primary" onClick={() => void go()} disabled={busy}>
             {busy ? '发布中…' : `发布 v${nextVersion}`}
@@ -142,7 +139,7 @@ export function VersionHistory({
           </button>
         </div>
         <div className="modal__note">
-          线上（定时 / Webhook）跑「生效中」那一版。切换<b>立刻</b>改变线上行为，并覆盖编辑器草稿。
+          切换立刻改变线上，并覆盖编辑器草稿。
         </div>
 
         {error ? (

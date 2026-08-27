@@ -52,7 +52,7 @@ export default function DatePreview({
     <div className="dpv">
       <div className="dpv__head">
         <span className="dpv__value">{String(out.value)}</span>
-        <span className="dpv__hint">按此刻预览 · 实际运行取运行开始时刻</span>
+        <span className="dpv__hint">预览用此刻；运行用开始时刻</span>
       </div>
 
       <div className="dpv__expr">

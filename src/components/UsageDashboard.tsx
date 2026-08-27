@@ -130,7 +130,7 @@ export default function UsageDashboard({ onClose }: { onClose: () => void }) {
           <button className="modal__x" onClick={onClose} title="关闭"><Icon name="close" /></button>
         </div>
         <div className="modal__note">
-          全部用户的运行统计，来自按天聚合表。<b>统计永久保留</b>，运行明细只留 14 天：久远的用量看得到，但点不进明细。
+          统计永久保留；运行明细只留 14 天。
           {data?.since && ` 最早的统计从 ${data.since} 开始。`}
         </div>
 

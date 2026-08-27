@@ -16,7 +16,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['手动', '点一下', '调试'],
     category: '触发器',
     icon: '▶',
-    description: '按流程入参表单手动发起一次运行',
+    description: '手动跑一次',
     hasInput: false,
     input: { type: 'object', properties: {} },
     output: {
@@ -35,7 +35,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['定时', '每天', '日报', 'cron', '排程'],
     category: '触发器',
     icon: '⏰',
-    description: '按固定时间自动发起运行',
+    description: '按时间自动跑',
     hasInput: false,
     input: {
       type: 'object',
@@ -48,7 +48,6 @@ export const NODE_TYPES: NodeType[] = [
           title: '执行频率',
           default: 'daily',
           enum: ['daily', 'hourly', 'interval', 'cron'],
-          description: '大多数报表选「每天」就够了',
           'x-ui': {
             widget: 'select',
             labels: { daily: '每天', hourly: '每小时', interval: '按间隔', cron: 'Cron 表达式' },
@@ -58,7 +57,6 @@ export const NODE_TYPES: NodeType[] = [
           type: 'string',
           title: '每天几点',
           default: '09:00',
-          description: '24 小时制，按北京时间（UTC+8）',
           'x-show': { mode: ['daily'] },
           'x-ui': { placeholder: '09:00' },
         },
@@ -67,7 +65,6 @@ export const NODE_TYPES: NodeType[] = [
           title: '时区',
           default: 'Asia/Shanghai',
           enum: ['Asia/Shanghai'],
-          description: '定时表达式按这个时区计算',
           'x-ui': { widget: 'select', labels: { 'Asia/Shanghai': '北京时间（UTC+8）' }, group: 'advanced' },
         },
         minute: {
@@ -89,7 +86,7 @@ export const NODE_TYPES: NodeType[] = [
         cron: {
           type: 'string',
           title: 'Cron 表达式',
-          description: '五段式：分 时 日 月 周。例：0 9 * * 1 = 每周一 09:00',
+          description: '五段：分 时 日 月 周，如 0 9 * * 1',
           'x-show': { mode: ['cron'] },
           'x-ui': { placeholder: '30 8 * * *' },
         },
@@ -113,7 +110,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['接口触发', '外部调用', 'POST', 'http 入口'],
     category: '触发器',
     icon: '🔗',
-    description: '外部系统 POST 触发，body 同名字段自动当入参',
+    description: '外部 POST 触发',
     hasInput: false,
     input: {
       type: 'object',
@@ -124,7 +121,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '认证方式',
           default: 'secret',
           enum: ['secret', 'hmac', 'none'],
-          description: '路径里的 token 不是认证，它会进日志和上游配置',
+          description: '路径 token 会进日志，不是认证',
           'x-ui': {
             widget: 'select',
             labels: {
@@ -139,7 +136,6 @@ export const NODE_TYPES: NodeType[] = [
           title: '响应方式',
           default: 'lastNode',
           enum: ['lastNode', 'immediate'],
-          description: '等待模式直接返回「结束」节点配置的流程结果；超时后返回 runId，流程继续运行',
           'x-ui': {
             widget: 'select',
             labels: {
@@ -154,7 +150,6 @@ export const NODE_TYPES: NodeType[] = [
           default: 300,
           minimum: 1,
           maximum: 1800,
-          description: '超过后返回 202 和运行 ID',
           'x-show': { responseMode: ['lastNode'] },
           'x-ui': { group: 'advanced' },
         },
@@ -164,7 +159,7 @@ export const NODE_TYPES: NodeType[] = [
           default: 60,
           minimum: 1,
           maximum: 600,
-          description: '任何能 POST 的人都能触发一次查询',
+          description: '能 POST 就能触发一次查询',
           'x-ui': { group: 'advanced' },
         },
       },
@@ -192,7 +187,7 @@ export const NODE_TYPES: NodeType[] = [
     docsUrl: 'https://github.com/z13255595556/agora-autoflow#sql-节点真实执行',
     category: '数据查询',
     icon: '▤',
-    description: '在 DataLego 上跑只读 SQL，参数按类型渲染',
+    description: 'DataLego 只读 SQL',
     input: {
       type: 'object',
       required: ['engine', 'sql'],
@@ -218,7 +213,6 @@ export const NODE_TYPES: NodeType[] = [
         params: {
           type: 'object',
           title: '占位符参数',
-          description: '只在需要覆盖时填。留空则同名流程入参自动代入',
           additionalProperties: true,
           'x-ui': { widget: 'kv' },
         },
@@ -228,7 +222,7 @@ export const NODE_TYPES: NodeType[] = [
           default: 1000,
           minimum: 1,
           maximum: 100000,
-          description: '外面套一层 LIMIT，防止 SELECT * 打满引擎',
+          description: '外层再套一层 LIMIT',
           'x-ui': { group: 'advanced' },
         },
         timeoutMinutes: {
@@ -254,7 +248,7 @@ export const NODE_TYPES: NodeType[] = [
         rowCount: {
           type: 'integer',
           title: '返回行数',
-          description: '实际取回的行数（已受行数上限截断），不是匹配总数',
+          description: '截断后行数，不是匹配总数',
         },
         columns: { type: 'array', title: '列信息', items: { type: 'object' } },
         truncated: { type: 'boolean', title: '是否触到行数上限' },
@@ -279,15 +273,14 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['建表', '存结果', '自建库', 'pg', 'postgres'],
     category: '数据查询',
     icon: '▤',
-    description: '在你的独立工作区建表和增删改查，不访问系统库',
+    description: '工作区库，不碰系统库',
     input: {
       type: 'object', required: ['sql'],
       properties: {
         sql: {
           type: 'string', title: 'SQL',
-          description: '一次只执行一条 SQL',
           'x-placeholders': { valuesFrom: 'params' },
-          'x-ui': { widget: 'code', language: 'sql', rows: 8, placeholder: 'CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量' },
+          'x-ui': { widget: 'code', language: 'sql', rows: 8, placeholder: '一次一条。CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量' },
         },
         params: { type: 'object', title: '占位符参数', additionalProperties: true, 'x-ui': { widget: 'kv' } },
         limit: { type: 'integer', title: '返回行数上限', default: 1000, minimum: 1, maximum: 1000, 'x-ui': { group: 'advanced' } },
@@ -323,7 +316,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['判断', '分支', 'if', '条件'],
     category: '控制',
     icon: '◇',
-    description: '按条件判定走 true / false 两个出口',
+    description: '真 / 假两个出口',
     ports: [
       { id: 'true', label: '真' },
       { id: 'false', label: '假' },
@@ -356,7 +349,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['遍历', '循环', '每个', '逐条', 'loop'],
     category: '控制',
     icon: '↻',
-    description: '对数组逐项执行下游，串行；超过 1000 项失败',
+    description: '逐项串行，超 1000 失败',
     ports: [
       { id: 'each', label: '每一项' },
       { id: 'done', label: '完成' },
@@ -394,7 +387,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['汇合', '合并', '等待', 'join'],
     category: '控制',
     icon: '⋈',
-    description: '等待多条分支到齐后继续',
+    description: '等分支到齐再继续',
     input: {
       type: 'object',
       properties: {
@@ -421,7 +414,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['结束', '返回', '输出', '结果'],
     category: '控制',
     icon: '■',
-    description: '结束当前分支，指定内容作为流程结果',
+    description: '结束分支并给出结果',
     ports: [],
     input: {
       type: 'object',
@@ -454,7 +447,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['昨天', '日期', '时间', '分区', '今天', 'date'],
     category: '处理',
     icon: '📅',
-    description: '算出昨天、本月 1 号这类日期，各种格式一并输出',
+    description: '算昨天、月初这类日期',
     input: {
       type: 'object',
       required: ['mode', 'format'],
@@ -465,7 +458,7 @@ export const NODE_TYPES: NodeType[] = [
           title: '要哪个时间',
           default: 'yesterday',
           enum: DATE_MODES,
-          description: '基准是本次运行的开始时刻，同一流程内所有日期节点同源',
+          description: '以本次运行开始时刻为基准',
           'x-ui': { widget: 'select', labels: DATE_MODE_LABELS },
         },
         days: {
@@ -488,8 +481,7 @@ export const NODE_TYPES: NodeType[] = [
           type: 'string',
           title: '自定义偏移',
           default: 'now-1d/d',
-          description:
-            'Grafana / Kibana 同款写法：now-1d 昨天此刻，now-1d/d 昨天零点，now/w 本周一，now-1M/M 上月 1 号。单位 s/m/h/d/w/M/y（m 是分钟，M 是月）',
+          description: 'now-1d/d 昨天零点；m=分 M=月',
           'x-show': { mode: ['custom'] },
           'x-ui': { widget: 'text', placeholder: 'now-1d/d' },
         },
@@ -498,13 +490,12 @@ export const NODE_TYPES: NodeType[] = [
           title: '输出格式',
           default: 'compact',
           enum: DATE_FORMATS,
-          description: '这个格式出现在 value 里，其它常用格式一并输出',
           'x-ui': { widget: 'select', labels: dateFormatLabels() },
         },
         customFormat: {
           type: 'string',
           title: '自定义格式',
-          description: "token：yyyy MM dd HH mm ss SSS，其余字符原样输出；要输出会撞 token 的字母用单引号括起来",
+          description: 'yyyy MM dd HH mm ss；字面字母加单引号',
           'x-show': { format: ['custom'] },
           'x-ui': { widget: 'text', placeholder: 'yyyy年MM月dd日' },
         },
@@ -535,7 +526,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['整形', '表达式', '加工', '转换'],
     category: '处理',
     icon: '⇄',
-    description: '用表达式把上游输出改成下游要的形状',
+    description: '把上游改成下游形状',
     input: {
       type: 'object',
       required: ['expression'],
@@ -556,7 +547,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['模板', '拼文本', '正文', '渲染'],
     category: '处理',
     icon: 'T',
-    description: '把固定文本和上游变量组合成一段文本',
+    description: '文本和变量拼成一段',
     input: {
       type: 'object',
       required: ['template'],
@@ -578,7 +569,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['变量', '赋值', '常量', '设置'],
     category: '处理',
     icon: '=',
-    description: '定义一组供下游使用的变量',
+    description: '定义下游可用的变量',
     input: {
       type: 'object',
       properties: {
@@ -608,7 +599,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['列表', '截取', '第一项', '前几条'],
     category: '处理',
     icon: '≡',
-    description: '从数组中取第一项、最后一项或指定区间',
+    description: '取首项、末项或区间',
     input: {
       type: 'object',
       required: ['items', 'operation'],
@@ -646,7 +637,7 @@ export const NODE_TYPES: NodeType[] = [
     docsUrl: 'https://github.com/z13255595556/agora-autoflow#http-调用节点真实请求',
     category: '处理',
     icon: '↗',
-    description: '由节点服务发起真实 HTTP 请求',
+    description: '真实 HTTP 请求',
     input: {
       type: 'object',
       // 粘一段 curl 自动填参。声明在 manifest 里而不是表单里按 typeId 判断
@@ -689,7 +680,6 @@ export const NODE_TYPES: NodeType[] = [
         // 后端 manifest.py 是正本，这里只是离线兜底；两边必须一致（test/manifestParity）
         timeoutMs: {
           type: 'integer', title: '默认超时(ms)', default: 30000, minimum: 1, maximum: 120000,
-          description: '连接和读取未单独设置时使用',
           'x-ui': { group: 'advanced' },
         },
         connectTimeoutMs: { type: 'integer', title: '连接超时(ms)', minimum: 1, maximum: 120000, 'x-ui': { group: 'advanced' } },
@@ -698,18 +688,18 @@ export const NODE_TYPES: NodeType[] = [
           type: 'boolean',
           title: '接受错误状态码',
           default: false,
-          description: '打开后，4xx / 5xx 仍作为正常输出交给下游处理',
+          description: '4xx/5xx 仍交给下游',
           'x-ui': { widget: 'switch' },
         },
         verifySsl: {
           type: 'boolean', title: '校验 SSL 证书', default: true,
-          description: '仅在调用自签名证书服务时关闭', 'x-ui': { widget: 'switch', group: 'advanced' },
+          description: '自签名证书才关', 'x-ui': { widget: 'switch', group: 'advanced' },
         },
         // HTTP 的重试在节点内做，故意不声明 policy.retry —— 否则 worker 再叠一层
         // 就是 3 × (1 + maxRetries) 次请求，对非幂等的 POST 尤其危险
         retryEnabled: {
           type: 'boolean', title: '失败后重试', default: false,
-          description: '仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启',
+          description: '仅网络错/429/5xx；非幂等慎开',
           'x-ui': { widget: 'switch', group: 'advanced' },
         },
         maxRetries: {
@@ -756,7 +746,7 @@ export const NODE_TYPES: NodeType[] = [
         webhook: {
           type: 'string',
           title: 'Webhook 地址',
-          description: '群设置 → 群机器人 → 添加后复制。等同凭证，流程定义要当凭证管',
+          description: '等同凭证',
           'x-ui': { placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx' },
         },
         msgtype: {
@@ -764,8 +754,14 @@ export const NODE_TYPES: NodeType[] = [
           title: '消息类型',
           default: 'markdown_v2',
           enum: ['text', 'markdown', 'markdown_v2'],
-          description: '要发表格必须用 markdown_v2；要 @人只能用 text 或 markdown',
-          'x-ui': { widget: 'select' },
+          'x-ui': {
+            widget: 'select',
+            labels: {
+              text: 'text · 可@人',
+              markdown: 'markdown · 可@人',
+              markdown_v2: 'markdown_v2 · 可表格',
+            },
+          },
         },
         content: {
           type: 'string',
@@ -780,7 +776,7 @@ export const NODE_TYPES: NodeType[] = [
         mentioned: {
           type: 'string',
           title: '@成员',
-          description: 'userid 或手机号，逗号分隔；@all 是全体。markdown_v2 不支持',
+          description: 'userid/手机号，逗号分隔',
           'x-hide': { msgtype: ['markdown_v2'] },
           'x-ui': { placeholder: 'zhangsan, 13800001111' },
         },
@@ -809,7 +805,7 @@ export const NODE_TYPES: NodeType[] = [
     keywords: ['备注', '说明', '贴纸', '注释'],
     category: '辅助',
     icon: 'N',
-    description: '画布上的备注，不参与执行',
+    description: '画布备注，不执行',
     visualOnly: true,
     ports: [],
     input: {

@@ -33,7 +33,7 @@ export default function SchedulePreview({ values }: { values: Record<string, unk
       <b>{times.join(' · ')}</b>
       <span className="spv__tz">{tz}</span>
       {String(values.mode) === 'interval' && (
-        <span className="spv__note">按整点对齐（每 30 分钟 = :00 / :30），非从启用时刻起算</span>
+        <span className="spv__note">按整点对齐，不是从启用时刻起算</span>
       )}
     </div>
   )

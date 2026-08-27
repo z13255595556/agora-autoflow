@@ -374,7 +374,7 @@ export default function Home({
               下面的列表里，标着「只在本机」，不想传的直接删掉就行 */}
           {tab === 'mine' && list.localOnly.length > 0 && (
             <div className="home__notice">
-              {list.localOnly.length} 条流程只存在本机（卡片标「只在本机」）：未上传过，或归属他人。不需要的用卡片上的删除清掉。
+              {list.localOnly.length} 条只在本机。不需要的在卡片上删除。
               <button className="btn btn--sm" disabled={uploading} onClick={() => void upload()}>
                 {uploading ? '上传中…' : '全部上传到服务器'}
               </button>
@@ -388,7 +388,7 @@ export default function Home({
               <div className="home__blankicon">◆</div>
               <div className="home__blanktitle">还没有流程</div>
               <div className="home__blanktext">
-                日报模板已连好节点，填 SQL 和群机器人地址即可运行；也可选一个触发器从空白开始。
+                选模板或触发器开始。
               </div>
               <div className="home__blankcards">
                 {TEMPLATES.filter((t) => t.kind === 'recipe').map((t) => (
@@ -449,7 +449,6 @@ export default function Home({
                 <Icon name="close" />
               </button>
             </div>
-            <div className="modal__note">选一个触发器从零开始，或直接用已经连好的日报模板。</div>
             <section className="modal__group" aria-labelledby="create-from-scratch">
               <h2 className="modal__group-title" id="create-from-scratch">选一个触发器</h2>
               <div className="modal__cards">

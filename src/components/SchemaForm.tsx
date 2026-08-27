@@ -273,8 +273,6 @@ export default function SchemaForm({
                 })}
               </div>
             )}
-
-            {sub['x-large'] && <div className="field__note">大字段：节点间走 $ref 引用传递</div>}
           </div>
         )
   }
@@ -391,7 +389,7 @@ function PlaceholderEditor({
         )
       })}
       <div className="phe__hint">
-        留空取同名流程入参；填了以填的为准（支持 {'{{ $.nodes.n1.output.x }}'} 引用上游）。
+        留空用同名入参；填了以填的为准。
       </div>
     </div>
   )

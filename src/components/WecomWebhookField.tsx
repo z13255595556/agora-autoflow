@@ -26,7 +26,7 @@ export interface WecomWebhookFieldProps {
   /** 保存成功后的提示语。参数是保存后的值（'' 表示关掉了） */
   toastFor: (saved: string) => string
   /** 输入框下面那行说明 */
-  desc: React.ReactNode
+  desc?: React.ReactNode
   label?: string
   onSaved?: (saved: string) => void
 }
@@ -70,7 +70,7 @@ export default function WecomWebhookField({
         disabled={loaded === null || busy}
         onChange={(e) => setDraft(e.target.value)}
       />
-      <div className="field__desc">{desc}</div>
+      {desc ? <div className="field__desc">{desc}</div> : null}
       {error && <div className="field__errors" role="alert">{error}</div>}
       <div className="notify__actions">
         <button className="btn btn--sm btn--primary" disabled={!dirty || busy} onClick={() => void save()}>

@@ -148,7 +148,7 @@ export default function RunHistory({ flow, initialRunId, onClose }: { flow: Save
           </button>
         </div>
         <div className="modal__note">
-          服务端保留最近 14 天，含每个节点解析后的输入与实际输出。编辑器里的「历史」只有本次会话，刷新即失。
+          服务端留 14 天。编辑器「历史」刷新即失。
         </div>
 
         {localOnly ? (

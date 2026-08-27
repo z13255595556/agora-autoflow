@@ -40,10 +40,7 @@ export default function NotifySettingsDialog({ onClose }: { onClose: () => void 
           <span className="modal__title">失败通知</span>
           <button className="modal__x" onClick={onClose} title="关闭"><Icon name="close" /></button>
         </div>
-        <div className="modal__note">
-          名下流程整条运行失败时推送该企微群：流程名、失败节点、原因、触发方式、运行记录链接。
-          同一原因 10 分钟内抑制重复。
-        </div>
+        <div className="modal__note">名下流程整条失败才发，同一原因 10 分钟内不重复。</div>
         {error && <div className="errors">读不到通知设置：{error}</div>}
         <WecomWebhookField
           loaded={error ? '' : loaded}
@@ -53,13 +50,7 @@ export default function NotifySettingsDialog({ onClose }: { onClose: () => void 
           }}
           onSaved={setLoaded}
           toastFor={(saved) => (saved ? '失败通知已开启' : '失败通知已关闭')}
-          desc={
-            <>
-              群设置 → 群机器人 → 添加后复制，<b>等同凭证</b>。留空保存 = 关闭。
-              <br />
-              单条流程可在「流程设置 → 失败时通知」覆盖此地址。
-            </>
-          }
+          desc="群机器人地址等同凭证。留空保存=关闭。单条流程可覆盖。"
         />
       </div>
     </div>

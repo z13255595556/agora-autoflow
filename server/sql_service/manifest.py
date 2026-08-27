@@ -32,7 +32,7 @@ SQL_QUERY: Dict[str, Any] = {
     "docsUrl": "https://github.com/z13255595556/agora-autoflow#sql-节点真实执行",
     "category": "数据查询",
     "icon": "▤",
-    "description": "在 DataLego 上跑只读 SQL，参数按类型渲染",
+    "description": "DataLego 只读 SQL",
     "input": {
         "type": "object",
         "required": ["engine", "sql"],
@@ -59,7 +59,6 @@ SQL_QUERY: Dict[str, Any] = {
             "params": {
                 "type": "object",
                 "title": "占位符参数",
-                "description": "只在需要覆盖时填。留空则同名流程入参自动代入",
                 "additionalProperties": True,
                 "x-ui": {"widget": "kv"},
             },
@@ -69,7 +68,7 @@ SQL_QUERY: Dict[str, Any] = {
                 "default": 1000,
                 "minimum": 1,
                 "maximum": 100000,
-                "description": "外面套一层 LIMIT，防止 SELECT * 打满引擎",
+                "description": "外层再套一层 LIMIT",
                 # 配一次就不再动，折进「高级设置」。前端注册表里那份也要同步
                 # 改 —— manifest 会整份覆盖同名节点，只改一边等于没改
                 "x-ui": {"group": "advanced"},
@@ -108,7 +107,7 @@ SQL_QUERY: Dict[str, Any] = {
             "rowCount": {
                 "type": "integer",
                 "title": "返回行数",
-                "description": "实际取回的行数（已受行数上限截断），不是匹配总数",
+                "description": "截断后行数，不是匹配总数",
             },
             "columns": {"type": "array", "title": "列信息", "items": {"type": "object"}},
             "truncated": {"type": "boolean", "title": "是否触到行数上限"},
@@ -162,7 +161,7 @@ NOTIFY_WECOM: Dict[str, Any] = {
             "webhook": {
                 "type": "string",
                 "title": "Webhook 地址",
-                "description": "群设置 → 群机器人 → 添加后复制。等同凭证，流程定义要当凭证管",
+                "description": "等同凭证",
                 "x-ui": {
                     "placeholder": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx",
                 },
@@ -172,8 +171,14 @@ NOTIFY_WECOM: Dict[str, Any] = {
                 "title": "消息类型",
                 "default": "markdown_v2",
                 "enum": list(wecom.MSGTYPES),
-                "description": "要发表格必须用 markdown_v2；要 @人只能用 text 或 markdown",
-                "x-ui": {"widget": "select"},
+                "x-ui": {
+                    "widget": "select",
+                    "labels": {
+                        "text": "text · 可@人",
+                        "markdown": "markdown · 可@人",
+                        "markdown_v2": "markdown_v2 · 可表格",
+                    },
+                },
             },
             "content": {
                 "type": "string",
@@ -195,7 +200,7 @@ NOTIFY_WECOM: Dict[str, Any] = {
             "mentioned": {
                 "type": "string",
                 "title": "@成员",
-                "description": "userid 或手机号，逗号分隔；@all 是全体。markdown_v2 不支持",
+                "description": "userid/手机号，逗号分隔",
                 "x-hide": {"msgtype": ["markdown_v2"]},
                 "x-ui": {"placeholder": "zhangsan, 13800001111"},
             },
@@ -232,7 +237,7 @@ HTTP_REQUEST: Dict[str, Any] = {
     "docsUrl": "https://github.com/z13255595556/agora-autoflow#http-调用节点真实请求",
     "category": "处理",
     "icon": "↗",
-    "description": "由节点服务发起真实 HTTP 请求",
+    "description": "真实 HTTP 请求",
     "input": {
         "type": "object",
         "required": ["method", "url"],
@@ -300,7 +305,6 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "default": 30000,
                 "minimum": 1,
                 "maximum": 120000,
-                "description": "连接和读取未单独设置时使用",
                 "x-ui": {"group": "advanced"},
             },
             "connectTimeoutMs": {
@@ -315,19 +319,19 @@ HTTP_REQUEST: Dict[str, Any] = {
                 "type": "boolean",
                 "title": "接受错误状态码",
                 "default": False,
-                "description": "打开后，4xx / 5xx 仍作为正常输出交给下游处理",
+                "description": "4xx/5xx 仍交给下游",
                 "x-ui": {"widget": "switch"},
             },
             "verifySsl": {
                 "type": "boolean", "title": "校验 SSL 证书", "default": True,
-                "description": "仅在调用自签名证书服务时关闭", "x-ui": {"widget": "switch", "group": "advanced"},
+                "description": "自签名证书才关", "x-ui": {"widget": "switch", "group": "advanced"},
             },
             # HTTP 的重试在节点内做（网络错 / 429 / 5xx，毫秒级间隔），**故意不声明
             # policy.retry** —— 否则 worker 再叠一层就是 3 × (1 + maxRetries) 次请求，
             # 对非幂等的 POST 尤其危险。节点设置里的「重试」一栏对它显示"由节点内重试"
             "retryEnabled": {
                 "type": "boolean", "title": "失败后重试", "default": False,
-                "description": "仅重试网络错误、429 和常见 5xx；POST 等非幂等请求请谨慎开启",
+                "description": "仅网络错/429/5xx；非幂等慎开",
                 "x-ui": {"widget": "switch", "group": "advanced"},
             },
             "maxRetries": {
@@ -366,16 +370,15 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
     "keywords": ["建表", "存结果", "自建库", "pg", "postgres"],
     "category": "数据查询",
     "icon": "▤",
-    "description": "在你的独立工作区建表和增删改查，不访问系统库",
+    "description": "工作区库，不碰系统库",
     "input": {
         "type": "object", "required": ["sql"],
         "properties": {
             "sql": {
                 "type": "string", "title": "SQL",
-                "description": "一次只执行一条 SQL",
                 "x-placeholders": {"valuesFrom": "params"},
                 "x-ui": {"widget": "code", "language": "sql", "rows": 8,
-                           "placeholder": "CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量"},
+                           "placeholder": "一次一条。CREATE TABLE report (id bigint, name text)\n\n键入 / 引用上游变量"},
             },
             "params": {"type": "object", "title": "占位符参数", "additionalProperties": True, "x-ui": {"widget": "kv"}},
             "limit": {

@@ -115,7 +115,7 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
   }, [content, run])
 
   if (!content.trim()) {
-    return <div className="mprev mprev--empty">内容为空。输入文字，或键入 / 引用上游变量。</div>
+    return <div className="mprev mprev--empty">输入文字，或键入 / 引用上游。</div>
   }
   if (rendered?.error) {
     return (
@@ -135,7 +135,7 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
   return (
     <div className="mprev">
       <div className="mprev__head">
-        预览 <em>就是会发出去的内容</em>
+        预览
         <span className={`mprev__bytes${over ? ' is-over' : ''}`}>
           {bytes} / {limit} 字节
         </span>
@@ -147,7 +147,7 @@ export default function MessagePreview({ content, msgtype, nodeId }: Props) {
         </div>
       )}
       {/* 没有"只预览不发送"开关了，运行到这个节点就是真发。说在最显眼的地方 */}
-      <div className="mprev__live">⚡ 点「运行」即真实发送到群，先确认上方内容</div>
+      <div className="mprev__live">⚡ 点「运行」即真实发送到群</div>
       {over && (
         <div className="mprev__err">
           ✗ 超出 {msgtype} 的 {limit} 字节上限，服务端拒收。减少列、调小行数上限，或改发文件。

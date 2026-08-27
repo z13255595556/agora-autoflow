@@ -42,14 +42,11 @@ export default function JsonDrawer({ onClose }: { onClose: () => void }) {
 
       {tab === 'export' ? (
         <>
-          <div className="dock__note">
-            逻辑（nodes / edges）与布局（layout）分开存，便于 diff、code review 和 API 生成。
-          </div>
           <pre className="drawer__code mono">{json}</pre>
         </>
       ) : (
         <>
-          <div className="dock__note">粘贴一份流程定义 JSON 覆盖当前画布。</div>
+          <div className="dock__note">粘贴流程 JSON，覆盖当前画布。</div>
           {err && <div className="errors">{err}</div>}
           <textarea
             className="drawer__input mono"
