@@ -13,6 +13,14 @@ export function describeSchedule(params: Record<string, unknown>): string {
       const at = String(params.at ?? '').trim()
       return at ? `每天 ${at}` : '每天（未填时间）'
     }
+    case 'cnWorkday': {
+      const at = String(params.at ?? '').trim()
+      return at ? `每个工作日 ${at}` : '每个工作日（未填时间）'
+    }
+    case 'cnHoliday': {
+      const at = String(params.at ?? '').trim()
+      return at ? `每个节假日 ${at}` : '每个节假日（未填时间）'
+    }
     case 'hourly': {
       const m = Number(params.minute ?? 0)
       return Number.isFinite(m) ? `每小时第 ${m} 分钟` : '每小时'
@@ -61,9 +69,9 @@ function describeCron(expr: string): string {
 /** 定时触发的参数够不够跑起来。缺什么直接说，别等到上线才发现没排上。 */
 export function scheduleErrors(params: Record<string, unknown>): string[] {
   const mode = String(params.mode ?? 'daily')
-  if (mode === 'daily') {
+  if (mode === 'daily' || mode === 'cnWorkday' || mode === 'cnHoliday') {
     const at = String(params.at ?? '').trim()
-    if (!at) return ['「每天几点」没填']
+    if (!at) return ['「几点」没填']
     if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(at)) return [`时间「${at}」格式不对，要写成 09:00 这样的 24 小时制`]
   }
   if (mode === 'cron') {

@@ -149,3 +149,26 @@ test('参数不合法要报出人能看懂的话', () => {
   assert.throws(() => toCron({ mode: 'hourly', minute: 99 }), /不合法/)
   assert.throws(() => toCron({ mode: 'nope' }), /不认识/)
 })
+
+test('中国工作日 → 带日历标记的 cron', () => {
+  assert.equal(toCron({ mode: 'cnWorkday', at: '09:00' }), '0 9 * * CN_WORKDAY')
+  assert.equal(toCron({ mode: 'cnHoliday', at: '18:30' }), '30 18 * * CN_HOLIDAY')
+})
+
+test('中国工作日跳过普通周末，落到周一', () => {
+  // 北京时间 2026-08-22 周六 10:00 → 下个工作日是周一 09:00
+  const next = nextFireAt('0 9 * * CN_WORKDAY', 'Asia/Shanghai', new Date('2026-08-22T02:00:00Z'))
+  assert.equal(inTz(next!), '2026-08-24 09:00')
+})
+
+test('中国工作日会落到调休周日，不会落到法定放假', () => {
+  // 北京时间 2026-01-03 周六 10:00（元旦放假最后一天）→ 1/4 周日调休 09:00
+  const next = nextFireAt('0 9 * * CN_WORKDAY', 'Asia/Shanghai', new Date('2026-01-03T02:00:00Z'))
+  assert.equal(inTz(next!), '2026-01-04 09:00')
+})
+
+test('节假日模式只在国务院放假日触发', () => {
+  // 北京时间 2026-08-22 周六 → 下一个法定放假是中秋 9/25
+  const next = nextFireAt('0 9 * * CN_HOLIDAY', 'Asia/Shanghai', new Date('2026-08-22T02:00:00Z'))
+  assert.equal(inTz(next!), '2026-09-25 09:00')
+})

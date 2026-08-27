@@ -138,7 +138,7 @@ async function enqueue(client: import('pg').PoolClient, s: DueSchedule, due: Dat
 /**
  * 把已发布流程里的定时配置同步进 schedules 表。
  *
- * **由 worker 做而不是发布时由 Python 做**：cron 的归一（四种 UI 模式 → 表达式）
+ * **由 worker 做而不是发布时由 Python 做**：cron 的归一（UI 模式 → 表达式）
  * 在 engine-core/cron.ts 里，Python 侧再写一份必然漂移，而漂移的表现是
  * "界面显示每天 9 点、实际按另一个时刻跑" —— 没人会想到去对两份代码。
  *

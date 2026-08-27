@@ -45,3 +45,17 @@ test('服务端给的 next_fire_at 翻成人话；空值返回 null', () => {
   assert.equal(describeNextFire('garbage', NOW), null)
   assert.equal(describeFireTime(new Date('2026-08-22T08:30:00Z'), NOW, 'Asia/Shanghai'), '今天 16:30')
 })
+
+test('每个工作日：周六之后落到周一，跳过普通周末', () => {
+  assert.deepEqual(
+    nextRunTexts({ mode: 'cnWorkday', at: '09:00', timezone: 'Asia/Shanghai' }, NOW),
+    ['后天 09:00', '8月25日 周二 09:00', '8月26日 周三 09:00'],
+  )
+})
+
+test('每个节假日：下一个法定放假是中秋', () => {
+  assert.deepEqual(
+    nextRunTexts({ mode: 'cnHoliday', at: '09:00', timezone: 'Asia/Shanghai' }, NOW, 2),
+    ['9月25日 周五 09:00', '9月26日 周六 09:00'],
+  )
+})

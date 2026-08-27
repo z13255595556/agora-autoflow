@@ -35,6 +35,9 @@ export default function SchedulePreview({ values }: { values: Record<string, unk
       {String(values.mode) === 'interval' && (
         <span className="spv__note">按整点对齐，不是从启用时刻起算</span>
       )}
+      {(String(values.mode) === 'cnWorkday' || String(values.mode) === 'cnHoliday') && (
+        <span className="spv__note">按 2026 年国务院放假安排，含调休</span>
+      )}
     </div>
   )
 }

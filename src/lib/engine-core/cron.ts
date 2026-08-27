@@ -1,3 +1,5 @@
+import { isCnHoliday, isCnWorkday } from './cnCalendar.ts'
+
 /**
  * 五段式 cron 的解析与「下次触发时刻」计算。**纯函数，不读时钟。**
  *
@@ -20,6 +22,8 @@ export interface CronFields {
   dom: Set<number> | null   // null = '*'，与 dow 的 OR 语义有关
   month: Set<number>
   dow: Set<number> | null
+  /** 中国工作日 / 法定放假。有值时忽略 dom/dow，按国务院安排过滤日期。 */
+  calendar: 'cn-workday' | 'cn-holiday' | null
 }
 
 /** 解析一段，如 `*` / `5` / `1,3` / `1-5` / `＊/15` */
@@ -53,18 +57,26 @@ export function parseCron(expr: string): CronFields {
   if (parts.length !== 5) {
     throw new Error(`cron 必须是五段（分 时 日 月 周），收到 ${parts.length} 段：${expr}`)
   }
+  const calendar = parts[4] === 'CN_WORKDAY' ? 'cn-workday' as const
+    : parts[4] === 'CN_HOLIDAY' ? 'cn-holiday' as const
+    : null
+  if (calendar && (parts[2] !== '*' || parts[3] !== '*')) {
+    throw new Error('中国工作日/节假日的日、月必须是 *')
+  }
+  const allMonths = new Set(Array.from({ length: 12 }, (_, i) => i + 1))
   return {
     minute: parseField(parts[0], 0, 59, '分') ?? new Set(Array.from({ length: 60 }, (_, i) => i)),
     hour: parseField(parts[1], 0, 23, '时') ?? new Set(Array.from({ length: 24 }, (_, i) => i)),
-    dom: parseField(parts[2], 1, 31, '日'),
-    month: parseField(parts[3], 1, 12, '月') ?? new Set(Array.from({ length: 12 }, (_, i) => i + 1)),
+    dom: calendar ? null : parseField(parts[2], 1, 31, '日'),
+    month: calendar ? allMonths : (parseField(parts[3], 1, 12, '月') ?? allMonths),
     // 周日两种写法都认：0 和 7
-    dow: (() => {
+    dow: calendar ? null : (() => {
       const s = parseField(parts[4], 0, 7, '周')
       if (!s) return null
       if (s.has(7)) s.add(0)
       return s
     })(),
+    calendar,
   }
 }
 
@@ -96,7 +108,13 @@ function partsIn(tz: string, at: Date): { y: number; mo: number; d: number; h: n
  * `0 9 1 * 1` 是「每月 1 号**或**每周一的 9 点」，不是「1 号且是周一」。
  * 算成交集的话，`0 9 1 * 1` 一年可能只触发一两次，而用户以为是每周。
  */
-function dayMatches(f: CronFields, p: { d: number; dow: number }): boolean {
+function ymdOf(p: { y: number; mo: number; d: number }): string {
+  return `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`
+}
+
+function dayMatches(f: CronFields, p: { d: number; dow: number; y: number; mo: number }): boolean {
+  if (f.calendar === 'cn-workday') return isCnWorkday(ymdOf(p))
+  if (f.calendar === 'cn-holiday') return isCnHoliday(ymdOf(p))
   if (f.dom === null && f.dow === null) return true
   if (f.dom !== null && f.dow === null) return f.dom.has(p.d)
   if (f.dom === null && f.dow !== null) return f.dow.has(p.dow)
@@ -115,8 +133,10 @@ export function nextFireAt(cron: string, tz: string, after: Date): Date | null {
   const f = parseCron(cron)
   // 从下一整分开始，且严格晚于 after：同一分钟内重复调用不会返回同一个时刻
   let cur = new Date(Math.floor(after.getTime() / 60000) * 60000 + 60000)
+  // 日历模式按天跳，400 天够跨过春节；没有收录的年份节假日会算不出下一次
+  const limit = f.calendar ? 400 : MAX_MINUTES
 
-  for (let i = 0; i < MAX_MINUTES; i++) {
+  for (let i = 0; i < limit; i++) {
     const p = partsIn(tz, cur)
     if (!f.month.has(p.mo)) {
       // 跳到下个月 1 号 0 点附近。跳粗一点没关系，循环会收敛
@@ -151,7 +171,7 @@ export function nextFireTimes(cron: string, tz: string, after: Date, n = 5): Dat
 }
 
 /**
- * 四种 UI 模式 → cron。**存储层只认 cron 一种。**
+ * 存储层只认 cron 一种（中国工作日/节假日写在第五段 CN_WORKDAY / CN_HOLIDAY）。
  *
  * 存储归一、展示友好：调度器不用为四种模式各写一份「下次几点」的计算，
  * 而 UI 层继续用 describeSchedule 那套人话描述。
@@ -188,6 +208,15 @@ export function toCron(params: Record<string, unknown>): string {
       if (!c) throw new Error('没填 Cron 表达式')
       parseCron(c)   // 存之前先验一遍，别把坏表达式写进库
       return c
+    }
+    case 'cnWorkday':
+    case 'cnHoliday': {
+      const at = String(params.at ?? '09:00')
+      const m = at.match(/^(\d{1,2}):(\d{2})$/)
+      if (!m) throw new Error(`「几点」格式不对：${at}，应该像 09:00`)
+      const [h, mi] = [Number(m[1]), Number(m[2])]
+      if (h > 23 || mi > 59) throw new Error(`「几点」超出范围：${at}`)
+      return `${mi} ${h} * * ${mode === 'cnWorkday' ? 'CN_WORKDAY' : 'CN_HOLIDAY'}`
     }
     default:
       throw new Error(`不认识的执行频率：${mode}`)
