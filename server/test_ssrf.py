@@ -15,6 +15,8 @@ from sql_service import http_request as h
 from sql_service.http_request import HttpRequestError
 
 PASS, FAIL = [], []
+_ENV_NAMES = ("HTTP_NODE_ALLOWED_HOSTS", "HTTP_NODE_ALLOWED_URLS")
+_SAVED_ENV = {name: os.environ.pop(name, None) for name in _ENV_NAMES}
 
 
 def ok(name, got, want):
@@ -42,6 +44,19 @@ def allows(name, fn):
         FAIL.append((name, f"被拦: {exc}", "放行"))
     else:
         PASS.append((name, "allowed", "allowed"))
+
+
+def with_resolved_ip(ip, fn):
+    """用固定 IP 测目的地址策略，不让单测依赖外部 DNS。"""
+    real = h.socket.getaddrinfo
+    family = h.socket.AF_INET6 if ":" in ip else h.socket.AF_INET
+    h.socket.getaddrinfo = lambda *_args, **_kw: [
+        (family, h.socket.SOCK_STREAM, 6, "", (ip, 0)),
+    ]
+    try:
+        return fn()
+    finally:
+        h.socket.getaddrinfo = real
 
 
 # ---------------------------------------------------------------- IP 分类
@@ -77,6 +92,24 @@ blocks("v6 回环被拦", lambda: h._check_destination("http://[::1]/x"), "内�
 
 blocks("非 http(s) 协议被拒", lambda: h._url("file:///etc/passwd"), "http")
 blocks("URL 里带凭证被拒", lambda: h._url("http://u:p@example.com/"), "用户名")
+
+# ---------------------------------------------------------------- 精确 URL 例外
+
+os.environ["HTTP_NODE_ALLOWED_URLS"] = "http://127.0.0.1:7789/gw/send"
+allows("精确配置的内网端点放行",
+       lambda: h._check_destination("http://127.0.0.1:7789/gw/send"))
+allows("查询参数不改变端点匹配",
+       lambda: h._check_destination("http://127.0.0.1:7789/gw/send?trace=1"))
+allows("精确例外不会限制其他公网主机",
+       lambda: with_resolved_ip(
+           "8.8.8.8", lambda: h._check_destination("https://public.example/data")))
+blocks("同主机的其他路径仍被拦",
+       lambda: h._check_destination("http://127.0.0.1:7789/admin"), "内网")
+blocks("同主机的其他端口仍被拦",
+       lambda: h._check_destination("http://127.0.0.1:8791/gw/send"), "内网")
+blocks("协议不同仍被拦",
+       lambda: h._check_destination("https://127.0.0.1:7789/gw/send"), "内网")
+del os.environ["HTTP_NODE_ALLOWED_URLS"]
 
 # ---------------------------------------------------------------- 白名单
 
@@ -187,9 +220,24 @@ blocks(
 
 del os.environ["HTTP_NODE_ALLOWED_HOSTS"]
 
+# 精确例外只允许这一跳；同主机的其他路径也不能通过 302 绕过。
+os.environ["HTTP_NODE_ALLOWED_URLS"] = "http://127.0.0.1:7789/gw/send"
+blocks(
+    "精确例外不允许跳转到其他内网路径",
+    lambda: with_fake(
+        [FakeResponse(302, "/admin")],
+        lambda: send("http://127.0.0.1:7789/gw/send"),
+    ),
+    "内网",
+)
+del os.environ["HTTP_NODE_ALLOWED_URLS"]
+
 # ---------------------------------------------------------------- 结果
 
 for name, got, want in FAIL:
     print(f"✗ {name}\n    实际: {got!r}\n    期望: {want!r}")
 print(f"\n{len(PASS)} 通过, {len(FAIL)} 失败")
+for name, value in _SAVED_ENV.items():
+    if value is not None:
+        os.environ[name] = value
 sys.exit(1 if FAIL else 0)

@@ -63,6 +63,38 @@ def _allowed_hosts() -> set:
     return {h.strip().lower() for h in raw.split() if h.strip()}
 
 
+def _destination_key(value: str) -> Optional[tuple]:
+    """将 URL 归一化为精确出站目标。
+
+    query 是端点的输入，不是路由边界，因此不参与匹配；协议、主机、
+    有效端口和路径都必须一致。这样可以只放行一个内网端点，而不是
+    把整台主机的所有端口和路径都暴露给工作流。
+    """
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+    return (
+        parsed.scheme.lower(),
+        parsed.hostname.lower(),
+        port,
+        parsed.path or "/",
+    )
+
+
+def _allowed_urls() -> set:
+    """精确 URL 例外，不改变默认的“公网放行、内网拒绝”策略。"""
+    raw = os.getenv("HTTP_NODE_ALLOWED_URLS", "").replace(",", " ")
+    return {
+        key
+        for item in raw.split()
+        if (key := _destination_key(item.strip())) is not None
+    }
+
+
 """禁止访问的网段。
 
 **显式列网段，不用 ipaddress 的 is_private/is_reserved。** 那几个属性是个大杂烩：
@@ -128,6 +160,9 @@ def _check_destination(url: str) -> None:
     if not host:
         raise HttpRequestError("URL 缺少主机名")
 
+    if _destination_key(url) in _allowed_urls():
+        return
+
     allowed = _allowed_hosts()
     if allowed:
         if host not in allowed:
@@ -149,7 +184,8 @@ def _check_destination(url: str) -> None:
         if not _is_public_ip(ip):
             raise HttpRequestError(
                 f"不允许访问内网地址（{host} → {ip}）。"
-                f"确需访问内部服务请把主机名加进 HTTP_NODE_ALLOWED_HOSTS"
+                "确需访问单个内部端点请加进 HTTP_NODE_ALLOWED_URLS，"
+                "放行整台主机则使用 HTTP_NODE_ALLOWED_HOSTS"
             )
 
 

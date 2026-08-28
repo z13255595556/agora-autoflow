@@ -137,6 +137,10 @@ WORKSPACE_ADMIN_DSN=postgresql://autoflow_workspace_admin:替换为工作区管�
 WORKSPACE_ROLE_SECRET=替换
 # 每个 OA 用户私有 schema 的软配额，默认 1 GiB。
 WORKSPACE_QUOTA_BYTES=1073741824
+
+# http.request 仅放行这一个本机端点。公网仍按默认策略放行，
+# 其他回环、内网和链路本地地址仍被拦截。
+HTTP_NODE_ALLOWED_URLS=http://127.0.0.1:7789/gw/send
 ```
 
 用户身份不需要任何配置：本服务与 Athena 同域，浏览器 Cookie 会随请求送达 API。

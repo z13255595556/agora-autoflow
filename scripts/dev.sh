@@ -39,7 +39,7 @@ fi
 # 而"改了没生效"这种问题查起来很贵 —— 现象是代码明明改了行为却是旧的。
 # --reload-dir 限定只看 sql_service：不限的话 reloader 会去遍历 .venv 和
 # node_modules，启动慢好几秒，还会因为文件数过多在 macOS 上撞 fd 上限。
-echo "→ 启动 SQL 节点服务 :$API_PORT（改 server/ 下的代码会自动重载）"
+echo "→ 启动 SQL 节点服务 :${API_PORT}（改 server/ 下的代码会自动重载）"
 (cd server && exec ../"$VENV"/bin/python -m uvicorn sql_service.main:app \
   --port "$API_PORT" --host 127.0.0.1 --log-level warning \
   --reload --reload-dir sql_service) &

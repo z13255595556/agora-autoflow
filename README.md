@@ -291,10 +291,11 @@ DATABASE_URL=... .venv/bin/python test_flowstore.py   # 集成，需要真 Postg
 一个指向元数据地址的 302 就能绕过全部检查。跨主机跳转还会剥掉 `Authorization`，
 否则恶意跳转能直接把 token 收走。
 
-两个环境变量：
+三个环境变量：
 
 | 变量 | 作用 |
 |---|---|
+| `HTTP_NODE_ALLOWED_URLS` | 精确 URL 例外：只放行列出的协议、主机、端口和路径；查询参数不参与匹配。不改变默认的公网放行策略，空格或逗号分隔 |
 | `HTTP_NODE_ALLOWED_HOSTS` | 设了就是**严格白名单**：只有列出的主机能访问（内网地址也放行，那是运维明确同意的）。空格或逗号分隔 |
 | `HTTP_NODE_BLOCKED_CIDRS` | 在默认网段之外追加要拦的段，例如 k8s 用了 `100.64.0.0/10` |
 
