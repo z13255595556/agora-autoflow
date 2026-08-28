@@ -5,10 +5,9 @@
 #   htpasswd -cm deploy/htpasswd workflow-admin
 #   docker compose up -d --build
 #
-# 四个服务。**沙箱容器（Python 代码节点的隔离执行）暂时没有** —— 节点本身
-# 已上线但生产默认闸死：api 不配 SANDBOX_URL 时 code.python 直接报
-# 「沙箱未配置」拒绝执行，不留洞。加沙箱容器时把地址配进 app.env 即可
-# （协议见 server/sql_service/code_python.py 的 _forward）。
+# 五个服务。sandbox 是 Python 代码节点的执行方：api 把代码和预装包指令
+# 转发过去（SANDBOX_URL），容器里没有任何凭证。把 sandbox 服务整个删掉也
+# 安全 —— api 找不到它时 code.python 报「沙箱未配置」拒绝执行，不留洞。
 #
 # 本机开发不需要这一套：Postgres 用 Homebrew 装、api/worker/前端直接跑
 # （见 README）。这份是给服务器用的。
@@ -42,9 +41,15 @@ services:
       PGPASSWORD_FILE: /run/secrets/pg_password
       # 同源反代之后不需要 CORS（代码里留空就是关掉）
       CORS_ORIGINS: ""
+      # Python 代码节点全部经这里转发执行；沙箱容器起不来时节点报
+      # 「沙箱不可用」（可重试），不影响其他节点
+      SANDBOX_URL: http://sandbox:9000
     secrets: [pg_password]
+    # api 同时在两个网络上：default 连库，sandbox_net 调沙箱
+    networks: [default, sandbox_net]
     depends_on:
       postgres: { condition: service_healthy }
+      sandbox: { condition: service_started }
     healthcheck:
       test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8791/health', timeout=2)); assert d['ok'] and d['storage']['ok']"]
       interval: 10s
@@ -71,6 +76,25 @@ services:
     deploy: { replicas: 1 }
     restart: unless-stopped
 
+  sandbox:
+    build: { context: ., dockerfile: deploy/sandbox.Dockerfile }
+    # 用户代码在这跑。三条钉子：
+    # ① 绝不挂 secrets / env_file —— 容器里没有任何凭证可泄；
+    # ② 只在 sandbox_net 上 —— 连 postgres 的域名都解析不到，
+    #    不用赌数据库口令挡不挡得住；
+    # ③ 端口不 publish —— 只有 api 从内网调它。
+    # 出网（公网/内网）是有意放开的，代价见 README「Python 代码节点」
+    networks: [sandbox_net]
+    mem_limit: 1g
+    pids_limit: 128
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2))['ok']"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
   nginx:
     build: { context: ., dockerfile: deploy/web.Dockerfile }
     ports: ["80:80", "443:443"]
@@ -88,6 +112,11 @@ secrets:
     file: ./deploy/pg_password.txt
   control_htpasswd:
     file: ./deploy/htpasswd
+
+networks:
+  # 沙箱专用网。sandbox 只挂在这上面，postgres/nginx 在 default ——
+  # 用户代码想横向摸这套系统，第一步解析域名就失败
+  sandbox_net: {}
 
 volumes:
   pgdata:

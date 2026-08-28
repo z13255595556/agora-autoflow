@@ -160,13 +160,15 @@ M0 存储 ──▶ M1 服务端引擎 ──┬──▶ M2 调度器（定时�
 - [x] ★★ `code` 字段**绝不做模板插值** —— 否则 webhook body 可直接注入 Python 代码，是真实的 RCE
 - [x] 用 schema 标记 `x-no-template` 声明，引擎照标记跳过，**不在引擎里硬编码字段名**
 - [x] ★★ 防回归测试：`code` 里写 `{{ $.trigger.x }}` 必须原样进入沙箱，不被替换（test/codePython.test.ts）
-- [ ] 独立 `sandbox` 容器（nsjail + python3.11）——**改判：闸门先行**。本地子进程模式
-      （显式双闸，无容器隔离）+ 生产默认拒绝执行（`CODE_SANDBOX_UNCONFIGURED`），
-      `SANDBOX_URL` 转发缝已留好；容器归入 M6 部署
+- [x] 独立 `sandbox` 容器 —— **已落地（nsjail 未上，容器边界先行）**：无凭证、
+      独立网络（解析不到 postgres）、mem/pids/cpus 限额，api 经 `SANDBOX_URL`
+      转发执行与装包（deploy/sandbox.Dockerfile + sandbox/service.py）。
+      本地开发保留子进程模式（显式双闸）；两边都没配默认拒绝执行
 - [x] ★★ 环境变量完全清空：专项测试（server/test_code_python.py 的 canary 用例）
 - [x] ~~`--network=none`~~ **改判：联网放开**（用户决策；代价与兜底见 §10 修订记和 README）
-- [ ] 只读 rootfs + tmpfs / 非 root / cgroup —— 属于沙箱容器，随容器一起做；
-      本地模式已尽力 rlimit（CPU/AS/DATA/FSIZE/NPROC/NOFILE，macOS 实情在 code_runner.py 注释里）
+- [ ] 只读 rootfs / setuid 分离 / 系统调用过滤 —— 属于 nsjail 那一步；容器已有
+      非 root（uid 65534）+ compose 限额（mem 1g / pids 128 / cpus 2），
+      本地模式尽力 rlimit（macOS 实情在 code_runner.py 注释里）
 - [x] 墙钟超时默认 30s / 上限 120s，到点 SIGKILL（killpg 连坐用户 fork 的子孙）
 - [x] 输出大小上限 10MB；代码长度上限 ~~64KB~~ **改判：1MB**
 - [x] 预装包锁版本，不支持用户装包 —— **改判升级：清单进库（sandbox_packages 表）+

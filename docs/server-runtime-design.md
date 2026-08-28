@@ -784,10 +784,13 @@ location / { try_files $uri /index.html; }   # SPA 回退
 > - **代码上限 64KB → 1MB**。
 > - **预装包清单进库**（`sandbox_packages` 表 + 管理员「Python 依赖」页增删，
 >   版本仍钉死），不再是写死的四件套；种子加了 `requests`。仍不支持用户自装。
-> - **沙箱容器（nsjail）未做**：先行方案是本地子进程模式（显式双闸：
->   `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST`）+ 生产默认拒绝执行
->   （`CODE_SANDBOX_UNCONFIGURED`），`SANDBOX_URL` 转发缝已留好。
->   §10.4 的硬约束清单里网络/rootfs/cgroup 三行属于未来的容器。
+> - **沙箱容器已做，nsjail 未上**（deploy/sandbox.Dockerfile + compose 的
+>   sandbox 服务）：容器边界先行 —— 无凭证、独立网络（摸不到 postgres）、
+>   mem/pids/cpus 限额；执行与装包由 api 经 `SANDBOX_URL` 转发（协议见
+>   sandbox/service.py）。本地开发保留子进程模式（显式双闸：
+>   `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST`）；两边都没配时默认拒绝执行
+>   （`CODE_SANDBOX_UNCONFIGURED`）。§10.4 清单里 nsjail 一级的
+>   rootfs 只读 / setuid 分离 / 系统调用过滤仍属未来。
 > - `policy.dryRunnable` 未声明：全仓零消费者，声明了没人读的注解比没有更糟。
 
 现在的数据处理能力只有 `transform.map` / `transform.template` / `list.operation`，

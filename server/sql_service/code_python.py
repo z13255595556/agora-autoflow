@@ -74,6 +74,26 @@ def _local_exec_enabled() -> bool:
 
 
 def execute(params: Dict[str, Any]) -> Dict[str, Any]:
+    code, inputs, timeout_s = _validated(params)
+    m = mode()
+    if m == "remote":
+        return _forward(code, inputs, timeout_s)
+    if m == "local":
+        return _run_local(code, inputs, timeout_s)
+    raise CodeNodeError(503, "CODE_SANDBOX_UNCONFIGURED",
+                        "Python 代码节点未启用：本地开发在 server/.env 配 CODE_NODE_LOCAL_EXEC=1"
+                        "（子进程执行，无容器隔离）；生产需部署沙箱服务并配 SANDBOX_URL")
+
+
+def execute_local(params: Dict[str, Any]) -> Dict[str, Any]:
+    """校验 + 子进程执行，**不看闸门**。沙箱服务（sandbox/service.py）的入口 ——
+    它就是闸门后面的那个执行方，再判一次 mode 会把自己判死。api 进程内
+    不要调这个，走 execute()。"""
+    code, inputs, timeout_s = _validated(params)
+    return _run_local(code, inputs, timeout_s)
+
+
+def _validated(params: Dict[str, Any]):
     code = params.get("code")
     if not isinstance(code, str) or not code.strip():
         raise CodeNodeError(400, "BAD_REQUEST", "「代码」为空。入口是固定的：def main(inputs) -> dict")
@@ -83,16 +103,7 @@ def execute(params: Dict[str, Any]) -> Dict[str, Any]:
     inputs = params.get("inputs") or {}
     if not isinstance(inputs, dict):
         raise CodeNodeError(400, "BAD_REQUEST", "「输入变量」必须是键值对")
-    timeout_s = _clamp_timeout(params.get("timeoutSeconds"))
-
-    m = mode()
-    if m == "remote":
-        return _forward(code, inputs, timeout_s)
-    if m == "local":
-        return _run_local(code, inputs, timeout_s)
-    raise CodeNodeError(503, "CODE_SANDBOX_UNCONFIGURED",
-                        "Python 代码节点未启用：本地开发在 server/.env 配 CODE_NODE_LOCAL_EXEC=1"
-                        "（子进程执行，无容器隔离）；生产需部署沙箱服务并配 SANDBOX_URL")
+    return code, inputs, _clamp_timeout(params.get("timeoutSeconds"))
 
 
 def _clamp_timeout(raw: Any) -> int:
@@ -113,7 +124,11 @@ def sandbox_python() -> Optional[str]:
     """
     override = os.getenv("SANDBOX_PYTHON", "").strip()
     if override:
-        return override if os.access(override, os.X_OK) else None
+        # 就地转绝对路径：子进程的 cwd 是每次执行的临时目录，相对路径在那里
+        # 解析必然找不到 —— 症状是「沙箱进程启动失败 No such file」，而且
+        # 只有配了相对路径的环境才炸
+        p = os.path.abspath(override)
+        return p if os.access(p, os.X_OK) else None
     p = str(_DEFAULT_VENV_PYTHON)
     return p if os.access(p, os.X_OK) else None
 

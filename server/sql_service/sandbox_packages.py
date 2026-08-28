@@ -18,10 +18,13 @@ requirements.txt，见 migrations/015 的头注释）。对账 = 把 venv 收敛
 真到多实例那天再上 advisory lock，现在先不背这个复杂度。
 """
 import json
+import os
 import re
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 from . import code_python, db
 
@@ -173,27 +176,68 @@ def _pip(interp: str, *args: str) -> Tuple[bool, str]:
 
 
 def _reconcile() -> None:
+    if code_python.mode() == "remote":
+        _reconcile_remote()
+        return
     interp = code_python.sandbox_python()
     if not interp:
         return  # 解释器都没有，装了也没处放。界面上 interpreter 为空就是提示
     installed = _installed(interp)
-    with db.pool().connection() as conn:
-        desired = _rows(conn, "SELECT name, version, status FROM sandbox_packages ORDER BY name")
+    _apply(plan(_desired(), installed),
+           install=lambda name, version: _pip(interp, "install", f"{name}=={version}"),
+           uninstall=lambda name: _pip(interp, "uninstall", "-y", name))
 
-    for action, row in plan(desired, installed):
+
+def _reconcile_remote() -> None:
+    """远程沙箱：pip 跑在沙箱容器里，这边只发指令、收结果、写状态。
+    协议的另一半在 sandbox/service.py，改任何一边必须同步另一边。"""
+    base = os.getenv("SANDBOX_URL", "").strip().rstrip("/")
+    try:
+        resp = requests.get(f"{base}/packages", timeout=120)
+        resp.raise_for_status()
+        installed = {p["name"]: p["version"] for p in resp.json().get("packages", [])}
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        # 沙箱没起来时静默失败会让包永远停在待安装且无从查起 —— 至少打一行。
+        # 不写 failed：沙箱一恢复，下一次 kick（启动/增删）就会自然补齐
+        print(f"⚠ 沙箱服务不可达，预装包对账跳过：{exc}", flush=True)
+        return
+
+    def _call(path: str, payload: Dict[str, Any]) -> Tuple[bool, str]:
+        try:
+            r = requests.post(f"{base}{path}", json=payload, timeout=PIP_TIMEOUT_SECONDS + 60)
+            body = r.json()
+        except (requests.RequestException, ValueError) as exc:
+            return False, f"沙箱服务调用失败：{exc}"
+        if r.status_code != 200:
+            return False, str(body.get("message") or f"HTTP {r.status_code}")
+        return bool(body.get("ok")), str(body.get("log") or "")
+
+    _apply(plan(_desired(), installed),
+           install=lambda name, version: _call("/packages/install", {"name": name, "version": version}),
+           uninstall=lambda name: _call("/packages/uninstall", {"name": name}))
+
+
+def _desired() -> List[Dict[str, Any]]:
+    with db.pool().connection() as conn:
+        return _rows(conn, "SELECT name, version, status FROM sandbox_packages ORDER BY name")
+
+
+def _apply(actions, install, uninstall) -> None:
+    """执行对账计划并写回状态。本地/远程只差 install/uninstall 怎么跑。"""
+    for action, row in actions:
         name, version = row["name"], row["version"]
         if action == "mark_installed":
             _set(name, "installed", None)
             continue
         if action == "uninstall":
-            ok, log = _pip(interp, "uninstall", "-y", name)
+            ok, log = uninstall(name)
             if ok:
                 with db.pool().connection() as conn:
                     conn.execute("DELETE FROM sandbox_packages WHERE name = %s AND status = 'removing'", (name,))
             else:
                 _set(name, "failed", f"卸载失败：\n{log}")
             continue
-        ok, log = _pip(interp, "install", f"{name}=={version}")
+        ok, log = install(name, version)
         _set(name, "installed" if ok else "failed", log)
 
 

@@ -59,7 +59,7 @@ ok("removing 的卸", ("uninstall", desired[3]) in acts, True)
 ok("venv 已对但表里还是 pending 的只改状态", ("mark_installed", desired[4]) in acts, True)
 ok("没有多余动作", len(acts), 4)
 
-# ---------------------------------------------------------------- 增删（要库）
+# ---------------------------------------------------------------- 增删 + 远程对账（要库）
 if os.getenv("DATABASE_URL", "").strip() or os.getenv("PGHOST", "").strip():
     _real_kick = sp.kick
     sp.kick = lambda: None  # 测试别真的去 pip 装包
@@ -71,13 +71,60 @@ if os.getenv("DATABASE_URL", "").strip() or os.getenv("PGHOST", "").strip():
         row = sp.remove("test_pkg_autoflow")
         ok("remove 置 removing", row["status"], "removing")
         raises("删不存在的包 404", lambda: sp.remove("no-such-pkg-xyz"), "没有这个包")
+
+        # ---- 远程对账：pip 跑在沙箱容器里，这边只发指令。假 requests 断言协议 ----
+        import types
+
+        calls = []
+
+        class _Resp:
+            def __init__(self, body, status=200):
+                self._body, self.status_code = body, status
+
+            def json(self):
+                return self._body
+
+            def raise_for_status(self):
+                pass
+
+        def _fake_get(url, timeout=None):
+            calls.append(("GET", url, None))
+            return _Resp({"packages": []})  # 沙箱是空 venv
+
+        def _fake_post(url, json=None, timeout=None):
+            calls.append(("POST", url, json))
+            return _Resp({"ok": True, "log": "Successfully installed"})
+
+        os.environ["SANDBOX_URL"] = "http://sandbox:9000"
+        # 上面 remove 把行置成了 removing —— 远程对账应该发 uninstall 然后删行
+        sp.add("Test_Pkg_Remote", "1.2.3", "tester@agora.io")
+        _real_requests = sp.requests
+        sp.requests = types.SimpleNamespace(get=_fake_get, post=_fake_post,
+                                            RequestException=Exception)
+        try:
+            sp._reconcile_remote()
+        finally:
+            sp.requests = _real_requests
+            del os.environ["SANDBOX_URL"]
+
+        ok("远程对账先拉沙箱已装清单",
+           calls[0], ("GET", "http://sandbox:9000/packages", None))
+        ok("待装的包发 install 且带钉死版本",
+           ("POST", "http://sandbox:9000/packages/install",
+            {"name": "test-pkg-remote", "version": "1.2.3"}) in calls, True)
+        ok("removing 的包发 uninstall",
+           ("POST", "http://sandbox:9000/packages/uninstall",
+            {"name": "test-pkg-autoflow"}) in calls, True)
+        statuses = {p["name"]: p["status"] for p in sp.overview()["packages"]}
+        ok("装完写回 installed", statuses.get("test-pkg-remote"), "installed")
+        ok("卸完整行消失", "test-pkg-autoflow" in statuses, False)
     finally:
         sp.kick = _real_kick
         from sql_service import db
         with db.pool().connection() as conn:
-            conn.execute("DELETE FROM sandbox_packages WHERE name = 'test-pkg-autoflow'")
+            conn.execute("DELETE FROM sandbox_packages WHERE name IN ('test-pkg-autoflow', 'test-pkg-remote')")
 else:
-    print("跳过：没有 DATABASE_URL/PGHOST，增删两条没测到（本机有 workflow 库的话带上再跑）")
+    print("跳过：没有 DATABASE_URL/PGHOST，增删与远程对账没测到（本机有 workflow 库的话带上再跑）")
 
 # ----------------------------------------------------------------
 for name, got, want in FAIL:

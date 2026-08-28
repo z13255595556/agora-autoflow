@@ -25,9 +25,9 @@ const STATUS_TEXT: Record<string, string> = {
 }
 
 const MODE_NOTE: Record<SandboxPackagesOverview['mode'], string> = {
-  remote: '沙箱服务模式（SANDBOX_URL）：这份清单只作展示，包生态由沙箱服务自己管理。',
+  remote: '沙箱服务模式：增删会推送到沙箱容器执行 pip，几秒到几分钟后生效。',
   local: '本地子进程模式：包装进 server/.venv-sandbox，改动几秒到几分钟后生效。',
-  off: 'Python 代码节点未启用 —— 本地开发在 server/.env 配 CODE_NODE_LOCAL_EXEC=1，生产配 SANDBOX_URL。清单可以先改，启用后生效。',
+  off: 'Python 代码节点未启用 —— 本地开发在 server/.env 配 CODE_NODE_LOCAL_EXEC=1，生产部署 sandbox 容器（docker compose 已内置）。清单可以先改，启用后生效。',
 }
 
 export default function SandboxPackages({ onClose }: { onClose: () => void }) {

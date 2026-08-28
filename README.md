@@ -165,11 +165,12 @@ docker compose config                    # 上线前先确认挂载和环境完�
 docker compose up -d --build
 ```
 
-四个服务：`postgres` / `api` / `worker` / `nginx`。
+五个服务：`postgres` / `api` / `worker` / `nginx` / `sandbox`。
 前端由 `deploy/web.Dockerfile` 在镜像内构建，服务器不需要单独安装 Node.js。
-**沙箱容器（Python 代码节点的隔离执行）暂时没有** —— 节点已上线但生产默认
-闸死：不配 `SANDBOX_URL` 时它直接报「沙箱未配置」拒绝执行，不留洞
-（见「Python 代码节点」一节）。
+`sandbox` 是 Python 代码节点的执行方：容器里**没有任何凭证**（不挂 secrets、
+不给 env_file），且只在自己的网络上（连 `postgres` 的域名都解析不到）；
+把它整个删掉也安全 —— api 找不到沙箱时节点报「沙箱未配置」拒绝执行，不留洞。
+首次启动后 api 会把「Python 依赖」清单推过去装齐，界面上能看到进度。
 
 几条不能省的：
 
@@ -328,7 +329,7 @@ transform/list 这类节点表达不了的加工（分组统计、多结果集�
 |---|---|---|
 | 未配置（默认） | 什么都不配 | 节点报「沙箱未配置」拒绝执行，生产不留洞 |
 | 本地子进程 | `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST` | 环境变量清空、独立 venv、超时 SIGKILL、rlimit 尽力而为；**没有**文件系统/内存隔离，仅限本地开发 |
-| 沙箱服务 | `SANDBOX_URL`（优先） | 转发给独立沙箱服务（容器，未做，接口缝已留好） |
+| 沙箱服务 | `SANDBOX_URL`（优先） | 转发给独立 `sandbox` 容器（compose 已内置）：容器里无凭证、独立网络摸不到库、mem/pids/cpus 限额。nsjail 级隔离未上，容器边界先行 |
 
 **联网是有意放开的**（推翻了设计文档 §10.5 的原案）：用户代码可以直接访问
 内外网。代价说在明处 —— HTTP 节点那套出网白名单和"URL/凭证在流程定义里可审计"

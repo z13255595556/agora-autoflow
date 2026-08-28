@@ -47,10 +47,13 @@ if code_python.mode() == "local":
     print("⚠ Python 代码节点以本地子进程模式执行：环境变量已清空，但**没有**", flush=True)
     print("  文件系统/内存隔离，仅限本地开发。生产请部署沙箱服务并配 SANDBOX_URL。", flush=True)
     print("=" * 72, flush=True)
-    # 启动即把沙箱 venv 收敛到 sandbox_packages 表（后台线程，不阻塞启动）。
-    # 只在本地执行模式做：remote 模式包生态属于沙箱服务，off 模式装了也没人用
+    # 启动即把沙箱 venv 收敛到 sandbox_packages 表（后台线程，不阻塞启动）
     if db.configured():
         sandbox_packages.kick()
+elif code_python.mode() == "remote" and db.configured():
+    # 远程沙箱：启动即把表里的清单推给沙箱服务装齐 —— 沙箱容器可能刚重建，
+    # venv 是空的，不推的话所有包停在「待安装」，节点里 import 全报错
+    sandbox_packages.kick()
 
 PROBE_LIMIT = 1
 
