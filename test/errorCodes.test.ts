@@ -36,10 +36,19 @@ test('业务错不重试，基础设施错才重试', () => {
   assert.equal(isRetryable('SERVICE_UNAVAILABLE'), true)
 })
 
+test('代码节点：只有沙箱不可用可重试，用户代码的错重跑也一样', () => {
+  assert.equal(isRetryable('CODE_SANDBOX_UNAVAILABLE'), true, '沙箱进程没起来，等一会儿可能就好')
+  assert.equal(isRetryable('CODE_SANDBOX_UNCONFIGURED'), false, '503 但要管理员配置，等不好')
+  assert.equal(isRetryable('CODE_SYNTAX_ERROR'), false)
+  assert.equal(isRetryable('CODE_RUNTIME_ERROR'), false)
+  assert.equal(isRetryable('CODE_TIMEOUT'), false, '纯计算重跑还是超时')
+})
+
 test('failureKind：没有错误码时按 HTTP 状态兜底', () => {
   assert.equal(failureKindOf('SQL_QUERY_ERROR'), 'business')
   assert.equal(failureKindOf('PLATFORM_AUTH'), 'infra')
   assert.equal(failureKindOf('UPSTREAM_TIMEOUT'), 'timeout')
+  assert.equal(failureKindOf('CODE_TIMEOUT'), 'timeout', '不可重试但界面要标超时，不是业务错')
   assert.equal(failureKindOf(null, 500), 'infra')
   assert.equal(failureKindOf(null, 429), 'infra', '429 该退避重试')
   assert.equal(failureKindOf(null, 400), 'business', '4xx 是调用方的问题')

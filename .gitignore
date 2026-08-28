@@ -8,6 +8,7 @@ dist/
 .env
 server/.env
 server/.venv/
+server/.venv-sandbox/
 __pycache__/
 *.pyc
 tsconfig.tsbuildinfo

@@ -23,6 +23,16 @@ if [ ! -x "$VENV/bin/python" ]; then
   "$VENV/bin/pip" install -q -r server/requirements.txt
 fi
 
+# Python 代码节点的沙箱 venv。独立于 server/.venv：那边装着 psycopg/fastapi，
+# 共用等于把服务端依赖面整个递给用户代码。这里只建空壳 —— 预装包清单的
+# 正本在 sandbox_packages 表里，api 启动时对账安装（管理员页面可增删）。
+SANDBOX_VENV="server/.venv-sandbox"
+if [ ! -x "$SANDBOX_VENV/bin/python" ]; then
+  echo "→ 建 Python 代码节点的沙箱 venv（$SANDBOX_VENV）…"
+  python3 -m venv "$SANDBOX_VENV"
+  "$SANDBOX_VENV/bin/pip" install -q --upgrade pip
+fi
+
 if [ ! -f server/.env ]; then
   echo "⚠ 没有 server/.env —— SQL 节点会因缺凭证报错，其余节点仍走 mock。"
   echo "  照 server/.env.example 建一份即可。"

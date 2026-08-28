@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, usage, wecom, workspace
+from . import code_python, datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, usage, wecom, workspace
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -38,6 +38,14 @@ if identity.dev_user() is not None:
     print(f"⚠ 本地开发身份已开启：所有请求都会被当成 {_dev.email}"
           f"{'（管理员）' if _dev.is_admin else ''}", flush=True)
     print("  这不是真的登录。去掉 server/.env 里的 DEV_IDENTITY_EMAIL 即可关闭。", flush=True)
+    print("=" * 72, flush=True)
+
+# 本地子进程模式执行用户 Python 这件事，同样必须在启动时吵一次 —— 它和
+# 未来的沙箱容器在界面上看起来一模一样，而隔离程度天差地别。
+if code_python.mode() == "local":
+    print("=" * 72, flush=True)
+    print("⚠ Python 代码节点以本地子进程模式执行：环境变量已清空，但**没有**", flush=True)
+    print("  文件系统/内存隔离，仅限本地开发。生产请部署沙箱服务并配 SANDBOX_URL。", flush=True)
     print("=" * 72, flush=True)
 
 PROBE_LIMIT = 1
@@ -511,6 +519,19 @@ def execute_http_request(body: SubmitBody) -> Dict[str, Any]:
         raise HTTPException(502, str(exc))
     except http_request.HttpRequestError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/nodes/code.python/execute")
+def execute_code_python(body: SubmitBody) -> Dict[str, Any]:
+    """同步执行一段用户 Python。**故意不走 _idempotent** —— 节点是纯计算
+    （policy.idempotent: true），重跑无害，而把最大 10MB 的结果缓存进
+    node_idempotency 才是成本（http.request 同理也没走）。重试语义由错误码
+    控制：只有 CODE_SANDBOX_UNAVAILABLE 可重试。
+    """
+    try:
+        return {"output": code_python.execute(body.params)}
+    except code_python.CodeNodeError as exc:
+        raise HTTPException(exc.status, errors.payload(exc.code, str(exc)))
 
 
 @app.post("/nodes/postgres.workspace/execute")

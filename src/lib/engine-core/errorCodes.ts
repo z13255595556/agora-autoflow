@@ -28,6 +28,14 @@ export const RETRYABLE: Readonly<Record<string, boolean>> = {
   SERVICE_UNAVAILABLE: true,
   UPSTREAM_TIMEOUT: true,
   RATE_LIMITED: true,
+  // Python 代码节点（code.python）。business/infra 混排，按"重跑会不会变"分：
+  CODE_SANDBOX_UNCONFIGURED: false, // 沙箱没配置。503 但不可重试 —— 管理员配置才能解决，等不好
+  CODE_SANDBOX_UNAVAILABLE: true, // 解释器缺 / spawn 失败 / 进程无协议输出异常死（含疑似 OOM）
+  CODE_SYNTAX_ERROR: false, // 编译失败，改代码才能解决
+  CODE_RUNTIME_ERROR: false, // 用户代码抛异常
+  CODE_BAD_RETURN: false, // 返回值非 dict / 不可序列化 / 撞保留键
+  CODE_TIMEOUT: false, // 纯计算是确定性的，重跑还是超时
+  CODE_OUTPUT_TOO_LARGE: false, // 结果超上限，改代码只返回汇总才能解决
 }
 
 /**
@@ -43,6 +51,8 @@ export function isRetryable(code: string | null | undefined): boolean {
 /** failed 的分类。business 不重试，infra 才重试 */
 export function failureKindOf(code: string | null | undefined, httpStatus?: number): 'business' | 'infra' | 'timeout' {
   if (code === 'UPSTREAM_TIMEOUT') return 'timeout'
+  // 代码节点超时不可重试（重跑还是超），但界面上要标成"超时"而不是"业务错"
+  if (code === 'CODE_TIMEOUT') return 'timeout'
   if (isRetryable(code)) return 'infra'
   // 没有错误码时退回按 HTTP 状态判：4xx（除 429）是调用方的问题
   if (code == null && httpStatus !== undefined) {

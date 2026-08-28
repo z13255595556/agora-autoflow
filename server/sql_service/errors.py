@@ -28,6 +28,14 @@ RETRYABLE: Dict[str, bool] = {
     "SERVICE_UNAVAILABLE": True,   # 本服务缺凭证等
     "UPSTREAM_TIMEOUT": True,
     "RATE_LIMITED": True,
+    # —— Python 代码节点（code.python）。business/infra 混排，按"重跑会不会变"分：
+    "CODE_SANDBOX_UNCONFIGURED": False,  # 沙箱没配置。503 但不可重试 —— 管理员配置才能解决，等不好
+    "CODE_SANDBOX_UNAVAILABLE": True,    # 解释器缺 / spawn 失败 / 进程无协议输出异常死（含疑似 OOM）
+    "CODE_SYNTAX_ERROR": False,          # 编译失败，改代码才能解决
+    "CODE_RUNTIME_ERROR": False,         # 用户代码抛异常
+    "CODE_BAD_RETURN": False,            # 返回值非 dict / 不可序列化 / 撞保留键
+    "CODE_TIMEOUT": False,               # 纯计算是确定性的，重跑还是超时
+    "CODE_OUTPUT_TOO_LARGE": False,      # 结果超上限，改代码只返回汇总才能解决
 }
 
 
