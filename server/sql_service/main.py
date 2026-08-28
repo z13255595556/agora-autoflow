@@ -410,8 +410,13 @@ def activate_version(
     不是 PUT /api/flows/{id}：那条是存草稿，语义完全不同。这里改的是
     "线上跑哪一版"，而且不产生新版本。
     """
-    return _guard(flowstore.rollback, flow_id, version,
-                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
+    out = _guard(flowstore.rollback, flow_id, version,
+                 _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
+    # 和 GET /api/flows/{id} 同一件事：这个返回也会被前端写进本地缓存
+    # （rollbackFlow 拿 draft 重画画布并落 localStorage）。不带 mine 的话，
+    # 管理员给**别人的**流程切版本，那份就落进他的本机 —— 又是一张「只在本机」
+    out["mine"] = flowstore.owner_visible(out.get("owner"), _actor(request, x_forwarded_user))
+    return out
 
 
 @app.get("/api/flows/{flow_id}/versions")

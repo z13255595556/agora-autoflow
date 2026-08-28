@@ -290,6 +290,60 @@ test('老服务端没有 mine 字段：当成我的，行为和以前一致', as
   assert.ok(lib.listLocalFlows().some((f) => f.id === 'legacy1'))
 })
 
+// ★★ getFlow 挡的是"读进来"那一侧，但编辑器的自动保存是另一条写入口：
+// 管理员在别人的流程里拖一下节点，900ms 后 saveFlow 就把它落到本机 ——
+// 首页上那张「只在本机」的卡片多半是这么来的。编辑器在 mine=false 的流程上
+// 必须传 cacheLocal:false
+test('★★ cacheLocal:false —— 别人的流程保存时只写服务端，本机一份不留', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { body: { id: 'f1' } }
+  const r = await lib.saveFlow(DEF as never, undefined, { cacheLocal: false })
+  assert.equal(r.ok, true)
+  assert.equal(calls.filter((c) => c.method === 'PUT').length, 1, '服务端照写 —— 管理员改别人的草稿是放行的')
+  assert.equal(lib.listLocalFlows().length, 0, '★ 但 localStorage 一份不留')
+})
+
+test('★ cacheLocal:false 时服务端写失败就是失败 —— 没有"已存到本地"可言', async () => {
+  await mode(true)
+  routes['PUT /api/flows/f1'] = { status: 503, body: { detail: '数据库不可用' } }
+  const r = await lib.saveFlow(DEF as never, undefined, { cacheLocal: false })
+  assert.equal(r.ok, false, '★ 本地没写，服务端也没收到，这次保存就是丢了 —— 不能报成功')
+  assert.match(r.error ?? '', /数据库不可用/)
+  assert.equal(lib.listLocalFlows().length, 0)
+})
+
+// ★ 修 cacheLocal 之前误写进来的缓存要能自愈：靠用户在卡片上删是删不干净的 ——
+// 再打开一次那条流程它就回来。和 listFlows 清归档缓存同一个思路：打开一次就清一次
+test('★ 再打开别人的流程，顺手清掉以前误写进本机的那份缓存', async () => {
+  await mode(false)
+  await lib.saveFlow({ ...DEF, id: 'other1', name: '别人的日报' } as never) // 修之前留下的
+  await mode(true)
+  routes['GET /api/flows/other1'] = {
+    body: { id: 'other1', name: '别人的日报', owner: 'someone@agora.io', mine: false,
+            activeVersion: 1, updatedAt: null, archivedAt: null, nodeCount: 1,
+            nodeTypes: [], triggerKind: 'schedule', hasUnpublishedChanges: false,
+            draft: { ...DEF, id: 'other1' } },
+  }
+  const got = await lib.getFlow('other1')
+  assert.equal(got?.mine, false, '编辑器靠它决定提示条和保存方式')
+  assert.equal(got?.owner, 'someone@agora.io', '提示条要说清这是谁的')
+  assert.equal(lib.listLocalFlows().find((f) => f.id === 'other1'), undefined, '★ 旧缓存被清掉')
+})
+
+// ★ 切版本是第三条写本机的路（getFlow / saveFlow 之外）。服务端的 activate
+// 返回和单条读一样带 mine —— 不带的话这里判不出来
+test('★ 给别人的流程切版本，切回来的那份也不落本机', async () => {
+  await mode(true)
+  routes['POST /api/flows/f1/versions/2/activate'] = {
+    body: { id: 'f1', activeVersion: 2, updatedAt: null, owner: 'someone@agora.io', mine: false,
+            draft: { ...DEF, id: 'f1', name: '第二版' } },
+  }
+  const r = await lib.rollbackFlow('f1', 2)
+  assert.equal(r.ok, true)
+  assert.equal(r.def?.name, '第二版', '画布照样要换成切回来的那版')
+  assert.equal(lib.listLocalFlows().length, 0, '★ 但不写 localStorage')
+})
+
 // ---------------------------------------------------------------- 删掉的就该消失
 //
 // 服务端的"删除"是归档（运行记录要靠版本快照解释历史），**但归档的流程一条都

@@ -54,6 +54,13 @@ export interface SavedFlow {
    * 而这一栏的用途正是一眼扫出哪些流程会自己动。
    */
   triggerKind?: string
+  /**
+   * 这条在「我的工作台」（scope=mine）里看得到吗。服务端算的，只有单条读会带
+   * （见 RemoteFlow.mine）。false = 管理员从管理台点开的**别人的**流程 ——
+   * 编辑器要据此换保存方式（不落本机）并挂出提示条。
+   * undefined（本地来源 / 列表页 / 老服务端）一律当 true 对待。
+   */
+  mine?: boolean
 }
 
 export type StorageMode = 'server' | 'local'
@@ -136,6 +143,7 @@ function fromRemote(r: api.RemoteFlow, def: FlowDefinition): SavedFlow {
     triggerKind: r.triggerKind,
     origin: 'server',
     owner: r.owner,
+    mine: r.mine,
   }
 }
 
@@ -211,7 +219,15 @@ export async function getFlow(id: string): Promise<SavedFlow | null> {
         // 读得到它，可首页列表用的是 scope=mine，那条永远不会出现在里面 ——
         // 缓存下来就是一张「只在本机」的卡片：删掉、再打开一次、它又回来了。
         // 老服务端不返回 mine，按 true 处理，行为和以前一致
-        if (r.mine !== false) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
+        if (r.mine === false) {
+          // 不只是不写，已经在本机的那份也顺手清掉：编辑器的自动保存曾经
+          // 不区分归属（现已按 mine 分流，见 saveFlow 的 cacheLocal），
+          // 那时写进来的缓存就是首页上删不干净的「只在本机」。打开一次自愈一次，
+          // 和 listFlows 清归档缓存是同一个思路
+          forgetLocal(id)
+        } else {
+          saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
+        }
         return fromRemote(r, def)
       }
     } catch {
@@ -259,10 +275,27 @@ export const didSyncToServer = (r: SaveResult): boolean =>
  *
  * 顺序是有意的：本地写是同步且几乎不会失败的，先落地保证任何情况下都不丢；
  * 服务端写失败时用户至少还能继续编辑，下次保存会再试。
+ *
+ * `cacheLocal: false` = 这份定义**不落 localStorage**（服务端照写）。
+ * 编辑器在别人的流程上（管理员视角，mine=false）必须传它：getFlow 挡住了
+ * "读进来"那一侧，但自动保存 / ⌘S / 运行前保存都走这里 —— 在别人的流程里
+ * 拖一下节点，900ms 后那份定义就落到本机，回首页就是一张「只在本机」的卡片
+ * （它永远不会出现在 scope=mine 的列表里，所以永远被判成只在本机）。
+ * 代价是失去本地兜底：服务端写失败就是失败，不能再报"已存到本地"。
  */
-export async function saveFlow(def: FlowDefinition, at: number = Date.now()): Promise<SaveResult> {
-  const localOk = saveFlowSync(def, at)
+export async function saveFlow(
+  def: FlowDefinition,
+  at: number = Date.now(),
+  opts?: { cacheLocal?: boolean },
+): Promise<SaveResult> {
+  const cacheLocal = opts?.cacheLocal !== false
+  const localOk = cacheLocal && saveFlowSync(def, at)
   if (storageMode() === 'local') {
+    if (!cacheLocal) {
+      // 理论上到不了：本地模式没有"别人的流程"。真到了也不能写 ——
+      // 宁可丢这一次改动，不能造出一张归属错误的本机卡片
+      return { ok: false, mode: 'local', error: '未连接流程存储，而这条流程不属于当前账号，改动没有保存' }
+    }
     return localOk
       ? { ok: true, mode: 'local' }
       : { ok: false, mode: 'local', error: '浏览器本地存储写入失败，请检查存储空间或隐私设置' }
@@ -374,7 +407,9 @@ export async function rollbackFlow(id: string, version: number): Promise<Rollbac
   try {
     const r = await api.activateRemoteVersion(id, version)
     const def = r.draft ? normalizeFlowDefinition(r.draft, id) : undefined
-    if (def) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
+    // 别人的流程（管理员给人切版本）不落本机 —— 理由同 getFlow：
+    // 写进来就是首页上一张「只在本机」。画布照样要换，只是不缓存
+    if (def && r.mine !== false) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
     return { ok: true, version: r.activeVersion ?? undefined, def }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }

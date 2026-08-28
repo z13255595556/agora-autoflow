@@ -93,6 +93,10 @@ export default function App() {
       // 不 await —— 它只喂画布上一行提示，不该拖慢流程打开
       void useFlow.getState().probeWebhook()
       setFlowMeta({ activeVersion: saved.activeVersion ?? null, hasUnpublishedChanges: !!saved.hasUnpublishedChanges })
+      // mine=false 时 owner 必然有值（无主流程对谁都算 mine）；兜底只防服务端异常
+      const foreign = saved.mine === false
+      foreignRef.current = foreign
+      setForeignOwner(foreign ? (saved.owner ?? '未知归属') : null)
       setDirty(false)
       setSaveError(null)
       setDock(null)
@@ -115,6 +119,19 @@ export default function App() {
   /** 说过一次就够了。用 ref 而不是 gone：save 的依赖必须保持空，它被注册进了 store */
   const toldGone = useRef(false)
 
+  /**
+   * 别人的流程（管理员从管理台点开的，服务端说 mine=false）。null = 我自己的，
+   * 非 null 时的值是对方邮箱 —— 顶部提示条要说清这是谁的。
+   *
+   * 它改变两条保存路径：saveFlow 带 cacheLocal:false（这份定义不落 localStorage，
+   * 落了就是首页上一张删了还会回来的「只在本机」卡片），beforeunload 也不再写本地。
+   * 服务端那份**照常写** —— 管理员改别人的草稿是放行的（save_draft 按 viewer
+   * 判可见性），提示条的职责就是让这件事不再是静默的。
+   */
+  const [foreignOwner, setForeignOwner] = useState<string | null>(null)
+  /** save 读的镜像。和 toldGone 同理：save 的依赖必须保持空，它被注册进了 store */
+  const foreignRef = useRef(false)
+
   // dirty 表示还有等待自动保存的持久化改动；临时 UI 状态不进入这里。
   const [dirty, setDirty] = useState(false)
   const [editRevision, setEditRevision] = useState(0)
@@ -136,7 +153,7 @@ export default function App() {
    *   都不是眼前这一份，而这件事本身没有任何迹象。
    */
   const save = useCallback(async (): Promise<{ ok: boolean; synced: boolean }> => {
-    const result = await saveFlow(useFlow.getState().toDefinition())
+    const result = await saveFlow(useFlow.getState().toDefinition(), undefined, { cacheLocal: !foreignRef.current })
     if (result.ok) {
       setDirty(false)
       // 服务端写失败但本地写成功：数据没丢，但必须说出来 ——
@@ -211,11 +228,14 @@ export default function App() {
     // 那一下写完，它就以「只在本机」的样子回到首页了
     if (!dirty || gone) return
     const onLeave = (event: BeforeUnloadEvent) => {
-      if (!saveFlowSync(useFlow.getState().toDefinition())) event.preventDefault()
+      // 别人的流程同样不写本地（理由见 foreignOwner）。这时没有任何兜底，
+      // 还没落到服务端的改动只能靠"确认离开"拦一下
+      const persisted = foreignOwner === null && saveFlowSync(useFlow.getState().toDefinition())
+      if (!persisted) event.preventDefault()
     }
     window.addEventListener('beforeunload', onLeave)
     return () => window.removeEventListener('beforeunload', onLeave)
-  }, [dirty, gone])
+  }, [dirty, gone, foreignOwner])
 
   /**
    * 发布：草稿 → 新版本 → 设为生效。
@@ -361,6 +381,11 @@ export default function App() {
           流程已在服务端删除，后续改动不再保存。需保留请先导出流程 JSON。
           <button className="btn btn--sm" onClick={() => { setDock('json') }}>导出 JSON</button>
           <button className="btn btn--sm" onClick={() => void goHome()}>回首页</button>
+        </div>
+      )}
+      {!gone && foreignOwner !== null && (
+        <div className="foreignbar" role="status">
+          这是 {foreignOwner} 的流程（管理员视角）。改动会直接保存进对方的草稿；本机不留缓存，它也不会出现在你的首页。
         </div>
       )}
       <Toolbar

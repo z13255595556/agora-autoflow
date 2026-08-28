@@ -2389,7 +2389,10 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 .editor-skeleton { display: flex; flex-direction: column; height: 100%; }
 .editor-skeleton__bar { height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .editor-skeleton__canvas { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--bg); }
-.gonebar {
+/* foreignbar（管理员打开别人的流程）和 gonebar 同一个量级：
+   都是"这一页和你以为的不一样"，共用一种提示条 */
+.gonebar,
+.foreignbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 14px; background: var(--warn-soft); color: var(--text); font-size: 12.5px;
   border-bottom: 1px solid var(--border);
