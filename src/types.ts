@@ -71,6 +71,13 @@ export interface UiHint {
    * 以前是 SchemaForm 里按 `typeId === 'http.request'` 判断，是表单里最后一个特判
    */
   importers?: Array<'curl'>
+  /**
+   * 挂在整个 input schema 上：表单顶部的助手条。
+   * - 'python' —— 使用说明悬浮窗、运行环境（版本/可用库，从 /sandbox/env
+   *   实时拉，不手抄——手抄的清单迟早和实际装的对不上）、复制 AI 提示词
+   * 和 importers 同一个思路：由 manifest 声明，不在表单里按 typeId 判断
+   */
+  assistants?: Array<'python'>
 }
 
 /**

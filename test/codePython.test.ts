@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { Edge } from '@xyflow/react'
 import { mockOutput, resolveParams } from '../src/lib/engine.ts'
 import { toCodeFields } from '../src/lib/output.ts'
+import { buildPythonPrompt } from '../src/lib/pythonPrompt.ts'
 import { nodeSummary } from '../src/lib/summary.ts'
 import { validateNode } from '../src/lib/vars.ts'
 import { NODE_TYPE_MAP, applyBackendNodes } from '../src/registry.ts'
@@ -172,13 +173,32 @@ test('toCodeFields：顶层学习，排除保留键，对象数组下钻', () =>
 test('卡片摘要：def main 之前的首条注释当标题，骨架注释不误取', () => {
   const t = NODE_TYPE_MAP.get('code.python')!
   assert.equal(nodeSummary(t, { code: '# 按 vid 汇总\ndef main(inputs):\n    return {}' }), '按 vid 汇总')
-  // 默认骨架的注释在函数体内 —— 到 def main 就停手
+  // 默认骨架没有 def main 之前的注释 —— 落到输入变量计数
   assert.equal(
     nodeSummary(t, {
-      code: 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n',
+      code: t.input.properties!.code.default as string,
       inputs: { rows: '{{ $.nodes.q1.output.rows }}' },
     }),
     'Python · 1 个输入变量',
   )
   assert.equal(nodeSummary(t, { code: 'def main(inputs):\n    return {}' }), 'Python 脚本')
+})
+
+test('AI 提示词带上真实的输入变量键和已装的包', () => {
+  const prompt = buildPythonPrompt(['rows', 'days'], {
+    mode: 'remote',
+    python: '3.11.9',
+    packages: [
+      { name: 'pandas', version: '2.2.3', status: 'installed' },
+      { name: 'scipy', version: '1.14.0', status: 'pending' },   // 没装好的不能写进提示词
+    ],
+  })
+  assert.match(prompt, /rows、days/)
+  assert.match(prompt, /Python 3\.11\.9/)
+  assert.match(prompt, /pandas==2\.2\.3/)
+  assert.ok(!prompt.includes('scipy'), 'AI 按提示词 import 一个安装中的包，代码到手就是坏的')
+  assert.match(prompt, /def main\(inputs: dict\) -> dict/)
+  // 环境拉不到也要能出一份可用的提示词
+  const bare = buildPythonPrompt([], null)
+  assert.match(bare, /以实际环境为准/)
 })

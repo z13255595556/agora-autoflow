@@ -651,18 +651,22 @@ export const NODE_TYPES: NodeType[] = [
     input: {
       type: 'object',
       required: ['code'],
+      // 表单顶部的助手条（使用说明/运行环境/复制 AI 提示词），manifest 声明
+      'x-ui': { assistants: ['python'] },
       properties: {
         // 数据进代码的唯一通道（Dify 同款做法）：数据走 JSON 进沙箱永远不会
         // 变成代码；代码里不出现 $.nodes.xxx，换上游只改映射
         inputs: {
           type: 'object', title: '输入变量',
           description: '代码只能通过 inputs 字典拿到这里的值',
+          // 预置 rows 键和骨架代码呼应：新建节点就是一个能跑的示例
+          default: { rows: '' },
           additionalProperties: true,
           'x-ui': { widget: 'kv' },
         },
         code: {
           type: 'string', title: '代码',
-          default: 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n',
+          default: 'def main(inputs):\n    rows = inputs["rows"]\n    return {"total": len(rows)}\n',
           // ★ 红线：绝不模板插值，{{ }} 原样进沙箱 —— 否则 webhook body 可注入
           // Python（RCE）。引擎/校验/表单都认这个标记（types.ts 的 x-no-template）
           'x-no-template': true,

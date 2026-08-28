@@ -488,6 +488,21 @@ def options(key: str) -> Dict[str, Any]:
     raise HTTPException(404, f"没有这个选项集：{key}")
 
 
+@app.get("/sandbox/env")
+def sandbox_env() -> Dict[str, Any]:
+    """Python 代码节点的运行环境（所有人可见，不是管理接口）。
+
+    编辑器里的「运行环境」悬浮、「使用说明」弹窗、「复制给 AI」的提示词
+    都读它 —— 版本和包列表必须来自真实环境，不能在文档里手抄一份：
+    手抄的迟早和实际装的对不上，而且对不上的时候没有任何报错。
+    """
+    return {
+        "mode": code_python.mode(),
+        "python": code_python.python_version(),
+        "packages": sandbox_packages.listing(),
+    }
+
+
 @app.post("/nodes/notify.wecom/execute")
 def execute_wecom(
     body: SubmitBody,

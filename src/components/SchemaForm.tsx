@@ -13,6 +13,7 @@ import DatePreview from './DatePreview'
 import SchedulePreview from './SchedulePreview'
 import MessagePreview from './MessagePreview'
 import CodeEditor from './CodeEditor'
+import PythonAssist from './PythonAssist'
 import RefField from './RefField'
 import { useReferenceHost } from './ReferencePickerContext'
 import ConditionsEditor from './ConditionsEditor'
@@ -297,6 +298,9 @@ export default function SchemaForm({
   return (
     <div className="form">
       {importers.includes('curl') && showCurlImport && <CurlImport onChange={onChange} />}
+      {/* 助手条（使用说明/运行环境/复制 AI 提示词）。和导入器同一个套路：
+          manifest 声明 x-ui.assistants，这里通用渲染，不按 typeId 判断 */}
+      {(schema['x-ui']?.assistants ?? []).includes('python') && <PythonAssist values={values} />}
       {mainEntries.map(renderField)}
 
       {/* 折叠区里有报错就强制展开，且这期间收不起来 —— 把一条"必填项未填"

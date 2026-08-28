@@ -408,9 +408,11 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
     },
 }
 
-# 新建节点的默认骨架。注释放在函数体内 —— summary.ts 取"def main 之前的首条
-# 注释"当卡片标题，骨架自带的注释不能被它误取
-CODE_SKELETON = 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n'
+# 新建节点的默认骨架：一个**配合默认输入变量就能跑通**的完整示例 ——
+# rows 键在 inputs 的 default 里预置了，新手点试运行零配置出结果，
+# 把「输入变量的键 → inputs["键"]」这条对应关系演示在眼前。
+# 不写注释：summary.ts 取"def main 之前的首条注释"当卡片标题，骨架不该占它
+CODE_SKELETON = 'def main(inputs):\n    rows = inputs["rows"]\n    return {"total": len(rows)}\n'
 
 CODE_PYTHON: Dict[str, Any] = {
     "type": "code.python",
@@ -423,6 +425,9 @@ CODE_PYTHON: Dict[str, Any] = {
     "input": {
         "type": "object",
         "required": ["code"],
+        # 表单顶部的助手条：使用说明悬浮窗 + 运行环境（版本/可用库，实时）+
+        # 复制 AI 提示词。和 importers 同一个思路：manifest 声明，不按 typeId 画 UI
+        "x-ui": {"assistants": ["python"]},
         "properties": {
             # 数据进代码的唯一通道（Dify 同款做法）。三个好处：数据走 JSON 序列化
             # 进沙箱永远不会变成代码；代码里不出现 $.nodes.xxx，换上游只改映射，
@@ -430,6 +435,8 @@ CODE_PYTHON: Dict[str, Any] = {
             "inputs": {
                 "type": "object", "title": "输入变量",
                 "description": "代码只能通过 inputs 字典拿到这里的值",
+                # 预置 rows 键和骨架代码呼应：新建节点就是一个能跑的示例
+                "default": {"rows": ""},
                 "additionalProperties": True,
                 "x-ui": {"widget": "kv"},
             },

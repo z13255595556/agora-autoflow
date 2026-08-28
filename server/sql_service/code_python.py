@@ -106,6 +106,41 @@ def _validated(params: Dict[str, Any]):
     return code, inputs, _clamp_timeout(params.get("timeoutSeconds"))
 
 
+_PY_VERSION: Dict[str, Optional[str]] = {}
+
+
+def interpreter_version() -> Optional[str]:
+    """本地沙箱解释器的版本号（'3.11.9'）。按解释器路径缓存 ——
+    进程活着的时候版本不会变，不值得每次 hover 都 spawn 一个进程。"""
+    interp = sandbox_python()
+    if not interp:
+        return None
+    if interp not in _PY_VERSION:
+        try:
+            out = subprocess.run([interp, "--version"], capture_output=True, timeout=10, check=True)
+            _PY_VERSION[interp] = (out.stdout or out.stderr).decode("utf-8", errors="replace") \
+                .replace("Python", "").strip() or None
+        except (OSError, subprocess.SubprocessError):
+            _PY_VERSION[interp] = None
+    return _PY_VERSION[interp]
+
+
+def python_version() -> Optional[str]:
+    """用户代码实际跑在哪个 Python 上。**必须问真实执行方**，不能报 api 自己的
+    版本 —— remote 模式下两者八竿子打不着，报错了没人看得出来。"""
+    m = mode()
+    if m == "remote":
+        try:
+            resp = requests.get(os.getenv("SANDBOX_URL", "").strip().rstrip("/") + "/health", timeout=5)
+            v = resp.json().get("python")
+            return str(v) if v else None
+        except (requests.RequestException, ValueError):
+            return None
+    if m == "local":
+        return interpreter_version()
+    return None
+
+
 def _clamp_timeout(raw: Any) -> int:
     try:
         t = int(raw)

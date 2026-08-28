@@ -148,6 +148,12 @@ out = run("def main(inputs):\n    return {'echo': inputs}",
           {"rows": [{"vid": 1}], "中文": "值", "n": None})
 ok("inputs 原样进沙箱（含中文和 None）", out["echo"] == {"rows": [{"vid": 1}], "中文": "值", "n": None}, out["echo"])
 
+# ---------------------------------------------------------------- 运行环境探测
+ver = code_python.interpreter_version()
+ok("解释器版本探测到真实版本",
+   isinstance(ver, str) and ver.startswith(f"{sys.version_info.major}.{sys.version_info.minor}"), ver)
+ok("版本按解释器路径缓存", code_python.interpreter_version() is ver or code_python.interpreter_version() == ver)
+
 # ---------------------------------------------------------------- 闸门
 del os.environ["CODE_NODE_LOCAL_EXEC"]
 raises("两条路都没配 → 沙箱未配置", lambda: run("def main(inputs):\n    return {}"),

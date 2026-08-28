@@ -52,7 +52,10 @@ class PackageBody(BaseModel):
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "interpreter": code_python.sandbox_python()}
+    # python 是**用户代码 venv** 的版本（interpreter_version 探测 SANDBOX_PYTHON），
+    # 不是本服务进程的 —— api 的 /sandbox/env 靠这个字段告诉用户代码跑在哪个版本上
+    return {"ok": True, "interpreter": code_python.sandbox_python(),
+            "python": code_python.interpreter_version()}
 
 
 @app.post("/execute")

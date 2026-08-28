@@ -72,6 +72,17 @@ def _rows(conn, sql: str, args=()) -> List[Dict[str, Any]]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def listing() -> List[Dict[str, Any]]:
+    """轻量清单（name/version/status，不带 pip_log），给非管理员的「运行环境」
+    说明用。库连不上时返回空列表 —— 环境说明是辅助信息，不该因为它把
+    节点编辑页变成一堆 500。"""
+    try:
+        with db.pool().connection() as conn:
+            return _rows(conn, "SELECT name, version, status FROM sandbox_packages ORDER BY name")
+    except Exception:  # noqa: BLE001 —— 理由见 docstring
+        return []
+
+
 def overview() -> Dict[str, Any]:
     with db.pool().connection() as conn:
         rows = _rows(conn, "SELECT name, version, status, pip_log, added_by, updated_at"

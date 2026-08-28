@@ -2322,6 +2322,54 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 .codeeditor .cm-editor { max-height: 480px; }
 .codeeditor .cm-scroller { overflow: auto; }
 
+/* ---------------- Python 节点助手条（使用说明/运行环境/复制 AI） ---------------- */
+.pyassist { display: flex; gap: 8px; flex-wrap: wrap; }
+.pyassist__btn {
+  border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text-dim); font-size: 11.5px; padding: 3px 10px;
+  border-radius: 20px; cursor: pointer;
+}
+.pyassist__btn:hover { color: var(--primary); border-color: var(--primary); }
+
+.pyenv {
+  position: fixed; z-index: 90; width: 330px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--r); box-shadow: var(--sh-md);
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.7;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.pyenv__row { display: flex; gap: 10px; }
+.pyenv__k { flex-shrink: 0; color: var(--text-faint); width: 44px; }
+.pyenv__dim { color: var(--text-faint); font-size: 11.5px; }
+
+.pyhelp { width: min(720px, 100%); }
+.pyhelp__body { overflow-y: auto; max-height: min(72vh, 720px); padding-right: 4px; }
+.pyhelp__body h3 { font-size: 13.5px; margin: 18px 0 8px; }
+.pyhelp__body h3:first-child { margin-top: 0; }
+.pyhelp__body ol, .pyhelp__body ul { margin: 0 0 10px; padding-left: 1.4em; }
+.pyhelp__body li { margin-bottom: 4px; }
+.pyhelp__body p { margin: 0 0 8px; }
+.pyhelp__body pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px; overflow-x: auto;
+  font-family: var(--mono); font-size: 12px; line-height: 1.65; margin: 6px 0 12px;
+}
+.pyhelp__body code {
+  font-family: var(--mono); font-size: .9em;
+  background: var(--surface-3); padding: .1em .35em; border-radius: 4px;
+}
+.pyhelp__body pre code { background: none; padding: 0; }
+.pyhelp__redline {
+  background: var(--warn-soft); border-top: 3px solid var(--warn);
+  border-radius: 0 0 var(--r-sm) var(--r-sm); padding: 10px 14px; margin: 12px 0;
+}
+.pyhelp__env {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 14px; margin-bottom: 8px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
+}
+.pyhelp__label { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-bottom: -2px !important; }
+
 /* ---------------- Python 依赖管理（管理员）。表格复用 .utable ---------------- */
 .pkgform { display: flex; gap: 8px; align-items: center; margin: 0 0 14px; }
 .pkgform input {

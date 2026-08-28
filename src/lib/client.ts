@@ -323,6 +323,18 @@ export function adminReconcileSandboxPackages() {
   return req<{ kicked: boolean }>('/api/admin/sandbox/packages/reconcile', { method: 'POST' })
 }
 
+/** Python 代码节点的运行环境（所有人可见）。版本和包列表来自真实环境，不是文档手抄 */
+export interface SandboxEnv {
+  mode: 'remote' | 'local' | 'off'
+  /** 用户代码实际跑的 Python 版本（如 '3.11.9'）；沙箱没起来时为 null */
+  python: string | null
+  packages: Array<{ name: string; version: string; status: string }>
+}
+
+export function sandboxEnv() {
+  return req<SandboxEnv>('/sandbox/env')
+}
+
 export interface FlowVersionMeta {
   version: number
   createdAt: string
