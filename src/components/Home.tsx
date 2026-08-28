@@ -11,6 +11,7 @@ import type { FlowDefinition } from '../types'
 import Icon from './Icon'
 import RunHistory from './RunHistory'
 import UsageDashboard from './UsageDashboard'
+import SandboxPackages from './SandboxPackages'
 import NotifySettingsDialog from './NotifySettingsDialog'
 import { normalizeFlowDefinition } from '../lib/flowImport'
 import { isSchedulerAlive, SCHEDULER_OFF_DETAIL } from '../lib/scheduler'
@@ -69,6 +70,7 @@ export default function Home({
    */
   const [admin, setAdmin] = useState(false)
   const [usageOpen, setUsageOpen] = useState(false)
+  const [pkgOpen, setPkgOpen] = useState(false)
   const [notifyOpen, setNotifyOpen] = useState(false)
   /**
    * 看哪一屏。**默认永远是「我的」** —— 管理员身份不该悄悄把他自己的工作台
@@ -287,6 +289,11 @@ export default function Home({
             用量看板
           </button>
         )}
+        {admin && (
+          <button className="btn btn--admin" onClick={() => setPkgOpen(true)} title="Python 代码节点的预装包">
+            Python 依赖
+          </button>
+        )}
         {/* 失败通知是**服务端模式且认得出你是谁**才有意义的：本地模式没有 worker、
             也就没有告警；认不出身份的话这份设置无处可存（见 /api/me/notify 的 403）。
             和「流程设置」里那块同一个理由 —— 不画一个存不了的输入框。 */}
@@ -479,6 +486,7 @@ export default function Home({
 
       {history && <RunHistory flow={history} initialRunId={openRun?.flowId === history.id ? openRun.runId : undefined} onClose={() => setHistory(null)} />}
       {usageOpen && <UsageDashboard onClose={() => setUsageOpen(false)} />}
+      {pkgOpen && <SandboxPackages onClose={() => setPkgOpen(false)} />}
       {notifyOpen && <NotifySettingsDialog onClose={() => setNotifyOpen(false)} />}
     </div>
   )

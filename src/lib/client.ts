@@ -278,6 +278,46 @@ export function adminUsage(days = 30) {
   return req<UsageOverview>(`/api/admin/usage?days=${days}`)
 }
 
+/** Python 代码节点的预装包。正本在服务端 sandbox_packages 表，venv 是它的投影 */
+export interface SandboxPackage {
+  name: string
+  version: string
+  /** pending → installed/failed；removing 的行对账完成后整行消失 */
+  status: 'pending' | 'installed' | 'failed' | 'removing'
+  /** pip 输出尾部，装失败时唯一的线索 */
+  pipLog: string | null
+  addedBy: string | null
+  updatedAt: string | null
+}
+
+export interface SandboxPackagesOverview {
+  packages: SandboxPackage[]
+  /** 沙箱执行模式。off = 节点整体未启用，页面要说出来而不是装作一切正常 */
+  mode: 'remote' | 'local' | 'off'
+  /** 沙箱解释器路径。null = venv 还没建（跑一次 scripts/dev.sh） */
+  interpreter: string | null
+  /** 对账线程正在跑（pip 装/卸中） */
+  reconciling: boolean
+}
+
+export function adminSandboxPackages() {
+  return req<SandboxPackagesOverview>('/api/admin/sandbox/packages')
+}
+
+export function adminAddSandboxPackage(name: string, version: string) {
+  return req<{ name: string; version: string; status: string }>('/api/admin/sandbox/packages', {
+    method: 'POST',
+    body: JSON.stringify({ name, version }),
+  })
+}
+
+export function adminRemoveSandboxPackage(name: string) {
+  return req<{ name: string; status: string }>(
+    `/api/admin/sandbox/packages/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  )
+}
+
 export interface FlowVersionMeta {
   version: number
   createdAt: string

@@ -17,7 +17,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import code_python, datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sqlparams, webhooks, usage, wecom, workspace
+from . import code_python, datalego, db, errors, flowdef, flowstore, http_request, identity, manifest, robot, runstore, sandbox_packages, sqlparams, webhooks, usage, wecom, workspace
 
 app = FastAPI(title="workflow sql node", version="2.0.0")
 
@@ -47,6 +47,10 @@ if code_python.mode() == "local":
     print("⚠ Python 代码节点以本地子进程模式执行：环境变量已清空，但**没有**", flush=True)
     print("  文件系统/内存隔离，仅限本地开发。生产请部署沙箱服务并配 SANDBOX_URL。", flush=True)
     print("=" * 72, flush=True)
+    # 启动即把沙箱 venv 收敛到 sandbox_packages 表（后台线程，不阻塞启动）。
+    # 只在本地执行模式做：remote 模式包生态属于沙箱服务，off 模式装了也没人用
+    if db.configured():
+        sandbox_packages.kick()
 
 PROBE_LIMIT = 1
 
@@ -714,6 +718,41 @@ def admin_usage(request: Request, days: int = 30, top: int = 20) -> Dict[str, An
     """用量看板。读的是按天聚合表，不是 runs —— 明细只留 14 天，统计永久。"""
     _require_admin(request)
     return _guard(usage.overview, days, top)
+
+
+class PackageBody(BaseModel):
+    name: str
+    version: str
+
+
+@app.get("/api/admin/sandbox/packages")
+def admin_sandbox_packages(request: Request) -> Dict[str, Any]:
+    """Python 代码节点的预装包清单（正本在 sandbox_packages 表，见 015 迁移）。"""
+    _require_admin(request)
+    return _guard(sandbox_packages.overview)
+
+
+@app.post("/api/admin/sandbox/packages")
+def admin_add_sandbox_package(
+    body: PackageBody,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _require_admin(request)
+    try:
+        return _guard(sandbox_packages.add, body.name, body.version,
+                      _actor(request, x_forwarded_user))
+    except sandbox_packages.PackageError as exc:
+        raise HTTPException(exc.status, errors.payload("BAD_REQUEST", str(exc)))
+
+
+@app.delete("/api/admin/sandbox/packages/{name}")
+def admin_remove_sandbox_package(name: str, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    try:
+        return _guard(sandbox_packages.remove, name)
+    except sandbox_packages.PackageError as exc:
+        raise HTTPException(exc.status, errors.payload("BAD_REQUEST", str(exc)))
 
 
 @app.post("/api/runs/{run_id}/cancel")
