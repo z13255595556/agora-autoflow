@@ -594,6 +594,13 @@ export function resolveParams(
 
   for (const [k, v] of Object.entries(params)) {
     const field = schema?.properties?.[k]
+    // ★ 红线：声明了 x-no-template 的字段（代码字段）原样透传，绝不进模板解析。
+    // 解析了就是 RCE：webhook body 经 {{ $.trigger.x }} 直接变成服务端执行的代码。
+    // 放在最前面 —— 任何后来加的字段处理都不该有机会碰到它。
+    if (field?.['x-no-template']) {
+      out[k] = v
+      continue
+    }
     const ph = field?.['x-placeholders']
     // 在线注册表短暂缺字段时，不能让 SQL 自动绑定静默失效。`sql` +
     // `params` 是两个 SQL 节点共用的稳定契约；schema 元数据仍是首选。

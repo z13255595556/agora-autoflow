@@ -140,6 +140,17 @@ export interface JsonSchema {
    * `$.` 前缀是两者唯一的判别依据。
    */
   'x-placeholders'?: { valuesFrom: string }
+  /**
+   * 这个字段**绝不做模板插值**，`{{ }}` 原样透传给节点服务。
+   *
+   * 给代码类字段用的（code.python 的 code）：如果代码字段也解析 `{{ $.trigger.x }}`，
+   * webhook body 里的内容就会**变成服务端执行的代码** —— 货真价实的 RCE。
+   * 和 x-placeholders 同一个思路：哪些字段不解析由 manifest 声明，
+   * 引擎照标记跳过，不在引擎里硬编码字段名。
+   *
+   * 只在**顶层字段**生效：resolveParams 递归进嵌套对象时不带 schema。
+   */
+  'x-no-template'?: boolean
   /** 取值面板的展示元数据。纯展示，不影响引用路径 */
   'x-output-ui'?: OutputUiHint
 }

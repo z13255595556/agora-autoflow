@@ -300,6 +300,10 @@ export function validateNode(
   for (const [key, value] of stringParams) {
     // 隐藏字段里的引用不参与校验（值保留但不生效）
     if (!isFieldVisible(key, t.input, node.data.params)) continue
+    // 代码字段（x-no-template）跳过引用校验：它压根不参与模板解析（resolveParams
+    // 原样透传），而 Python 的 f-string 里 `{{` 是转义大括号 —— 按引用语法查必误报，
+    // 报出来的还是"改了就成 RCE"的那种改法
+    if (t.input.properties?.[key]?.['x-no-template']) continue
     const ph = t.input.properties?.[key]?.['x-placeholders']
     if (ph) {
       // 这个字段自带占位符语法：两种写法都要检查值凑不凑得齐 ——
