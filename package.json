@@ -15,7 +15,8 @@
     "check": "npm run check:constants && npx tsc -b && npm test",
     "worker": "node --experimental-strip-types worker/index.ts",
     "test:worker": "node --test --experimental-strip-types test/worker.test.ts",
-    "test:scheduler": "node --test --experimental-strip-types test/scheduler.test.ts"
+    "test:scheduler": "node --test --experimental-strip-types test/scheduler.test.ts",
+    "update:cn-calendar": "node --experimental-strip-types scripts/update-cn-calendar.ts"
   },
   "dependencies": {
     "@xyflow/react": "^12.3.5",

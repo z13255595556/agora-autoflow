@@ -14,6 +14,7 @@ import {
   writeStep, LEASE_SECONDS, RUN_RETENTION_DAYS, USAGE_ROLLUP_DAYS, type RunRow,
 } from './store.ts'
 import { beat, runSchedulerTick, syncAllSchedules } from './scheduler.ts'
+import { refreshCnCalendar } from '../src/lib/engine-core/cnCalendar.ts'
 import { deliverPending, recordRunAlert } from './alerts.ts'
 import {
   backoffMs, failureKindOf, isRetryable, MAX_CONSECUTIVE_POLL_FAILURES, resolveRetry,
@@ -43,6 +44,8 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 1000)
  */
 const PURGE_INTERVAL_MS = 60 * 60 * 1000
 let lastPurgeAt = 0
+const CALENDAR_REFRESH_MS = 24 * 60 * 60 * 1000
+let lastCalendarAt = 0
 
 /**
  * 到点就滚一次用量统计、再清一次过期的运行日志。失败只记日志不断 tick。
@@ -67,6 +70,17 @@ async function purgeTick(): Promise<void> {
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+async function calendarTick(): Promise<void> {
+  if (Date.now() - lastCalendarAt < CALENDAR_REFRESH_MS) return
+  lastCalendarAt = Date.now()
+  try {
+    const { applied } = await refreshCnCalendar()
+    if (applied.length) console.log(`已刷新中国节假日历：${applied.join('、')}`)
+  } catch (err) {
+    console.error('刷新中国节假日历失败，沿用内置数据：', msg(err))
+  }
+}
 
 /** 读一次节点服务的响应。error 有值就是这次调用失败了，code 供重试判定用 */
 interface NodeResponse<T> {
@@ -559,6 +573,7 @@ export async function tick(onlyFlowId?: string): Promise<{ ran: boolean }> {
   await reapExpired()
   // 过期日志清理走同一个循环，和调度器一样不单开进程；节流见 purgeTick
   await purgeTick()
+  void calendarTick()
   // 调度器跑在同一个循环里，靠 advisory lock 保证多 worker 时只有一个在扫表
   await syncAllSchedules()
   await beat(WORKER_ID)
@@ -585,6 +600,7 @@ export async function main(): Promise<void> {
     process.exit(1)
   }
   await loadRegistry()
+  await calendarTick()
   console.log(`worker ${WORKER_ID} 启动，API=${API}`)
   for (;;) {
     try {

@@ -9,3 +9,12 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+declare module '*.json' {
+  const value: {
+    year: number
+    papers?: string[]
+    days: Array<{ date: string; name?: string; isOffDay: boolean }>
+  }
+  export default value
+}
