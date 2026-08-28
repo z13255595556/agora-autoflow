@@ -265,6 +265,14 @@ export function validateNode(
     }
   }
 
+  // 缺入口函数在保存期就拦下（设计要求）—— 运行期才报的话，得先真跑一次才发现
+  if (node.data.typeId === 'code.python') {
+    const code = String(node.data.params.code ?? '')
+    if (code.trim() && !/^\s*def\s+main\s*\(/m.test(code)) {
+      errors.push('代码里缺少入口函数 def main(inputs)')
+    }
+  }
+
   // 条件分支：条件行和老的表达式二选一即可，通用的 required 表达不了这个
   if (node.data.typeId === 'flow.if') {
     const group = readConditionGroup(node.data.params)

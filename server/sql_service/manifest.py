@@ -12,6 +12,7 @@
 from typing import Any, Dict
 
 from . import wecom
+from .code_python import TIMEOUT_DEFAULT_SECONDS, TIMEOUT_MAX_SECONDS
 from .datalego import ENGINES
 
 # 查询跑多久算超时。**这是默认值的唯一出处** —— 输入字段的 default 和
@@ -407,4 +408,74 @@ POSTGRES_WORKSPACE: Dict[str, Any] = {
     },
 }
 
-ALL = [SQL_QUERY, POSTGRES_WORKSPACE, NOTIFY_WECOM, HTTP_REQUEST]
+# 新建节点的默认骨架。注释放在函数体内 —— summary.ts 取"def main 之前的首条
+# 注释"当卡片标题，骨架自带的注释不能被它误取
+CODE_SKELETON = 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n'
+
+CODE_PYTHON: Dict[str, Any] = {
+    "type": "code.python",
+    "typeVersion": "1.0.0",
+    "name": "Python 代码",
+    "keywords": ["代码", "python", "脚本", "加工", "分组", "统计", "pandas"],
+    "category": "处理",
+    "icon": "🐍",
+    "description": "服务端执行 Python",
+    "input": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+            # 数据进代码的唯一通道（Dify 同款做法）。三个好处：数据走 JSON 序列化
+            # 进沙箱永远不会变成代码；代码里不出现 $.nodes.xxx，换上游只改映射，
+            # 代码能直接复制到另一条流程；编辑器静态就知道依赖哪些上游
+            "inputs": {
+                "type": "object", "title": "输入变量",
+                "description": "代码只能通过 inputs 字典拿到这里的值",
+                "additionalProperties": True,
+                "x-ui": {"widget": "kv"},
+            },
+            "code": {
+                "type": "string", "title": "代码",
+                "default": CODE_SKELETON,
+                # ★ 红线：这个字段绝不做模板插值，{{ }} 原样进沙箱 —— 否则
+                # webhook body 可以直接注入 Python，是真实的 RCE。前端引擎、
+                # 校验、表单都认这个标记（见 src/types.ts 的 x-no-template）
+                "x-no-template": True,
+                # 可联网、预装包清单这类"能力说明"进 README，不占表单 ——
+                # 这里只留不看必踩坑的一句：入口签名
+                "description": "入口是 def main(inputs) -> dict",
+                "x-ui": {"widget": "code", "language": "python", "rows": 14},
+            },
+            "timeoutSeconds": {
+                "type": "integer", "title": "超时（秒）",
+                "default": TIMEOUT_DEFAULT_SECONDS,
+                "minimum": 1, "maximum": TIMEOUT_MAX_SECONDS,
+                # 上限卡在 nginx proxy_read_timeout(130s) 之下：worker 的 fetch
+                # 没有超时，全靠服务端封顶（常量的唯一出处在 code_python.py）
+                "x-ui": {"group": "advanced"},
+            },
+        },
+    },
+    "output": {
+        "type": "object",
+        # main() 返回什么运行时才知道：跑一次学习（x-dynamic + probedOutput，
+        # 和 http.request 的响应结构同一套机制）。返回的键 spread 在输出顶层
+        "x-dynamic": "run",
+        "properties": {
+            "logs": {"type": "string", "title": "运行日志（stdout/stderr）",
+                     "x-output-ui": {"group": "run"}},
+            "durationMs": {"type": "integer", "title": "执行耗时(ms)",
+                           "x-output-ui": {"group": "run"}},
+        },
+    },
+    "runtime": {"kind": "http", "execute": "POST /nodes/code.python/execute"},
+    "policy": {
+        "idempotent": True,
+        # dryRunnable 故意不写：全仓零消费者，声明了没人读的注解比没有更糟
+        # （x-ui.inserters 的 'table' 是前车之鉴）。
+        # 重试只对基础设施错生效（错误码表里只有 CODE_SANDBOX_UNAVAILABLE
+        # 可重试）；节点是纯计算幂等，重试安全
+        "retry": {"maxAttempts": 3, "initialMs": 2000, "backoffCoefficient": 2, "maximumIntervalMs": 30_000},
+    },
+}
+
+ALL = [SQL_QUERY, POSTGRES_WORKSPACE, CODE_PYTHON, NOTIFY_WECOM, HTTP_REQUEST]

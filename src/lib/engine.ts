@@ -723,6 +723,19 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
         target: '(mock：后端未连接，没有真的发送)',
       }
     }
+    case 'code.python': {
+      // 代码在离线模式绝不执行（执行是服务端沙箱的事）。学过输出结构就按
+      // 学到的顶层字段造假数据，下游连线取值照常能选
+      const learnedKeys = Object.keys(node.data.probedOutput ?? {})
+        .filter((k) => !k.includes('.') && !k.includes('[]') && k !== 'logs' && k !== 'durationMs')
+      return {
+        ...(learnedKeys.length
+          ? Object.fromEntries(learnedKeys.map((k) => [k, '(mock)']))
+          : { result: null }),
+        logs: '(mock：后端未连接，代码没有真的执行)',
+        durationMs: 0,
+      }
+    }
     default:
       return {}
   }

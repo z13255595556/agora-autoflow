@@ -2,14 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "autoflow-studio",
+      "name": "dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev"
-      ],
-      "port": 5273,
-      "autoPort": false
+      "runtimeArgs": ["run", "dev"],
+      "port": 5273
     }
   ]
 }

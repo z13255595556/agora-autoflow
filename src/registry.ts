@@ -637,6 +637,60 @@ export const NODE_TYPES: NodeType[] = [
     policy: { idempotent: true },
   },
   {
+    // 正本在 server/sql_service/manifest.py（CODE_PYTHON），这份是离线兜底 ——
+    // 除 runtime 外逐字段镜像，test/manifestParity.test.ts 门禁。
+    // 按惯例不写 runtime：后端在线时 applyBackendNodes 整份覆盖才有 runtime，
+    // 离线时没有 runtime 就走 mockOutput，不会假装真的执行了代码
+    type: 'code.python',
+    typeVersion: '1.0.0',
+    name: 'Python 代码',
+    keywords: ['代码', 'python', '脚本', '加工', '分组', '统计', 'pandas'],
+    category: '处理',
+    icon: '🐍',
+    description: '服务端执行 Python',
+    input: {
+      type: 'object',
+      required: ['code'],
+      properties: {
+        // 数据进代码的唯一通道（Dify 同款做法）：数据走 JSON 进沙箱永远不会
+        // 变成代码；代码里不出现 $.nodes.xxx，换上游只改映射
+        inputs: {
+          type: 'object', title: '输入变量',
+          description: '代码只能通过 inputs 字典拿到这里的值',
+          additionalProperties: true,
+          'x-ui': { widget: 'kv' },
+        },
+        code: {
+          type: 'string', title: '代码',
+          default: 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n',
+          // ★ 红线：绝不模板插值，{{ }} 原样进沙箱 —— 否则 webhook body 可注入
+          // Python（RCE）。引擎/校验/表单都认这个标记（types.ts 的 x-no-template）
+          'x-no-template': true,
+          description: '入口是 def main(inputs) -> dict',
+          'x-ui': { widget: 'code', language: 'python', rows: 14 },
+        },
+        timeoutSeconds: {
+          type: 'integer', title: '超时（秒）',
+          default: 30, minimum: 1, maximum: 120,
+          'x-ui': { group: 'advanced' },
+        },
+      },
+    },
+    output: {
+      type: 'object',
+      // main() 返回什么运行时才知道：跑一次学习（和 http.request 同一套机制）
+      'x-dynamic': 'run',
+      properties: {
+        logs: { type: 'string', title: '运行日志（stdout/stderr）', 'x-output-ui': { group: 'run' } },
+        durationMs: { type: 'integer', title: '执行耗时(ms)', 'x-output-ui': { group: 'run' } },
+      },
+    },
+    policy: {
+      idempotent: true,
+      retry: { maxAttempts: 3, initialMs: 2000, backoffCoefficient: 2, maximumIntervalMs: 30_000 },
+    },
+  },
+  {
     type: 'http.request',
     typeVersion: '1.0.0',
     name: 'HTTP 调用',

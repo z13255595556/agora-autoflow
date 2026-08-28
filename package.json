@@ -19,7 +19,9 @@
     "update:cn-calendar": "node --experimental-strip-types scripts/update-cn-calendar.ts"
   },
   "dependencies": {
+    "@codemirror/lang-python": "^6.2.1",
     "@xyflow/react": "^12.3.5",
+    "codemirror": "^6.0.2",
     "pg": "^8.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -46,6 +46,23 @@ export function nodeSummary(t: NodeType, params: Record<string, unknown>): strin
       return `${engine} · ${clip(first, 34)}`
     }
 
+    case 'code.python': {
+      const code = str(params, 'code')
+      // def main 之前的首条注释是用户给这段代码起名的自然位置；
+      // 默认骨架的注释在函数体内，到 def main 就停手，不会把它误当标题
+      for (const line of code.split('\n')) {
+        const t = line.trim()
+        if (/^def\s+main\s*\(/.test(t)) break
+        if (t.startsWith('#')) {
+          const label = t.replace(/^#+\s*/, '')
+          if (label) return clip(label)
+        }
+      }
+      const inputs = params.inputs
+      const n = inputs && typeof inputs === 'object' && !Array.isArray(inputs) ? Object.keys(inputs).length : 0
+      return n ? `Python · ${n} 个输入变量` : 'Python 脚本'
+    }
+
     case 'date.compute': {
       const mode = str(params, 'mode') || 'yesterday'
       const label = DATE_MODE_LABELS[mode] ?? mode

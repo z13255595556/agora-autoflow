@@ -130,6 +130,7 @@ const RUN_META_KEYS = new Set([
   'status', 'attempts', 'url',                           // http.request
   'sent', 'bytes', 'target',                             // notify.wecom
   'okCount', 'failCount',                                // flow.foreach
+  'logs', 'durationMs',                                  // code.python（manifest 里也标了 x-output-ui，这里兜底）
 ])
 
 /** 结构性容器，用户不该看见 —— columns 的内容已经由表头承载了 */

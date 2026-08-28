@@ -2311,6 +2311,17 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   .ucols { grid-template-columns: 1fr; }
 }
 
+/* ---------------- 代码编辑器（CodeMirror，x-no-template 字段专用） ---------------- */
+.codeeditor {
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--surface); overflow: hidden;
+}
+.codeeditor:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.codeeditor--invalid { border-color: var(--danger); }
+/* 1MB 的代码不能把参数栏无限撑高 —— 编辑器自己滚 */
+.codeeditor .cm-editor { max-height: 480px; }
+.codeeditor .cm-scroller { overflow: auto; }
+
 /* ---------------- Python 依赖管理（管理员）。表格复用 .utable ---------------- */
 .pkgform { display: flex; gap: 8px; align-items: center; margin: 0 0 14px; }
 .pkgform input {

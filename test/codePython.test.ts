@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Edge } from '@xyflow/react'
-import { resolveParams } from '../src/lib/engine.ts'
+import { mockOutput, resolveParams } from '../src/lib/engine.ts'
+import { toCodeFields } from '../src/lib/output.ts'
+import { nodeSummary } from '../src/lib/summary.ts'
 import { validateNode } from '../src/lib/vars.ts'
-import { applyBackendNodes } from '../src/registry.ts'
+import { NODE_TYPE_MAP, applyBackendNodes } from '../src/registry.ts'
 import type { FNode } from '../src/store'
 import type { JsonSchema, NodeType } from '../src/types'
 
@@ -111,4 +113,72 @@ test('跳过是按字段的：同节点普通字符串字段的坏引用仍然�
   const errors = validateNode(node, [node], NO_EDGES, [])
   assert.equal(errors.length, 1)
   assert.match(errors[0], /note/)
+})
+
+// ---------------------------------------------------------------- 真节点（code.python）
+
+const codeNode = (params: Record<string, unknown>, probed?: Record<string, JsonSchema>): FNode => ({
+  id: 'py1',
+  position: { x: 0, y: 0 },
+  data: {
+    typeId: 'code.python',
+    typeVersion: '1.0.0',
+    label: 'Python 代码',
+    params,
+    onError: 'fail',
+    ...(probed ? { probedOutput: probed } : {}),
+  },
+})
+
+test('缺 def main 保存期就拦下，不用等真跑一次', () => {
+  const node = codeNode({ code: 'x = 1\nprint(x)' })
+  assert.ok(validateNode(node, [node], NO_EDGES, []).some((e) => e.includes('def main')))
+  const okNode = codeNode({ code: 'def main(inputs):\n    return {}' })
+  assert.deepEqual(validateNode(okNode, [okNode], NO_EDGES, []), [])
+})
+
+test('mockOutput 确定性形状：绝不执行代码，学过的顶层字段造假数据', () => {
+  const bare = mockOutput(codeNode({ code: 'x' }), ctx, {}, [])
+  assert.deepEqual(bare, { result: null, logs: '(mock：后端未连接，代码没有真的执行)', durationMs: 0 })
+  const learned = mockOutput(
+    codeNode({ code: 'x' }, { total: { type: 'integer' }, 'top[].vid': { type: 'integer' }, logs: { type: 'string' } }),
+    ctx, {}, [],
+  )
+  // 嵌套路径（top[].vid）和保留键不进 mock，顶层数据字段才进
+  assert.deepEqual(learned, { total: '(mock)', logs: '(mock：后端未连接，代码没有真的执行)', durationMs: 0 })
+})
+
+test('toCodeFields：顶层学习，排除保留键，对象数组下钻', () => {
+  assert.deepEqual(
+    toCodeFields({
+      total: 3,
+      user: { name: 'a' },
+      top: [{ vid: 1, dc: 2 }],
+      logs: 'x', durationMs: 5,
+      '非法 键': 1,
+    }),
+    {
+      total: { type: 'integer', title: 'total' },
+      user: { type: 'object', title: 'user' },
+      'user.name': { type: 'string', title: 'name' },
+      top: { type: 'array', title: 'top' },
+      'top[].vid': { type: 'integer', title: 'vid' },
+      'top[].dc': { type: 'integer', title: 'dc' },
+    },
+  )
+  assert.equal(toCodeFields({ logs: 'x', durationMs: 1 }), null, '只有保留键 = 没学到东西')
+})
+
+test('卡片摘要：def main 之前的首条注释当标题，骨架注释不误取', () => {
+  const t = NODE_TYPE_MAP.get('code.python')!
+  assert.equal(nodeSummary(t, { code: '# 按 vid 汇总\ndef main(inputs):\n    return {}' }), '按 vid 汇总')
+  // 默认骨架的注释在函数体内 —— 到 def main 就停手
+  assert.equal(
+    nodeSummary(t, {
+      code: 'def main(inputs):\n    # inputs 里是上面「输入变量」配的键\n    return {"result": None}\n',
+      inputs: { rows: '{{ $.nodes.q1.output.rows }}' },
+    }),
+    'Python · 1 个输入变量',
+  )
+  assert.equal(nodeSummary(t, { code: 'def main(inputs):\n    return {}' }), 'Python 脚本')
 })

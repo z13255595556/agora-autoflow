@@ -13,7 +13,7 @@ import type { FlowDefinition, FlowInputField, FlowNodeData, FlowRun, JsonSchema,
 import { applyBackendNodes, NODE_TYPE_MAP, portsOf, setOptions } from './registry.ts'
 import { executeFlow, executeSingleNode } from './lib/engine.ts'
 import { isFieldVisible } from './lib/display.ts'
-import { learnColumns, toProbedFields, toResponseFields } from './lib/output.ts'
+import { learnColumns, toCodeFields, toProbedFields, toResponseFields } from './lib/output.ts'
 import { redactNodeInput } from './lib/secrets.ts'
 import { extractSqlPlaceholders } from './lib/placeholders.ts'
 import { descendants, freeSpotRightOf, layeredLayout, NODE_W } from './lib/layout.ts'
@@ -174,9 +174,13 @@ function withLearnedOutputFrom(nodes: FNode[], nodeId: string, output: unknown):
   const node = nodes.find((n) => n.id === nodeId)
   if (!node) return null
   const learned = learnColumns(output)
+  // code.python 要走自己的学习：它的返回值 spread 在顶层（没有 body. 前缀），
+  // 而 learnColumns 只会从里面挑出一个恰好叫 rows 的数组，学漏其余字段
   const fields = node.data.typeId === 'http.request'
     ? toResponseFields(output)
-    : learned ? toProbedFields(learned) : null
+    : node.data.typeId === 'code.python'
+      ? toCodeFields(output)
+      : learned ? toProbedFields(learned) : null
   if (!fields) return null
   const prev = node.data.probedOutput ?? {}
   const unchanged = JSON.stringify(fields) === JSON.stringify(prev)

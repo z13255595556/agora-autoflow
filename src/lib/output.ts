@@ -197,32 +197,56 @@ const jsonType = (value: unknown): JsonSchema['type'] => {
 export function toResponseFields(output: unknown): Record<string, JsonSchema> | null {
   if (!isRecord(output) || output.body === undefined) return null
   const fields: Record<string, JsonSchema> = {}
-  let count = 0
-  const walk = (value: Record<string, unknown>, prefix: string, depth: number) => {
-    if (depth > 3 || count >= 80) return
-    for (const [key, child] of Object.entries(value)) {
-      if (count >= 80) break
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
-      const path = `${prefix}.${key}`
-      const type = jsonType(child)
-      fields[path] = { type, title: key }
-      count += 1
-      if (type === 'object' && isRecord(child)) walk(child, path, depth + 1)
-      // 对象数组：按首项的形状记列。空数组和标量数组没有列可记，跳过
-      else if (type === 'array' && Array.isArray(child) && isRecord(child[0])) {
-        walk(child[0], `${path}[]`, depth + 1)
-      }
-    }
-  }
+  const state = { count: 0 }
   if (isRecord(output.body)) {
-    walk(output.body, 'body', 0)
+    walkObjectFields(output.body, 'body', fields, state, 0)
   } else if (Array.isArray(output.body) && isRecord(output.body[0])) {
-    walk(output.body[0], 'body[]', 0)
+    walkObjectFields(output.body[0], 'body[]', fields, state, 0)
   } else {
     fields.body = { type: jsonType(output.body), title: '响应体' }
-    count += 1
+    state.count += 1
   }
-  return count ? fields : null
+  return state.count ? fields : null
+}
+
+/** toResponseFields / toCodeFields 共用的下钻。约定见 toResponseFields 的注释 */
+function walkObjectFields(
+  value: Record<string, unknown>,
+  prefix: string,
+  fields: Record<string, JsonSchema>,
+  state: { count: number },
+  depth: number,
+): void {
+  if (depth > 3 || state.count >= 80) return
+  for (const [key, child] of Object.entries(value)) {
+    if (state.count >= 80) break
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
+    const path = prefix ? `${prefix}.${key}` : key
+    const type = jsonType(child)
+    fields[path] = { type, title: key }
+    state.count += 1
+    if (type === 'object' && isRecord(child)) walkObjectFields(child, path, fields, state, depth + 1)
+    // 对象数组：按首项的形状记列。空数组和标量数组没有列可记，跳过
+    else if (type === 'array' && Array.isArray(child) && isRecord(child[0])) {
+      walkObjectFields(child[0], `${path}[]`, fields, state, depth + 1)
+    }
+  }
+}
+
+/**
+ * code.python 的输出学习。main() 返回的 dict 直接 spread 在输出顶层，
+ * 所以路径没有 body. 前缀；logs / durationMs 是引擎拼进去的运行信息，
+ * 不作为数据字段学习（取值面板里它们由 x-output-ui 归进「运行信息」）。
+ */
+export function toCodeFields(output: unknown): Record<string, JsonSchema> | null {
+  if (!isRecord(output)) return null
+  const fields: Record<string, JsonSchema> = {}
+  const state = { count: 0 }
+  const data = Object.fromEntries(
+    Object.entries(output).filter(([k]) => k !== 'logs' && k !== 'durationMs'),
+  )
+  walkObjectFields(data, '', fields, state, 0)
+  return state.count ? fields : null
 }
 
 /** HTTP 等对象型动态输出里已学习到的字段；SQL 的 rows[].x 不属于变量路径。 */

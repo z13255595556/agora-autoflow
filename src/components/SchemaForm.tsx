@@ -12,6 +12,7 @@ import { validationFieldKey } from '../lib/validationFocus'
 import DatePreview from './DatePreview'
 import SchedulePreview from './SchedulePreview'
 import MessagePreview from './MessagePreview'
+import CodeEditor from './CodeEditor'
 import RefField from './RefField'
 import { useReferenceHost } from './ReferencePickerContext'
 import ConditionsEditor from './ConditionsEditor'
@@ -111,8 +112,10 @@ export default function SchemaForm({
         // 过滤器只看 $. 路径的话，`| table(...)` 会显示成「→ [3 项]」，恰好在
         // 最需要看清楚的场景上给出误导。现在 describeBlock 认得过滤器，
         // 「SQL查询·表格 2列」是准确的，就不用再躲着它了。
+        // x-no-template 字段（代码）不列：它不参与插值，里面的 {{ }} 是普通字面量，
+        // 翻译成「引用」恰好是反的
         const blocks =
-          typeof value === 'string'
+          typeof value === 'string' && !sub['x-no-template']
             ? tokenizeRefs(value, { placeholders: !!sub['x-placeholders'] }).filter((b) => b.kind !== 'text')
             : []
         const fieldErrors = validationErrors.filter((error) => validationFieldKey(error, schema) === key)
@@ -159,8 +162,22 @@ export default function SchemaForm({
               </select>
             )}
 
+            {/* 代码（x-no-template）：纯代码编辑器。**按标记分派，不按 widget** ——
+                sql 字段也是 widget:'code'，但它要 RefField 的占位符体验；
+                这里相反：字段不参与模板插值（RCE 红线），{{ }} 胶囊和斜杠
+                选变量在代码里全是误导 */}
+            {sub.type === 'string' && sub['x-no-template'] && (
+              <CodeEditor
+                value={String(value ?? '')}
+                onChange={(next) => onChange(key, next)}
+                rows={ui.rows ?? 10}
+                ariaInvalid={fieldErrors.length > 0}
+                placeholder={ui.placeholder}
+              />
+            )}
+
             {/* 多行 / 代码 */}
-            {sub.type === 'string' && (ui.widget === 'code' || ui.widget === 'textarea') && (
+            {sub.type === 'string' && !sub['x-no-template'] && (ui.widget === 'code' || ui.widget === 'textarea') && (
               <>
                 <RefField
                   multiline
@@ -189,7 +206,7 @@ export default function SchemaForm({
             )}
 
             {/* 单行 */}
-            {sub.type === 'string' && (!ui.widget || ui.widget === 'text') && (
+            {sub.type === 'string' && !sub['x-no-template'] && (!ui.widget || ui.widget === 'text') && (
               <RefField
                 secret={ui.secret}
                 value={String(value ?? '')}
