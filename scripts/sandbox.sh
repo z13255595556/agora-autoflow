@@ -46,6 +46,11 @@ if lsof -tiTCP:"$SANDBOX_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 echo "→ 启动沙箱服务 http://$SANDBOX_HOST:$SANDBOX_PORT（用户代码解释器：$SANDBOX_VENV）"
+echo "  前台常驻。出现「Uvicorn running on …」即就绪；另开窗口可验证："
+echo "  curl http://127.0.0.1:$SANDBOX_PORT/health"
+# 日志用 uvicorn 默认档（info），**不要压到 warning**：就绪提示是 INFO 级，
+# 压掉之后成功启动和卡死看起来一模一样 —— 有人真的以为它挂了。
+# 顺带每次执行留一行访问日志，出问题时能对上"哪次调用"
 exec env PYTHONPATH=server SANDBOX_PYTHON="$SANDBOX_VENV/bin/python" \
   "$VENV/bin/python" -m uvicorn service:app \
-  --app-dir sandbox --host "$SANDBOX_HOST" --port "$SANDBOX_PORT" --log-level warning
+  --app-dir sandbox --host "$SANDBOX_HOST" --port "$SANDBOX_PORT"
