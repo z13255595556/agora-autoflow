@@ -735,6 +735,15 @@ def admin_sandbox_packages(request: Request) -> Dict[str, Any]:
     return _guard(sandbox_packages.overview)
 
 
+@app.post("/api/admin/sandbox/packages/reconcile")
+def admin_reconcile_sandbox_packages(request: Request) -> Dict[str, Any]:
+    """手动踢一次对账。给「沙箱比 api 后起来」这种场景用的 —— 启动推送那次
+    扑空之后，包会停在待安装，没有这个口就只能重启 api。"""
+    _require_admin(request)
+    sandbox_packages.kick()
+    return {"kicked": True}
+
+
 @app.post("/api/admin/sandbox/packages")
 def admin_add_sandbox_package(
     body: PackageBody,

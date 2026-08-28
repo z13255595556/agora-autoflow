@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  adminAddSandboxPackage, adminRemoveSandboxPackage, adminSandboxPackages,
-  type SandboxPackagesOverview,
+  adminAddSandboxPackage, adminReconcileSandboxPackages, adminRemoveSandboxPackage,
+  adminSandboxPackages, type SandboxPackagesOverview,
 } from '../lib/client'
 import Icon from './Icon'
 
@@ -115,6 +115,14 @@ export default function SandboxPackages({ onClose }: { onClose: () => void }) {
               />
               <button className="btn btn--primary" onClick={add} disabled={busy || !name.trim() || !version.trim()}>
                 添加
+              </button>
+              {/* 沙箱比 api 后起来时，启动推送扑空，包停在待安装 —— 这颗按钮免掉"重启 api"这一步 */}
+              <button
+                className="btn btn--ghost"
+                title="把清单重新推给沙箱执行（沙箱刚重启/恢复时用）"
+                onClick={() => { adminReconcileSandboxPackages().then(load).catch((e) => setErr(String(e))) }}
+              >
+                重新对账
               </button>
               {data.reconciling && <span className="pkgform__spin">对账中…</span>}
             </div>

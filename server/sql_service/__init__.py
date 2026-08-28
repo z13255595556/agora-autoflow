@@ -11,7 +11,15 @@ def _load_dotenv(filename: str = ".env") -> None:
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), filename)
     if not os.path.exists(path):
         return
-    with open(path, encoding="utf-8") as fh:
+    try:
+        fh = open(path, encoding="utf-8")
+    except OSError:
+        # 读不了就当没有。这不是坏事而是加固档的预期形态：沙箱服务用独立
+        # 低权用户跑、.env 设 600 时，这里必然 PermissionError —— 沙箱本来
+        # 就不该拿到凭证。api 自己以属主身份跑，读不到 .env 只会是真故障，
+        # 而那会立刻表现为「缺凭证」的显式报错，不会静默
+        return
+    with fh:
         for line in fh:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:

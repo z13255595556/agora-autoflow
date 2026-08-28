@@ -331,6 +331,25 @@ transform/list 这类节点表达不了的加工（分组统计、多结果集�
 | 本地子进程 | `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST` | 环境变量清空、独立 venv、超时 SIGKILL、rlimit 尽力而为；**没有**文件系统/内存隔离，仅限本地开发 |
 | 沙箱服务 | `SANDBOX_URL`（优先） | 转发给独立 `sandbox` 容器（compose 已内置）：容器里无凭证、独立网络摸不到库、mem/pids/cpus 限额。nsjail 级隔离未上，容器边界先行 |
 
+**没有 Docker 的服务器**也能跑沙箱 —— 它就是一个 uvicorn 进程：
+
+```bash
+bash scripts/sandbox.sh        # 前台；服务器上用 systemd/nohup 包一层常驻
+```
+
+然后在 api 的 `server/.env` 加 `SANDBOX_URL=http://127.0.0.1:9000`，重启 api
+（或在管理页点「重新对账」）。这条路不看 `CODE_NODE_LOCAL_EXEC`/`PGHOST` 闸门。
+分两档，别骗自己：
+
+- **同用户跑（最省事）**：环境变量对用户代码是清空的，但文件系统没有隔离 ——
+  用户代码能直接读 `server/.env` 里的全部凭证。可信的内部环境可以接受。
+- **独立低权用户跑（推荐）**：`useradd -r autoflow-sandbox` 之后
+  `chmod 600 server/.env`（属主保持 api 的运行用户），再用该用户跑
+  `scripts/sandbox.sh`（venv 目录 `SANDBOX_VENV` 指到它可写的地方）。
+  用户代码以低权身份执行，**凭证文件直接读不到** —— 这是裸机上唯一真实的
+  隔离增量。`.env` 读不到时沙箱进程会静默跳过 dotenv，这是预期形态。
+- 容器仍是更好的边界：有 Docker 就用 compose 里现成的 `sandbox` 服务。
+
 **联网是有意放开的**（推翻了设计文档 §10.5 的原案）：用户代码可以直接访问
 内外网。代价说在明处 —— HTTP 节点那套出网白名单和"URL/凭证在流程定义里可审计"
 对这个节点不成立，兜底是内部工具 + SSO + `flows.owner` 按邮箱可追溯到人。

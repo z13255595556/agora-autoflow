@@ -318,6 +318,11 @@ export function adminRemoveSandboxPackage(name: string) {
   )
 }
 
+/** 手动踢一次对账。沙箱比 api 后起来时，启动推送扑空，包停在待安装 —— 点这个不用重启 api */
+export function adminReconcileSandboxPackages() {
+  return req<{ kicked: boolean }>('/api/admin/sandbox/packages/reconcile', { method: 'POST' })
+}
+
 export interface FlowVersionMeta {
   version: number
   createdAt: string
