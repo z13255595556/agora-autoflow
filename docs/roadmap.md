@@ -151,46 +151,51 @@ M0 存储 ──▶ M1 服务端引擎 ──┬──▶ M2 调度器（定时�
 
 ---
 
-## M4 · Python 代码节点
+## M4 · Python 代码节点 ✅（2026-08-28 落地；四处改判见 server-runtime-design §10 头部的修订记）
 
 > 参考：Dify 的输入变量映射 + dify-sandbox；Windmill 的 nsjail
 
 ### 安全边界（先做这一组，再做功能）
 
-- [ ] ★★ `code` 字段**绝不做模板插值** —— 否则 webhook body 可直接注入 Python 代码，是真实的 RCE
-- [ ] 用 schema 标记 `x-no-template` 声明，引擎照标记跳过，**不在引擎里硬编码字段名**
-- [ ] ★★ 防回归测试：`code` 里写 `{{ $.trigger.x }}` 必须原样进入沙箱，不被替换
-- [ ] 独立 `sandbox` 容器（nsjail + python3.11），**不在 api 进程里 `exec()`**
-- [ ] ★★ 环境变量完全清空：专项测试 —— 代码里 `print(os.environ)` 必须为空，
-      否则 `OAUTH_*` 机器人凭证全泄
-- [ ] ★ `--network=none`：代码不能联网（要调接口就用 `http.request` 节点，URL 与凭证才可审计）
-- [ ] 只读 rootfs + tmpfs `/tmp` 64MB；非 root（uid 65534）
-- [ ] 内存 512MB（cgroup）、CPU 1 core、pids limit 32
-- [ ] 墙钟超时默认 30s / 上限 120s，到点 SIGKILL
-- [ ] 输出大小上限 10MB（防撑爆 `run_events`）；代码长度上限 64KB
-- [ ] 预装包白名单锁版本：`pandas` / `numpy` / `python-dateutil` / `orjson`；不支持用户装包
+- [x] ★★ `code` 字段**绝不做模板插值** —— 否则 webhook body 可直接注入 Python 代码，是真实的 RCE
+- [x] 用 schema 标记 `x-no-template` 声明，引擎照标记跳过，**不在引擎里硬编码字段名**
+- [x] ★★ 防回归测试：`code` 里写 `{{ $.trigger.x }}` 必须原样进入沙箱，不被替换（test/codePython.test.ts）
+- [ ] 独立 `sandbox` 容器（nsjail + python3.11）——**改判：闸门先行**。本地子进程模式
+      （显式双闸，无容器隔离）+ 生产默认拒绝执行（`CODE_SANDBOX_UNCONFIGURED`），
+      `SANDBOX_URL` 转发缝已留好；容器归入 M6 部署
+- [x] ★★ 环境变量完全清空：专项测试（server/test_code_python.py 的 canary 用例）
+- [x] ~~`--network=none`~~ **改判：联网放开**（用户决策；代价与兜底见 §10 修订记和 README）
+- [ ] 只读 rootfs + tmpfs / 非 root / cgroup —— 属于沙箱容器，随容器一起做；
+      本地模式已尽力 rlimit（CPU/AS/DATA/FSIZE/NPROC/NOFILE，macOS 实情在 code_runner.py 注释里）
+- [x] 墙钟超时默认 30s / 上限 120s，到点 SIGKILL（killpg 连坐用户 fork 的子孙）
+- [x] 输出大小上限 10MB；代码长度上限 ~~64KB~~ **改判：1MB**
+- [x] 预装包锁版本，不支持用户装包 —— **改判升级：清单进库（sandbox_packages 表）+
+      管理员「Python 依赖」页增删 + venv 对账**；种子加了 `requests`（联网放开的配套）
 
 ### 执行契约
 
-- [ ] 入口固定 `def main(inputs: dict) -> dict`；缺函数 → 保存期报错
-- [ ] ★ 结果走 fd 3 或 `/tmp/__out.json`，**不解析 stdout** —— 用户 `print()` 一下不能搞坏结果
-- [ ] stdout / stderr 收集成 `logs` 输出字段（`x-output-ui: {group:'run'}`）
-- [ ] 返回值非 dict / 不可序列化 → 明确报错，不静默 `str()`；`datetime` 可自动转 ISO 但日志说明
-- [ ] 错误信息带**用户代码的行号**，剥掉沙箱包装层栈帧
-- [ ] 错误分类：语法错/异常/返回值非法 → 不可重试；沙箱不可用/OOM → 可重试
-- [ ] `runtime.kind: 'http'`（同步）；`policy: {idempotent: true, dryRunnable: true}`
+- [x] 入口固定 `def main(inputs: dict) -> dict`；缺函数 → 保存期报错（vars.ts）
+- [x] ★ 结果走独立 pipe fd（pass_fds），**不解析 stdout** —— 用户 `print()` 一下不能搞坏结果
+- [x] stdout / stderr 收集成 `logs` 输出字段（`x-output-ui: {group:'run'}`）
+- [x] 返回值非 dict / 不可序列化 → 明确报错点名键路径；`datetime` 自动转 ISO 且 logs 里说明；
+      numpy 标量鸭子转换（pandas to_dict 吐的 np.int64 不该和"必须可序列化"打架）
+- [x] 错误信息带**用户代码的行号**，剥掉沙箱包装层栈帧
+- [x] 错误分类：语法错/异常/返回值非法 → 不可重试；沙箱不可用/疑似 OOM → 可重试（错误码两侧对齐）
+- [x] `runtime.kind: 'http'`（同步）；`policy.idempotent: true`。
+      `dryRunnable` 没写 —— 全仓零消费者，声明了没人读的注解比没有更糟
 
 ### 节点与前端
 
-- [ ] [registry.ts](../src/registry.ts) + [manifest.py](../server/sql_service/manifest.py) 加 `code.python`
-- [ ] 「输入变量」kv 映射 UI，值用现成的 [RefField](../src/components/RefField.tsx)
-- [ ] 输出结构复用 `x-dynamic: 'run'` + `probedOutput`（跟 SQL 列同一套机制）
-- [ ] CodeMirror 6 + Python 高亮 + Tab 缩进；**不要裸 textarea 写 Python**
-- [ ] 新建节点给默认骨架而非空白
-- [ ] 「试运行」复用 `executeSingleNode`，跑完写回 `probedOutput`
-- [ ] 输出面板分「返回值」（结构化）与「日志」（等宽）两块
+- [x] [registry.ts](../src/registry.ts) + [manifest.py](../server/sql_service/manifest.py) 加 `code.python`
+- [x] 「输入变量」kv 映射 UI，值用现成的 [RefField](../src/components/RefField.tsx)（kv 控件本来就是）
+- [x] 输出结构复用 `x-dynamic: 'run'` + `probedOutput`（toCodeFields：顶层 spread，排除保留键）
+- [x] CodeMirror 6 + Python 高亮 + Tab 缩进（CodeEditor.tsx；code 字段按 x-no-template 分派，屏蔽 {{}} 胶囊）
+- [x] 新建节点给默认骨架而非空白（schema default，store.defaultParams 自动拷）
+- [x] 「试运行」复用 `executeSingleNode`，跑完写回 `probedOutput`
+- [x] 输出面板分「返回值」（结构化）与「日志」（等宽）两块（NDV 既有机制：多行字符串自动折成等宽块）
 
 ---
+
 
 ## M5 · 重试 / 幂等 / 并发
 

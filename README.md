@@ -80,6 +80,8 @@ cd server && set -a && . ~/Desktop/abtest/.env && set +a && .venv/bin/python -m 
 **1. 凭证只有一个来源：机器人账号。** 四项 `OAUTH_*` 从 `server/.env` 读，
 绝不接受调用方传入 —— 那样会进流程定义、进日志、进 git。票缓存在进程内提前
 2 分钟续，一条流程里几十个 SQL 节点不会换几十次票。
+有了 Python 代码节点之后补一句：**也绝不暴露给用户代码** —— 沙箱子进程的
+环境变量是清空的（专项测试钉着），而用户代码能联网，漏一次就是可外传的全套凭证。
 
 **2. 异步节点协议。** manifest 声明 `runtime.kind: "http-async"`：submit 秒回
 handle，引擎按 `pollIntervalMs` 轮询。Hive 慢查询跑几分钟，同步等必然撞网关
@@ -165,7 +167,9 @@ docker compose up -d --build
 
 四个服务：`postgres` / `api` / `worker` / `nginx`。
 前端由 `deploy/web.Dockerfile` 在镜像内构建，服务器不需要单独安装 Node.js。
-**沙箱（Python 代码节点）暂时没有** —— 它是唯一真正需要容器隔离的部分。
+**沙箱容器（Python 代码节点的隔离执行）暂时没有** —— 节点已上线但生产默认
+闸死：不配 `SANDBOX_URL` 时它直接报「沙箱未配置」拒绝执行，不留洞
+（见「Python 代码节点」一节）。
 
 几条不能省的：
 
@@ -306,6 +310,42 @@ DATABASE_URL=... .venv/bin/python test_flowstore.py   # 集成，需要真 Postg
 
 残余风险照实说：校验和建连之间有 TOCTOU 窗口，DNS rebinding 理论上仍可绕过。
 彻底解决要固定已校验的 IP 去建连（自定义连接池适配器），成本超出这次修复的范围。
+
+## Python 代码节点（code.python）
+
+transform/list 这类节点表达不了的加工（分组统计、多结果集关联、条件汇总）
+写一段 Python：入口固定 `def main(inputs) -> dict`，返回的键直接成为下游可引用
+的输出字段，`print` 全部收进 `logs`（结果走独立通道，随手 print 不会搞坏结果）。
+
+**数据只走「输入变量」**：kv 映射把上游引用装进 `inputs` 字典。代码字段本身
+**绝不做模板插值**（schema 标记 `x-no-template`，有防回归测试）——
+这是整个节点最重要的一条：如果代码也支持 `{{ $.trigger.x }}`，webhook body
+里的内容就会变成服务端执行的 Python，是货真价实的 RCE。
+
+**执行模式三档**（`server/sql_service/code_python.py`），默认闸死：
+
+| 模式 | 条件 | 隔离程度 |
+|---|---|---|
+| 未配置（默认） | 什么都不配 | 节点报「沙箱未配置」拒绝执行，生产不留洞 |
+| 本地子进程 | `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST` | 环境变量清空、独立 venv、超时 SIGKILL、rlimit 尽力而为；**没有**文件系统/内存隔离，仅限本地开发 |
+| 沙箱服务 | `SANDBOX_URL`（优先） | 转发给独立沙箱服务（容器，未做，接口缝已留好） |
+
+**联网是有意放开的**（推翻了设计文档 §10.5 的原案）：用户代码可以直接访问
+内外网。代价说在明处 —— HTTP 节点那套出网白名单和"URL/凭证在流程定义里可审计"
+对这个节点不成立，兜底是内部工具 + SSO + `flows.owner` 按邮箱可追溯到人。
+HTTP 调用仍建议走 HTTP 节点（可审计、有重试语义）；也因为联网放开，
+"子进程环境变量绝不继承"升级为和插值红线并列的第二条红线。
+
+**预装包由管理员管**（首页「Python 依赖」，正本在 `sandbox_packages` 表）：
+版本必须钉死，增删后后台对账线程把沙箱 venv 收敛成表的样子。种子五件套：
+pandas / numpy / python-dateutil / orjson / requests。**不支持用户代码自装** ——
+pip 的安装脚本本身就是任意代码，供应链面收在管理员手里；import 没装的包会
+报 ImportError 并指引来这一页。
+
+限额：代码 ≤1MB（内嵌在流程定义里，跟着版本走）、结果 ≤10MB、
+超时默认 30s 上限 120s（卡在网关超时之下）、stdout/stderr 各留 64KB。
+错误都带用户代码行号，沙箱包装层的栈帧已剥掉；只有「沙箱不可用」会重试，
+代码本身的错误重跑也一样，不重试。
 
 ## 已经能用的
 

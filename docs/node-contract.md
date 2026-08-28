@@ -13,5 +13,6 @@
 9. 凭证不进参数：需要密钥 / webhook 的字段声明 `x-ui: { widget: 'connection', connectionType: '<type>' }`，值是 `conn:<id>`，密文只在服务端解。不要新加 `secret: true` 的明文字段
 10. 导入器声明化：`x-ui.importers: ['curl']` 让表单长出 cURL 导入，不要在组件里按 typeId 判断
 11. 会真跑的节点（有 `runtime`）必须声明 `policy.retry`，这是 worker 重试的唯一出处；不声明 = 不重试。`isRetryable` 仍只放行基础设施类错误
+12. 内容会被当作**代码执行**的字段必须声明 `x-no-template: true`：引擎原样透传，绝不模板插值 —— 插值了就是 webhook body 注入服务端代码的 RCE。防回归门禁在 `test/codePython.test.ts`
 
 设计依据见 `docs/node-usability-design.md`。

@@ -5,8 +5,10 @@
 #   htpasswd -cm deploy/htpasswd workflow-admin
 #   docker compose up -d --build
 #
-# 四个服务。**沙箱（Python 代码节点）暂时没有** —— 它是唯一真正需要容器
-# 隔离的部分，等 M4 做的时候加。
+# 四个服务。**沙箱容器（Python 代码节点的隔离执行）暂时没有** —— 节点本身
+# 已上线但生产默认闸死：api 不配 SANDBOX_URL 时 code.python 直接报
+# 「沙箱未配置」拒绝执行，不留洞。加沙箱容器时把地址配进 app.env 即可
+# （协议见 server/sql_service/code_python.py 的 _forward）。
 #
 # 本机开发不需要这一套：Postgres 用 Homebrew 装、api/worker/前端直接跑
 # （见 README）。这份是给服务器用的。

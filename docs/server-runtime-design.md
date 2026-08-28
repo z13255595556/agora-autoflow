@@ -776,6 +776,20 @@ location / { try_files $uri /index.html; }   # SPA 回退
 
 ## 10. 代码执行节点（`code.python`）
 
+> **2026-08-28 实施修订**（拍板记录，正文保留原案不改写 —— 差异以这里为准）：
+>
+> - **§10.5 联网放开**：用户代码可以直接联网，`--network=none` 取消。代价照实：
+>   http.request 的出网白名单与"URL/凭证可审计"对本节点不成立，兜底是内部
+>   工具 + SSO + owner 可追溯。因此"环境变量绝不继承"升级为与 §10.1 并列的红线。
+> - **代码上限 64KB → 1MB**。
+> - **预装包清单进库**（`sandbox_packages` 表 + 管理员「Python 依赖」页增删，
+>   版本仍钉死），不再是写死的四件套；种子加了 `requests`。仍不支持用户自装。
+> - **沙箱容器（nsjail）未做**：先行方案是本地子进程模式（显式双闸：
+>   `CODE_NODE_LOCAL_EXEC=1` 且无 `PGHOST`）+ 生产默认拒绝执行
+>   （`CODE_SANDBOX_UNCONFIGURED`），`SANDBOX_URL` 转发缝已留好。
+>   §10.4 的硬约束清单里网络/rootfs/cgroup 三行属于未来的容器。
+> - `policy.dryRunnable` 未声明：全仓零消费者，声明了没人读的注解比没有更糟。
+
 现在的数据处理能力只有 `transform.map` / `transform.template` / `list.operation`，
 稍微复杂一点的加工（分组统计、多结果集关联、条件汇总）就表达不了，
 用户只能想办法在 SQL 里硬凑。代码节点补的是这个洞。
