@@ -39,7 +39,18 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-function EnvList({ env }: { env: SandboxEnv | null }) {
+function EnvList({ env, error }: { env: SandboxEnv | null; error?: string | null }) {
+  // 拉取失败必须和「读取中」长得不一样 —— 以前失败也显示「读取中…」，
+  // 用户看到的症状是"永远在加载"，往网络/后端上想不到。带上原始报错：
+  // nginx 显式转发名单漏了 /sandbox/env 时，这里会是"非 JSON 响应（HTTP 200）：<!doctype html>…"
+  if (!env && error) {
+    return (
+      <div className="pyenv__err">
+        环境信息拉取失败：{error}
+        <div className="pyenv__dim">典型原因：nginx 没把 /sandbox/env 转发给后端（落进 SPA 回退），或后端还是没有这个接口的旧版本。</div>
+      </div>
+    )
+  }
   if (!env) return <div className="pyenv__dim">读取中…</div>
   const installed = env.packages.filter((p) => p.status === 'installed')
   const pending = env.packages.filter((p) => p.status !== 'installed')
@@ -72,6 +83,7 @@ export default function PythonAssist({ values }: { values: Record<string, unknow
   const [helpOpen, setHelpOpen] = useState(false)
   const [envOpen, setEnvOpen] = useState(false)
   const [env, setEnv] = useState<SandboxEnv | null>(null)
+  const [envError, setEnvError] = useState<string | null>(null)
   const envBtn = useRef<HTMLButtonElement>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
 
@@ -79,8 +91,10 @@ export default function PythonAssist({ values }: { values: Record<string, unknow
     if (!helpOpen && !envOpen) return
     let cancelled = false
     loadEnv()
-      .then((e) => { if (!cancelled) setEnv(e) })
-      .catch(() => { if (!cancelled) setEnv(null) })
+      .then((e) => { if (!cancelled) { setEnv(e); setEnvError(null) } })
+      .catch((err: unknown) => {
+        if (!cancelled) setEnvError(err instanceof Error ? err.message : String(err))
+      })
     return () => { cancelled = true }
   }, [helpOpen, envOpen])
 
@@ -134,7 +148,7 @@ export default function PythonAssist({ values }: { values: Record<string, unknow
       {envOpen && pos && (
         <div className="pyenv" style={{ left: pos.left, top: pos.top }}
              onMouseEnter={() => setEnvOpen(true)} onMouseLeave={() => setEnvOpen(false)}>
-          <EnvList env={env} />
+          <EnvList env={env} error={envError} />
         </div>
       )}
 
@@ -168,7 +182,7 @@ export default function PythonAssist({ values }: { values: Record<string, unknow
               </ul>
 
               <h3>当前运行环境（实时）</h3>
-              <div className="pyhelp__env"><EnvList env={env} /></div>
+              <div className="pyhelp__env"><EnvList env={env} error={envError} /></div>
               <p className="pyenv__dim">可以联网（requests 可用）；普通接口调用建议用 HTTP 节点，代码里联网留给签名/SDK 场景。
               超时默认 30s，「高级设置」最多 120s。</p>
 

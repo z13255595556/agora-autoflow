@@ -2341,6 +2341,8 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 .pyenv__row { display: flex; gap: 10px; }
 .pyenv__k { flex-shrink: 0; color: var(--text-faint); width: 44px; }
 .pyenv__dim { color: var(--text-faint); font-size: 11.5px; }
+/* 报错里可能是一段 HTML 首页原文（nginx 回退的典型症状），要能换行别撑爆浮层 */
+.pyenv__err { color: var(--danger); font-size: 11.5px; line-height: 1.6; word-break: break-all; display: flex; flex-direction: column; gap: 4px; }
 
 .pyhelp { width: min(720px, 100%); }
 .pyhelp__body { overflow-y: auto; max-height: min(72vh, 720px); padding-right: 4px; }
