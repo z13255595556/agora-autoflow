@@ -15,6 +15,7 @@ import { getFlowNotify, setFlowNotify } from '../lib/client'
 import WecomWebhookField from './WecomWebhookField'
 import DataReferenceDrawer from './DataReferenceDrawer'
 import { useReferenceHost } from './ReferencePickerContext'
+import { stepRunState } from '../lib/runLabel'
 
 /**
  * 选中节点时浮在画布右侧的配置面板。
@@ -132,15 +133,8 @@ function NodeInspector({ vars }: { vars: ReturnType<typeof availableVars> }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [runStep])
 
-  const runState = running && lastStep?.status === 'running'
-    ? { tone: 'running', text: '正在执行' }
-    : isDirty && lastStep
-      ? { tone: 'stale', text: '参数已修改，结果已过期' }
-      : lastStep?.status === 'success'
-        ? { tone: 'success', text: `上次成功 · ${lastStep.durationMs}ms` }
-        : lastStep?.status === 'error'
-          ? { tone: 'error', text: '上次执行失败' }
-          : { tone: 'idle', text: '尚未运行' }
+  // 和节点编辑页的运行条共用一份文案（见 runLabel.stepRunState）
+  const runState = stepRunState({ running, lastStep, dirty: isDirty })
 
   return (
     <>

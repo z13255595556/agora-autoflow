@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { decideRunRequest, defaultForm, triggerFromForm } from '../src/lib/runRequest.ts'
+import { decideRunRequest, defaultForm, stepRunBlockers, triggerFromForm } from '../src/lib/runRequest.ts'
 
 test('运行中点运行是停止', () => {
   assert.deepEqual(
@@ -89,4 +89,61 @@ test('defaultForm 跳过没有默认值和默认值为空的项', () => {
     { key: 'b', title: 'b', type: 'string', required: false, default: '' },
     { key: 'c', title: 'c', type: 'integer', required: false, default: '7' },
   ]), { c: '7' })
+})
+
+// ---------------------------------------------------------------- 单节点试运行的闸
+
+const DATE = { key: 'date', title: '日期', type: 'date' as const, required: true }
+
+test('★ 单节点试运行同样拦必填入参 —— 空着跑出来的是一份悄悄用了空日期的结果', () => {
+  assert.deepEqual(
+    stepRunBlockers({ running: false, nodeErrors: [], flowInputs: [DATE], form: {} }),
+    ['必填入参未填：日期'],
+  )
+})
+
+test('入参填了就放行', () => {
+  assert.deepEqual(
+    stepRunBlockers({ running: false, nodeErrors: [], flowInputs: [DATE], form: { date: '2026-08-21' } }),
+    [],
+  )
+})
+
+test('只填了空格不算填了', () => {
+  assert.equal(
+    stepRunBlockers({ running: false, nodeErrors: [], flowInputs: [DATE], form: { date: '  ' } }).length,
+    1,
+  )
+})
+
+test('节点自己的参数错排在入参前面 —— 运行条上只显示第一条', () => {
+  assert.deepEqual(
+    stepRunBlockers({
+      running: false,
+      nodeErrors: ['必填项「SQL」未填'],
+      flowInputs: [DATE],
+      form: {},
+    }),
+    ['必填项「SQL」未填', '必填入参未填：日期'],
+  )
+})
+
+test('运行中只说运行中，不再堆一串还没轮到的理由', () => {
+  assert.deepEqual(
+    stepRunBlockers({ running: true, nodeErrors: ['必填项「SQL」未填'], flowInputs: [DATE], form: {} }),
+    ['正在运行中，等这次跑完'],
+  )
+})
+
+test('★ 单节点不看图结构 —— 没接触发器也能单独跑这一个节点', () => {
+  // decideRunRequest 那边 problems 里装的是 graphProblems；这边刻意没有这个入口
+  assert.deepEqual(stepRunBlockers({ running: false, nodeErrors: [], flowInputs: [], form: {} }), [])
+})
+
+test('★ 有默认值的必填入参不拦试运行 —— 和整条运行同一把尺子', () => {
+  const inputs = [{ ...DATE, default: '2026-08-21' }]
+  assert.deepEqual(
+    stepRunBlockers({ running: false, nodeErrors: [], flowInputs: inputs, form: defaultForm(inputs) }),
+    [],
+  )
 })

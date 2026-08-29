@@ -1873,6 +1873,41 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   border-radius: var(--r-sm); padding: 2px 7px;
 }
 .ndv__cols { flex: 1; display: flex; min-height: 0; }
+
+/* 节点编辑页底部的运行条。这一页是全屏模态，把底部运行面板整个盖住了 ——
+   运行入参和运行按钮必须在这里各有一份，否则等于让人蒙着眼睛按运行 */
+.ndvrun {
+  flex: none;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border); background: var(--surface);
+  box-shadow: 0 -5px 14px -12px rgba(16, 24, 40, .35);
+}
+.ndvrun__form {
+  display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: flex-end;
+  padding: 9px 14px 10px;
+  border-bottom: 1px solid var(--border);
+  /* 入参多的流程不许把画面顶穿：这条永远是"底部一条"，不是第二块面板 */
+  max-height: 132px; overflow-y: auto;
+}
+.ndvrun__label {
+  flex: none; align-self: center;
+  font-size: 11px; font-weight: 600; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.ndvrun__field { flex: 0 1 190px; min-width: 130px; font-size: 11px; color: var(--text-dim); }
+.ndvrun__field span { display: block; margin-bottom: 4px; }
+.ndvrun__foot {
+  min-height: 52px; display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px 9px 14px;
+}
+.ndvrun__hint, .ndvrun__block { font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ndvrun__hint { color: var(--text-faint); }
+.ndvrun__block { color: var(--warn); font-weight: 500; }
+/* 胶囊在侧栏里靠 margin-right:auto 顶开按钮；这条里顶开的活儿交给按钮自己，
+   否则提示语会被挤到最右边、离它解释的那颗胶囊十万八千里 */
+.ndvrun .insrun__state { margin-right: 0; }
+.ndvrun__go { flex: none; margin-left: auto; }
+
 .ndv__col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .ndv__col--input { flex: 0 0 300px; border-right: 1px solid var(--border); }
 .ndv__col--params { flex: 1; border-right: 1px solid var(--border); background: var(--surface); }

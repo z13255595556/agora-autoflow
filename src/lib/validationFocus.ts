@@ -23,12 +23,21 @@ export function validationFieldKey(error: string, schema: JsonSchema): string | 
   return Object.entries(properties).find(([, sub]) => !!sub.title && error.includes(`「${sub.title}」`))?.[0] ?? null
 }
 
-/** 滚动并聚焦 Inspector 里的具体字段。 */
+/**
+ * 参数表单可能在两个地方：右侧栏，或节点编辑页（NDV）的参数栏。
+ * 两个不会同时挂着 —— NDV 一打开，App 就把 Inspector 卸了（见 App.tsx 的注释：
+ * 同一个节点存在两棵表单会让变量弹窗飘到模态前面）—— 所以一次查询覆盖两处即可。
+ * 漏掉 NDV 那半边的后果是静默的：编辑页里点运行被拦下来，却没有任何一格被点亮。
+ */
+const FORM_SCOPES = ['.dock[data-node-id]', '.ndv__col--params']
+const scoped = (selector: string) => FORM_SCOPES.map((scope) => `${scope} ${selector}`).join(', ')
+
+/** 滚动并聚焦参数表单里的具体字段。 */
 export function focusValidationField(error: string, schema: JsonSchema): boolean {
   const key = validationFieldKey(error, schema)
   if (!key) return false
   const focus = () => {
-    const field = [...document.querySelectorAll<HTMLElement>('.dock[data-node-id] [data-field-key]')]
+    const field = [...document.querySelectorAll<HTMLElement>(scoped('[data-field-key]'))]
       .find((element) => element.dataset.fieldKey === key)
     if (!field) return false
     field.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -47,7 +56,7 @@ export function focusValidationField(error: string, schema: JsonSchema): boolean
   }
   if (focus()) return true
 
-  const tab = [...document.querySelectorAll<HTMLButtonElement>('.dock .httpform button[data-field-keys]')]
+  const tab = [...document.querySelectorAll<HTMLButtonElement>(scoped('.httpform button[data-field-keys]'))]
     .find((button) => button.dataset.fieldKeys?.split(' ').includes(key))
   if (!tab || tab.disabled) return false
   tab.click()

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useFlow } from '../store'
 import { CATEGORY_COLOR, NODE_TYPE_MAP, portsOf } from '../registry'
-import { availableVars } from '../lib/vars'
+import { availableVars, validateNode } from '../lib/vars'
 import { extractRows } from '../lib/output'
 import { latestOutput, previewFromRun } from '../lib/engine'
 import { redactOutput } from '../lib/secrets'
@@ -10,11 +10,17 @@ import WebhookPanel from './WebhookPanel'
 import { formatDate } from '../lib/datefn'
 import { pushToast } from '../lib/toast'
 import DataReferenceDrawer from './DataReferenceDrawer'
+import NdvRunBar from './NdvRunBar'
 import { useReferenceHost } from './ReferencePickerContext'
 
 /**
- * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏。
- * 输出栏带 表格/JSON 切换、循环多次执行的运行选择器、固定输出（pin）、单节点试运行。
+ * 节点详情视图（对齐 n8n NDV）：输入 | 参数 | 输出 三栏 + 底部运行条。
+ * 输出栏带 表格/JSON 切换、循环多次执行的运行选择器、固定输出（pin）。
+ *
+ * 真正执行的入口只有底部运行条（NdvRunBar）一个。表头那颗按钮**只负责展开
+ * 它**，不再直接执行 —— 这一页是全屏模态，把底部运行面板整个盖住了，
+ * 而试运行和整条运行读的是同一份入参：以前点一下就跑的，是一份没人填过入参
+ * 的运行。留一个能直接跑的入口，就等于这道闸没装。
  */
 export default function NodeDetailView() {
   const ndvNodeId = useFlow((s) => s.ndvNodeId)
@@ -24,11 +30,9 @@ export default function NodeDetailView() {
   const flowInputs = useFlow((s) => s.flowInputs)
   const runs = useFlow((s) => s.runs)
   const activeRunId = useFlow((s) => s.activeRunId)
-  const running = useFlow((s) => s.running)
   const pinData = useFlow((s) => s.pinData)
   const pinNode = useFlow((s) => s.pinNode)
   const unpinNode = useFlow((s) => s.unpinNode)
-  const testStep = useFlow((s) => s.testStep)
   const updateNodeParam = useFlow((s) => s.updateNodeParam)
   const dirtyNodes = useFlow((s) => s.dirtyNodes)
 
@@ -37,6 +41,8 @@ export default function NodeDetailView() {
   const lastRequest = useRef(request)
   if (request) lastRequest.current = request
 
+  // 运行入参那一排展开了没。默认收起：多数节点不需要动入参，展开是"我要跑了"的动作
+  const [runBarOpen, setRunBarOpen] = useState(false)
   const [outMode, setOutMode] = useState<'table' | 'json'>('table')
   const [iterIdx, setIterIdx] = useState<number | null>(null)
   const [editingPin, setEditingPin] = useState<string | null>(null)
@@ -64,15 +70,7 @@ export default function NodeDetailView() {
   // n8n canPinNode：恰好一个 main 输出才能 pin（If/Switch/foreach/终点节点都不行）
   const canPin = portsOf(t).length === 1
   const isDirty = Boolean(dirtyNodes[node.id])
-
-  // n8n：对 pinned 节点执行 Test step 会覆盖固定数据 → 先弹确认（Unpin and test）
-  const onTestStep = () => {
-    if (isPinned) {
-      if (!confirm('该节点输出已固定。试运行将取消固定并真实执行，继续？')) return
-      unpinNode(node.id)
-    }
-    void testStep(node.id)
-  }
+  const errors = validateNode(node, nodes, edges, flowInputs)
 
   const upstream = edges
     .filter((e) => e.target === node.id)
@@ -99,13 +97,15 @@ export default function NodeDetailView() {
           <span className="ins__icon" style={{ background: color }}>{t.icon}</span>
           <span className="ndv__title">{node.data.label}</span>
           {isPinned && <span className="pinbadge" title="输出已固定，运行时不会真正执行">📌 已固定</span>}
+          <span className="ndv__type">{t.name}</span>
+          {/* 点它**不执行**，只展开下方运行条 —— 执行入口只有那一个 */}
           <button
             className="btn"
-            disabled={running}
-            title="执行这个节点。上游数据用最近一次运行的输出（固定数据优先）"
-            onClick={onTestStep}
+            aria-expanded={runBarOpen}
+            title="展开下方运行条：先填运行入参，再手动运行。点它不会直接执行"
+            onClick={() => setRunBarOpen((v) => !v)}
           >
-            {running ? '运行中…' : '▶ 试运行本节点'}
+            ▶ 试运行本节点…
           </button>
           <button className="btn" onClick={() => openNdv(null)}>关闭</button>
         </div>
@@ -119,7 +119,7 @@ export default function NodeDetailView() {
               {step ? (
                 <pre className="mono ndv__json">{JSON.stringify(step.input, null, 2)}</pre>
               ) : (
-                <div className="empty">还没运行过。运行整条流程，或点上方「试运行本节点」。</div>
+                <div className="empty">还没运行过。运行整条流程，或在下方运行条里点「运行本节点」。</div>
               )}
               <div className="ndv__sec">上游输出</div>
               {upstream.length === 0 && <div className="empty">没有上游节点</div>}
@@ -156,6 +156,8 @@ export default function NodeDetailView() {
             <div className="ndv__coltitle">参数</div>
             <div className="ndv__colbody">
               {t.type === 'trigger.webhook' && <WebhookPanel nodeParams={node.data.params} />}
+              {/* validationErrors 和运行条上那句拦截理由是同一批 —— 运行条说
+                  "必填项「SQL」未填"，这里就得有一格是红的，否则用户只能自己找 */}
               <SchemaForm
                 schema={t.input}
                 values={node.data.params}
@@ -164,6 +166,7 @@ export default function NodeDetailView() {
                 onChange={(k, v) => updateNodeParam(node.id, k, v)}
                 previewRef={previewFromRun(run, pinData)}
                 nodeId={node.id}
+                validationErrors={errors}
               />
             </div>
           </section>
@@ -258,6 +261,8 @@ export default function NodeDetailView() {
             </div>
           </section>
         </div>
+
+        <NdvRunBar node={node} type={t} open={runBarOpen} onOpen={() => setRunBarOpen(true)} />
       </div>
     </div>
   )
