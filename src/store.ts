@@ -1278,7 +1278,19 @@ export const useFlow = create<FlowState>((set, get) => ({
         const s = nodes.find((n) => n.data.typeId === 'trigger.schedule')
         // 走 exportParams 过一道 x-show：选了 cron 就别把 at/minute 的默认值
         // 也带出去，调度器读到一堆互相矛盾的字段只会犯迷糊
-        return s ? { kind: 'schedule' as const, ...exportParams(s) } : { kind: 'manual' as const }
+        if (s) return { kind: 'schedule' as const, ...exportParams(s) }
+        // webhook 同理，这一支原先漏了：画布上摆着 trigger.webhook 的流程，
+        // 在编辑器里存一次就被写成 manual。**症状全在首页，而且不报错** ——
+        // 触发本身照常（webhooks.handle 是显式传 trigger_kind='webhook' 给
+        // create_run 的，从不读这个字段），所以没人会发现定义已经不对了；
+        // 表现是卡片写着"手动触发"、图标是 ▶，以及按 Webhook 筛选时列表里没有它。
+        //
+        // 不像 schedule 那样把节点参数一起带出去：认证方式和限流的正本在
+        // webhooks 表，由 POST /api/flows/{id}/webhook 从节点参数创建，
+        // WebhookPanel 读的也是节点参数。定义里再存一份就是第二份清单，
+        // 迟早分叉 —— 而分叉了界面显示的和实际生效的不是同一个值，谁也不报错。
+        const w = nodes.find((n) => n.data.typeId === 'trigger.webhook')
+        return w ? { kind: 'webhook' as const } : { kind: 'manual' as const }
       })(),
       nodes: nodes.map((n) => ({
         id: n.id,
