@@ -254,9 +254,12 @@ export default function RunPanel() {
                     {last.status === 'skipped'
                       ? last.skipReason?.kind === 'disabled' ? '已暂停' : '跳过'
                       : last.status === 'running'
-                        ? last.progress !== undefined
-                          ? `${last.progress.toFixed(0)}%`
-                          : '…'
+                        ? last.resumeAt !== undefined
+                          // 等待节点：说清睡到几点。只显示「…」的话和卡住无法区分
+                          ? `等到 ${new Date(last.resumeAt).toLocaleTimeString('zh-CN', { hour12: false })}`
+                          : last.progress !== undefined
+                            ? `${last.progress.toFixed(0)}%`
+                            : '…'
                         : `${(last.durationMs / 1000).toFixed(1)}s`}
                   </span>
                   {last.error && <span className="steprow__err">{last.error}</span>}

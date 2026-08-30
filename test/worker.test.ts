@@ -481,3 +481,163 @@ test('★★ 查询超过设定时间：撤销平台任务并判失败，而不�
   }
 })
 
+// ─────────────────────────────────── 等待节点（flow.wait）
+//
+// 真等待只存在于服务端这条路：worker 写一行 waiting/sleep + 到点时刻就交回
+// 队列，到点由 wakeDeferred 置 success。这里验的是三件从代码上看不出来的事：
+// 等待期间 worker 真的放手了、上限在执行层真的夹住了、取消不用等睡醒。
+
+/** 建一条 t → w(flow.wait) → m 的流程，返回 flowId。用完记得删 */
+async function makeWaitFlow(
+  params: Record<string, unknown>,
+  inputs: Record<string, unknown> = {},
+): Promise<string> {
+  const id = `wtest_wait_${Math.random().toString(36).slice(2, 8)}`
+  const def = {
+    id, version: 1, name: '等待', inputs: { type: 'object', properties: inputs },
+    trigger: { kind: 'manual' },
+    nodes: [
+      { id: 't', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' },
+      { id: 'w', type: 'flow.wait', typeVersion: '1.0.0', name: '等待', params, onError: 'fail' },
+      { id: 'm', type: 'transform.template', typeVersion: '1.0.0', name: '文本', params: { template: '睡了 {{ $.nodes.w.output.waitSeconds }} 秒' }, onError: 'fail' },
+    ],
+    edges: [{ from: 't', to: 'w' }, { from: 'w', to: 'm' }],
+    layout: { t: { x: 0, y: 0 }, w: { x: 1, y: 0 }, m: { x: 2, y: 0 } },
+  }
+  await pool.query('INSERT INTO flows (id, name, draft, active_version) VALUES ($1,$2,$3,1)',
+    [id, def.name, JSON.stringify(def)])
+  await pool.query('INSERT INTO flow_versions (flow_id, version, definition) VALUES ($1,1,$2)',
+    [id, JSON.stringify(def)])
+  return id
+}
+
+async function dropWaitFlow(id: string): Promise<void> {
+  await pool.query('DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE flow_id=$1)', [id])
+  await pool.query('DELETE FROM steps WHERE run_id IN (SELECT id FROM runs WHERE flow_id=$1)', [id])
+  await pool.query('DELETE FROM runs WHERE flow_id=$1', [id])
+  await pool.query('DELETE FROM flow_versions WHERE flow_id=$1', [id])
+  await pool.query('DELETE FROM flows WHERE id=$1', [id])
+}
+
+/** 反复 tick 直到 run 进终态。等待节点会让 drain() 提前退（deferred 后 tick 无事可做） */
+async function tickUntilDone(fid: string, runId: string, ms: number): Promise<void> {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    await tick(fid)
+    const { rows } = await pool.query('SELECT status FROM runs WHERE id=$1', [runId])
+    if (['success', 'error', 'canceled'].includes(rows[0]?.status)) return
+    await new Promise((r) => setTimeout(r, 120))
+  }
+}
+
+test('★★ 等待节点：worker 交出去等，到点被唤醒循环推完，掷过的时长不重掷', { skip: SKIP }, async () => {
+  const fid = await makeWaitFlow({ mode: 'random', minSeconds: 1, maxSeconds: 2 })
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query("INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,1,'{}')", [runId, fid])
+  try {
+    // 第一次 tick：t 跑完、w 落一行 waiting/sleep、run 交回队列
+    await tick(fid)
+    const { rows: w1 } = await pool.query(
+      "SELECT status, wait_kind, progress FROM steps WHERE run_id=$1 AND node_id='w'", [runId])
+    assert.equal(w1[0].status, 'waiting')
+    assert.equal(w1[0].wait_kind, 'sleep')
+    const planned = w1[0].progress.waitSeconds
+    assert.ok(planned >= 1 && planned <= 2, `随机时长要落在区间内，实际 ${planned}`)
+    const { rows: r1 } = await pool.query('SELECT status, lease_owner FROM runs WHERE id=$1', [runId])
+    assert.equal(r1[0].status, 'running')
+    assert.equal(r1[0].lease_owner, null, '★ 等待期间 worker 必须放手 —— 攥着租约睡觉等于占死一个 worker')
+
+    await tickUntilDone(fid, runId, 15000)
+    const r = await runRow(runId)
+    assert.equal(r.status, 'success', r.error ?? '')
+    const { rows: w2 } = await pool.query(
+      "SELECT output FROM steps WHERE run_id=$1 AND node_id='w'", [runId])
+    assert.equal(w2[0].output.waitSeconds, planned, '★ 到点结算只读落库的数，不重掷')
+    const { rows: m } = await pool.query(
+      "SELECT output FROM steps WHERE run_id=$1 AND node_id='m'", [runId])
+    assert.equal(m[0].output.text, `睡了 ${planned} 秒`, '下游能引用等待节点的输出')
+  } finally {
+    await dropWaitFlow(fid)
+  }
+})
+
+test('★ 等待上限分两层：字面量越界显式报错，模板值执行层夹到 3600', { skip: SKIP }, async () => {
+  // 第一层：定义里直接写 99999（导入的 JSON 绕过表单）—— worker 的 validateNode
+  // 显式拒绝，**不静默夹**：「配了 27 小时」被悄悄改成 1 小时的话，运行是绿的，
+  // 没人知道自己的配置没生效
+  const fidLit = await makeWaitFlow({ mode: 'fixed', seconds: 99999 })
+  const runLit = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query("INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,1,'{}')", [runLit, fidLit])
+  try {
+    await tick(fidLit)
+    const { rows } = await pool.query(
+      "SELECT status, error FROM steps WHERE run_id=$1 AND node_id='w'", [runLit])
+    assert.equal(rows[0].status, 'failed')
+    assert.match(rows[0].error, /1 到 3600/, '错误里要写清允许的范围')
+  } finally {
+    await dropWaitFlow(fidLit)
+  }
+
+  // 第二层：模板算出来的值保存期看不见，校验拦不住 —— 执行层按 SQL 超时同款
+  // 规则夹到上限，夹完的数落进 progress，运行详情里看得见
+  const fidTpl = await makeWaitFlow(
+    { mode: 'fixed', seconds: '{{ $.trigger.delay }}' },
+    { delay: { type: 'integer', title: '延迟秒数' } },
+  )
+  const runTpl = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    "INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,1,'{\"delay\":99999}')",
+    [runTpl, fidTpl])
+  try {
+    await tick(fidTpl)
+    const { rows } = await pool.query(
+      `SELECT status, progress,
+              next_wake_at > now() + interval '3500 seconds' AS 远期,
+              next_wake_at < now() + interval '3700 seconds' AS 没超上限
+         FROM steps WHERE run_id=$1 AND node_id='w'`, [runTpl])
+    assert.equal(rows[0].status, 'waiting')
+    assert.equal(rows[0].progress.waitSeconds, 3600)
+    assert.equal(rows[0].远期, true)
+    assert.equal(rows[0].没超上限, true, '夹完的到点时刻要贴着 1 小时，不是 99999 秒')
+  } finally {
+    await dropWaitFlow(fidTpl)
+  }
+})
+
+test('★★ 取消不等睡醒：一小时的等待，点停止秒级收尾', { skip: SKIP }, async () => {
+  // ★ 故意用「触发器 → 等待」两个节点、**没有下游**的最小形状：取消那一轮
+  //   toSkip 恰好为空，只剩 toCancel —— 有下游的流程会因为下游被记 skipped
+  //   而碰巧走上 continue 的路，测不出「取消完没有立刻重算、run 挂在取消中
+  //   一小时」那个 bug。UI 里第一次复现用的就是这个形状
+  const fid = `wtest_wait_${Math.random().toString(36).slice(2, 8)}`
+  const def = {
+    id: fid, version: 1, name: '等待取消', inputs: { type: 'object', properties: {} },
+    trigger: { kind: 'manual' },
+    nodes: [
+      { id: 't', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' },
+      { id: 'w', type: 'flow.wait', typeVersion: '1.0.0', name: '等待', params: { mode: 'fixed', seconds: 3600 }, onError: 'fail' },
+    ],
+    edges: [{ from: 't', to: 'w' }],
+    layout: { t: { x: 0, y: 0 }, w: { x: 1, y: 0 } },
+  }
+  await pool.query('INSERT INTO flows (id, name, draft, active_version) VALUES ($1,$2,$3,1)',
+    [fid, def.name, JSON.stringify(def)])
+  await pool.query('INSERT INTO flow_versions (flow_id, version, definition) VALUES ($1,1,$2)',
+    [fid, JSON.stringify(def)])
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query("INSERT INTO runs (id, flow_id, flow_version, trigger_input) VALUES ($1,$2,1,'{}')", [runId, fid])
+  try {
+    await tick(fid)   // 进入 waiting/sleep，到点在一小时后
+    await pool.query('UPDATE runs SET cancel_requested_at = now() WHERE id = $1', [runId])
+    await tickUntilDone(fid, runId, 5000)
+
+    const r = await runRow(runId)
+    assert.equal(r.status, 'canceled', '★ 不提前唤醒的话，这里要等满一小时 —— 用户看到的是停止按钮坏了')
+    const { rows } = await pool.query(
+      "SELECT status FROM steps WHERE run_id=$1 AND node_id='w'", [runId])
+    assert.equal(rows[0].status, 'canceled', '等待中的行按取消收尾，不是 success 也不是继续 waiting')
+  } finally {
+    await dropWaitFlow(fid)
+  }
+})
+

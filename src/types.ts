@@ -361,6 +361,8 @@ export interface StepRun {
   iteration?: number
   /** 异步节点的进度 0-100。注意平台的进度不单调，只用于显示，不能拿来判完成 */
   progress?: number
+  /** 等待节点睡到几点（epoch ms）。只在等待中有值，面板靠它把「在等」和「卡住」分开 */
+  resumeAt?: number
   /** 异步节点的任务句柄，中止时用它去取消 —— 不取消的话引擎那边继续烧资源 */
   handle?: string
   /** 真实执行（走了后端服务）而不是 mock */

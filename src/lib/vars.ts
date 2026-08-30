@@ -9,6 +9,7 @@ import { dateNodeError, datePresets } from './datefn.ts'
 import { FILTERS, probedColumns, probedContainer, probedObjectFields, splitTopLevelPipes } from './output.ts'
 import { extractSqlPlaceholders } from './placeholders.ts'
 import { scheduleErrors } from './schedule.ts'
+import { WAIT_MAX_SECONDS } from './engine-core/types.ts'
 
 export interface VarEntry {
   /** 插入到表达式里的引用路径 */
@@ -270,6 +271,39 @@ export function validateNode(
     const code = String(node.data.params.code ?? '')
     if (code.trim() && !/^\s*def\s+main\s*\(/m.test(code)) {
       errors.push('代码里缺少入口函数 def main(inputs)')
+    }
+  }
+
+  // 等待节点：哪个字段生效跟着 mode 走，通用 required 只盖得住 mode。
+  // 范围和「最短 ≤ 最长」在保存期就拦 —— 运行期才发现的话，代价是一条
+  // 已经入队、可能还是定时触发的 run 半夜失败
+  if (node.data.typeId === 'flow.wait') {
+    const params = node.data.params
+    // 引用值（{{ }}）运行期才知道，不拦；报出来的错和 plannedWaitSeconds 一致
+    const literal = (key: string, title: string): number | null => {
+      const v = params[key]
+      if (v === undefined || v === null || v === '') {
+        errors.push(`必填项「${title}」未填`)
+        return null
+      }
+      if (typeof v === 'string' && v.includes('{{')) return null
+      const n = Number(v)
+      if (!Number.isFinite(n)) {
+        errors.push(`「${title}」要填秒数`)
+        return null
+      }
+      if (n < 1 || n > WAIT_MAX_SECONDS) {
+        errors.push(`「${title}」要在 1 到 ${WAIT_MAX_SECONDS} 秒之间（最长 1 小时）`)
+        return null
+      }
+      return n
+    }
+    if (String(params.mode ?? 'fixed') === 'random') {
+      const lo = literal('minSeconds', '最短等待（秒）')
+      const hi = literal('maxSeconds', '最长等待（秒）')
+      if (lo !== null && hi !== null && lo > hi) errors.push('「最短等待」不能大于「最长等待」')
+    } else {
+      literal('seconds', '等待时长（秒）')
     }
   }
 

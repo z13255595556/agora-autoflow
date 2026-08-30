@@ -190,6 +190,11 @@ def get_run(run_id: str, viewer: Optional[str] = flowstore.ANY) -> Dict[str, Any
             "fanout": s["fanout"],
             # handle 是内部断点，不外泄；只说有没有在等平台
             "hasHandle": bool((s["progress"] or {}).get("handle")),
+            # 等待节点在睡到几点。不带的话面板上它显示成一个干转的「…」，
+            # 和「卡住了」在界面上没有任何区别 —— 用户只能去点停止试试。
+            # 只在还没睡醒时给：success 行的 progress 里这个键还留着（progress
+            # 是合并写），醒了再带就成了历史噪音
+            "resumeAt": (s["progress"] or {}).get("resumeAt") if s["status"] == "waiting" else None,
             "skipReason": s["skip_reason"],
             "seq": s["seq"],
             "startedAt": s["started_at"].isoformat() if s["started_at"] else None,

@@ -18,7 +18,7 @@ import { redactNodeInput } from './secrets.ts'
 import { outgoing, reachableFrom, topoSort } from './engine-core/graph.ts'
 import { pausable } from './engine-core/decide.ts'
 // 常量全仓单一出处，scripts/check-constants.sh 是门禁
-import { MAX_LOOP_ITERATIONS } from './engine-core/types.ts'
+import { MAX_LOOP_ITERATIONS, WAIT_MAX_SECONDS } from './engine-core/types.ts'
 import { isRetryable, MAX_CONSECUTIVE_POLL_FAILURES } from './engine-core/errorCodes.ts'
 export { MAX_LOOP_ITERATIONS }
 
@@ -641,6 +641,40 @@ export function resolveParams(
   return out
 }
 
+// ---------------------------------------------------------------- 等待节点
+
+/**
+ * 等待节点这一次要等几秒。**固定/随机/夹上限的语义只有这一份** ——
+ * worker（真等）和 mockOutput（不等）都调它，两边对「同一份参数等多久」
+ * 各写一遍的话，跑出来的差异只会出现在运行详情的数字上，没人能追到原因。
+ *
+ * random01 由调用方给：worker 传 Math.random()（掷一次并立刻落库，崩了不重掷）；
+ * mockOutput 传 0（它的硬约束是无随机源，随机模式确定地取最短值）。
+ *
+ * 超上限**夹到 3600 而不是报错**：表单的 maximum 只管控件，模板算出来的值和
+ * 导入的 JSON 都绕得过去，和 SQL 超时的 timeoutMinutesOf 同一条路。
+ * 0 / 负数夹到 1（「不等」的意图成立，只是不允许绕过等待语义的下限）；
+ * 解析不出数字才报错 —— 静默给一个默认时长的话，用户看到的是一次
+ * 莫名其妙慢了五分钟的运行，而且不知道该去改哪。
+ */
+export function plannedWaitSeconds(input: Record<string, unknown>, random01: number): number {
+  const num = (v: unknown, title: string): number => {
+    const n = Number(v)
+    if (v === undefined || v === null || v === '' || !Number.isFinite(n)) {
+      throw new Error(`「${title}」要是秒数，实际拿到的是 ${JSON.stringify(v ?? null)}`)
+    }
+    return Math.min(WAIT_MAX_SECONDS, Math.max(1, Math.round(n)))
+  }
+  if (String(input.mode ?? 'fixed') === 'random') {
+    const lo = num(input.minSeconds, '最短等待（秒）')
+    const hi = num(input.maxSeconds, '最长等待（秒）')
+    if (lo > hi) throw new Error(`「最短等待」(${lo}s) 不能大于「最长等待」(${hi}s)`)
+    // min(hi, ...) 是防御：random01 按约定 < 1，但传进 1 也不该越界到 hi+1
+    return Math.min(hi, lo + Math.floor(random01 * (hi - lo + 1)))
+  }
+  return num(input.seconds, '等待时长（秒）')
+}
+
 // ---------------------------------------------------------------- mock 输出
 
 /**
@@ -681,6 +715,16 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
       // 不看 resolved：条件行是嵌在对象里的模板字符串，resolveParams 不会下钻到
       // 数组元素里去解析它们。判定统一走 evaluateIf，和 executeFlow 同一份规则
       return { matched: evaluateIf(node.data.params, ctx) }
+    case 'flow.wait': {
+      // mock 不真等：这条路只在离线兜底和单节点试运行里走，让用户对着一个
+      // 五分钟的倒计时干瞪眼毫无意义 —— 真正的等待在服务端 worker（waiting/sleep）。
+      // 也不掷随机（本函数无随机源的硬约束），随机模式确定地按最短值算；
+      // resumedAt 以运行开始时刻为基准，和 date.compute 同一条确定性规则
+      const seconds = plannedWaitSeconds(resolved, 0)
+      const base = new Date(ctx.run.startedAt)
+      const from = Number.isNaN(base.getTime()) ? new Date() : base
+      return { waitSeconds: seconds, resumedAt: new Date(from.getTime() + seconds * 1000).toISOString() }
+    }
     case 'flow.merge':
       // 只汇总真正连进来的分支，不是全图所有节点。
       //

@@ -3,7 +3,7 @@ import { decide, type DecideStep } from '../src/lib/engine-core/decide.ts'
 import { MAX_LOOP_ITERATIONS, stepKeyOf } from '../src/lib/engine-core/types.ts'
 import { prepare, loopScope } from '../src/lib/engine-core/graph.ts'
 import { toGraph } from '../src/lib/flowGraph.ts'
-import { mockOutput, resolveParams, resolveTemplate } from '../src/lib/engine.ts'
+import { mockOutput, plannedWaitSeconds, resolveParams, resolveTemplate } from '../src/lib/engine.ts'
 import { validateNode } from '../src/lib/vars.ts'
 import { NODE_TYPE_MAP, applyBackendNodes } from '../src/registry.ts'
 import type { FlowDefinition, NodeType } from '../src/types.ts'
@@ -233,12 +233,15 @@ async function driveRun(run: RunRow): Promise<void> {
       }
 
       if (!result.toRun.length) {
-        // 这一轮只写了 skipped 行、没有可跑的：状态变了，**立刻重算**而不是交接出去。
-        // 否则会走到下面的 deferRun —— 它释放租约后只有"等外部系统"的行会把 run
-        // 唤回来，而纯 skip 没有这种行，run 就停在 running 直到一小时后 reaper 来收。
-        // 暂停的节点第一次把这条路走出来了：它的下游要等它被记成 skipped 之后
-        // 的下一轮才能判活
-        if (result.toSkip.length) continue
+        // 这一轮只写了 skipped / canceled 行、没有可跑的：状态变了，**立刻重算**
+        // 而不是交接出去。否则会走到下面的 deferRun —— 它释放租约后只有"等外部
+        // 系统"的行会把 run 唤回来，而 skip 和 cancel 都不是这种行，run 就停在
+        // running 直到一小时后 reaper 来收。
+        // 暂停的节点第一次把 toSkip 这条路走出来了；toCancel 是等待节点踩出来的：
+        // 取消一条"触发器 → 等待"的 run，取消轮里 toSkip 恰好为空，漏了 continue
+        // 的症状是**步骤都 canceled 了、run 却在界面上"取消中"挂一个小时** ——
+        // 取消正在等 SQL 的 run 且 SQL 是末节点时同样中招
+        if (result.toSkip.length || result.toCancel.length) continue
         if (result.progress === 'stuck') {
           await finishRun(run.id, 'error', '流程卡住：存在环路或不可达的汇合点，没有节点可以推进')
           await recordRunAlert(run.id).catch(() => {})
@@ -372,6 +375,32 @@ async function runOneStep(
     return
   }
 
+  // ── 等待节点：**不占着 worker 睡觉**。写一行 waiting/sleep + 到点时刻就交回
+  //    队列，到点由 wakeDeferred 置成 success —— 和异步查询同一套「无人持有的
+  //    等待」。在这里 setTimeout 的话，一个 1 小时的等待就占死一个 worker，
+  //    而且 worker 一重启等待就凭空消失。
+  //
+  //    随机时长在这里**掷一次并立刻落库**，到点结算只读库里的数。崩溃重来会
+  //    重掷（此时还没有任何可观察的痕迹，无害）；但绝不能到点再掷 ——
+  //    那样「实际等了多久」和运行详情里写的对不上，静默且无法复现。
+  if (node.data.typeId === 'flow.wait') {
+    let seconds: number
+    try {
+      seconds = plannedWaitSeconds(input, Math.random())
+    } catch (err) {
+      // 参数解析不出秒数是配置问题：重试一百次也一样
+      return fail(msg(err), 'business')
+    }
+    const resumeAt = new Date(Date.now() + seconds * 1000)
+    await writeStep(run.id, {
+      ...target, status: 'waiting', input, waitKind: 'sleep',
+      progress: { waitSeconds: seconds, resumeAt: resumeAt.toISOString() },
+      nextWakeAt: resumeAt,
+    })
+    await appendEvent(run.id, 'node.deferred', { waitSeconds: seconds, resumeAt: resumeAt.toISOString() }, target.nodeId, target.loopPath)
+    return
+  }
+
   // 真实节点走后端服务；没有 runtime 的（控制/变换类）本地算
   if (!t?.runtime) {
     try {
@@ -464,22 +493,49 @@ function timeoutMinutesOf(t: NodeType, input: Record<string, unknown>): number {
 }
 
 /**
- * 唤醒到期的 waiting 步骤（异步节点轮询 / 退避重试）。
+ * 唤醒到期的 waiting 步骤（异步节点轮询 / 退避重试 / 等待节点到点）。
  *
  * **不需要单独的 triggerer 进程** —— 塞进同一个 worker 循环即可。
  * 恢复路径的关键：按 progress.handle 继续 poll，**绝不重新 submit**。
+ *
+ * sleep 行多一条唤醒条件：run 被请求取消就**提前**醒。轮询行每 3 秒
+ * 自然醒一次，取消最多迟到一轮；而 sleep 一觉最长 1 小时，不提前醒的话
+ * 「点了停止」要等睡醒才生效 —— 用户看到的就是停止按钮坏了。
  */
 async function wakeDeferred(): Promise<number> {
   const { rows } = await pool.query(
-    `SELECT s.run_id, s.node_id, s.loop_path, s.progress, r.flow_id, r.flow_version
+    `SELECT s.run_id, s.node_id, s.loop_path, s.wait_kind, s.progress,
+            r.flow_id, r.flow_version, r.cancel_requested_at
      FROM steps s JOIN runs r ON r.id = s.run_id
-     WHERE s.status = 'waiting' AND s.wait_kind IN ('poll','retry')
-       AND s.next_wake_at IS NOT NULL AND s.next_wake_at <= now()
+     WHERE s.status = 'waiting' AND s.wait_kind IN ('poll','retry','sleep')
+       AND s.next_wake_at IS NOT NULL
+       AND (s.next_wake_at <= now()
+            OR (s.wait_kind = 'sleep' AND r.cancel_requested_at IS NOT NULL))
        AND r.status IN ('running','queued')
      FOR UPDATE OF s SKIP LOCKED
      LIMIT 10`,
   )
   for (const row of rows) {
+    // ── 等待节点到点（或被取消提前唤醒）。**必须排在 !handle 的 retry 分支
+    //    之前**：sleep 行没有 handle，掉进那个分支会被置回 queued 重新执行，
+    //    重新执行又掷一次时长、再睡一觉 —— 一个永远睡不完的循环
+    if (row.wait_kind === 'sleep') {
+      const target = { nodeId: row.node_id, loopPath: row.loop_path as number[] }
+      if (row.cancel_requested_at) {
+        // 只把 run 交回队列，这一行不动 —— 「取消」是 run 级语义，
+        // 由 decide 的 canceling 分支统一把 waiting 行记成 canceled
+        await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
+        continue
+      }
+      const waited = (row.progress as { waitSeconds?: number })?.waitSeconds ?? null
+      await writeStep(row.run_id, {
+        ...target, status: 'success',
+        output: { waitSeconds: waited, resumedAt: new Date().toISOString() },
+      })
+      await appendEvent(row.run_id, 'node.succeeded', { waitSeconds: waited }, target.nodeId, target.loopPath)
+      await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
+      continue
+    }
     const handle = row.progress?.handle
     if (!handle) {
       // retry 到期：把这一行放回 queued，让 decide 重新下发（attempt 已经记在行上）

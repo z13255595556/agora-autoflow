@@ -2,6 +2,7 @@ import type { NodeType } from './types'
 // 带 .ts：outputShape.ts 要能被 node --test 跑，而它的值导入链要经过这里。
 // 见 outputShape.ts 顶部的说明。
 import { DATE_FORMATS, DATE_MODES, DATE_MODE_LABELS, dateFormatLabels } from './lib/datefn.ts'
+import { WAIT_MAX_SECONDS } from './lib/engine-core/types.ts'
 
 /**
  * 节点注册表（空壳期写死在前端）。
@@ -386,6 +387,65 @@ export const NODE_TYPES: NodeType[] = [
         failCount: { type: 'integer', title: '失败数' },
       },
     },
+  },
+  {
+    // 纯引擎节点（和 flow.if 一样只有这一份定义，不进后端 manifest）：
+    // 服务端由 worker 写一行 waiting/sleep 交给唤醒循环，**不占着 worker 睡觉**。
+    // 时长下限 1 秒、上限 1 小时 —— 上限的理由见 WAIT_MAX_SECONDS 的注释
+    type: 'flow.wait',
+    typeVersion: '1.0.0',
+    name: '等待',
+    keywords: ['等待', '延时', '延迟', '暂停', '睡眠', 'sleep', 'delay', 'wait', '随机'],
+    category: '控制',
+    icon: '⏳',
+    description: '停一段时间再继续',
+    input: {
+      type: 'object',
+      required: ['mode'],
+      properties: {
+        mode: {
+          type: 'string',
+          title: '等待方式',
+          default: 'fixed',
+          enum: ['fixed', 'random'],
+          'x-ui': { widget: 'select', labels: { fixed: '固定时长', random: '范围内随机' } },
+        },
+        seconds: {
+          type: 'integer',
+          title: '等待时长（秒）',
+          default: 300,
+          minimum: 1,
+          maximum: WAIT_MAX_SECONDS,
+          description: '300 秒 = 5 分钟，最长 1 小时',
+          'x-show': { mode: ['fixed'] },
+        },
+        minSeconds: {
+          type: 'integer',
+          title: '最短等待（秒）',
+          default: 60,
+          minimum: 1,
+          maximum: WAIT_MAX_SECONDS,
+          'x-show': { mode: ['random'] },
+        },
+        maxSeconds: {
+          type: 'integer',
+          title: '最长等待（秒）',
+          default: 300,
+          minimum: 1,
+          maximum: WAIT_MAX_SECONDS,
+          description: '区间内等概率取整秒，上限 1 小时',
+          'x-show': { mode: ['random'] },
+        },
+      },
+    },
+    output: {
+      type: 'object',
+      properties: {
+        waitSeconds: { type: 'integer', title: '等了多少秒', description: '随机模式下是本次抽到的值' },
+        resumedAt: { type: 'string', title: '恢复时刻' },
+      },
+    },
+    policy: { idempotent: true },
   },
   {
     type: 'flow.merge',

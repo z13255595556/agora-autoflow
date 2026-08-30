@@ -562,6 +562,8 @@ export interface RemoteStep {
   fanout: number | null
   /** 在不在等平台出结果。handle 本身是内部断点，不外泄 */
   hasHandle: boolean
+  /** 等待节点睡到几点（ISO）。只在 waiting 中有值 */
+  resumeAt?: string | null
   skipReason: unknown
   seq: number
   startedAt: string | null

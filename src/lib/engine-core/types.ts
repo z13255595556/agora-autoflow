@@ -95,6 +95,20 @@ export const stepKeyOf = (k: StepKey): string =>
 export const MAX_LOOP_ITERATIONS = 1000
 
 /**
+ * 等待节点（flow.wait）单次最多等多久（秒）。
+ *
+ * 1 小时不是拍脑袋：worker 把等待中的 run 交出去时续的是
+ * DEFERRED_LEASE_SECONDS（3600 秒）的远期租约，等待时长一旦超过它，
+ * 租约会在到点之前先过期，reaper 把「正在等」误判成「worker 失联」，
+ * 白涨一次 attempt；攒满三次整条 run 判死 —— 和 SQL 超时上限压在
+ * 判死线之下是同一个道理。要放宽这个数，必须连租约一起加长。
+ *
+ * 前端表单的 maximum 只管控件；导入的 JSON、模板算出来的值都绕得过去，
+ * 所以 worker 在执行时还会按它再夹一次（engine.plannedWaitSeconds）。
+ */
+export const WAIT_MAX_SECONDS = 3600
+
+/**
  * 节点输出超过这个大小就转存外部存储，事件里只留引用。
  *
  * 256 KB 的理由：一次典型 SQL 结果（1000 行 × 10 列）序列化后 100-300 KB。

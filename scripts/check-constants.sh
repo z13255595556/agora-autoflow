@@ -33,5 +33,6 @@ check() {
 SRC=src/lib/engine-core/types.ts
 check "MAX_LOOP_ITERATIONS" '(MAX_LOOP_ITERATIONS[[:space:]]*[=:]|MAX_LOOP_ITERATIONS[[:space:]]*=[[:space:]]*[0-9])' "$SRC"
 check "OUTPUT_INLINE_LIMIT_BYTES" 'OUTPUT_INLINE_LIMIT_BYTES[[:space:]]*[=:]' "$SRC"
+check "WAIT_MAX_SECONDS" 'WAIT_MAX_SECONDS[[:space:]]*[=:]' "$SRC"
 
 exit $fail
