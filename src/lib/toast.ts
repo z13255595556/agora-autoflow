@@ -16,13 +16,20 @@ function emit() {
   for (const fn of listeners) fn(snapshot)
 }
 
-export function pushToast(input: { tone: ToastTone; text: string }): string {
+const DEFAULT_MS = 4000
+
+/**
+ * `ms`：**带命令的提示要给够时间**。4 秒够读完"已复制"，不够读完一句
+ * 「先起一个：npm run worker」再切到终端把它敲出来 —— 读一半消失的提示
+ * 和没提示是一个效果。
+ */
+export function pushToast(input: { tone: ToastTone; text: string; ms?: number }): string {
   const id = `t${++seq}`
   items.push({ id, tone: input.tone, text: input.text })
   while (items.length > MAX) items.shift()
   emit()
   if (typeof window !== 'undefined') {
-    window.setTimeout(() => dismissToast(id), 4000)
+    window.setTimeout(() => dismissToast(id), input.ms ?? DEFAULT_MS)
   }
   return id
 }

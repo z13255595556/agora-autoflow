@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useFlow } from '../store'
 import type { StepStatus } from '../types'
 import Icon from './Icon'
@@ -7,6 +7,7 @@ import { validateNode } from '../lib/vars'
 import { defaultForm, missingRequiredInputs, triggerFromForm } from '../lib/runRequest'
 import { formatRunLabel } from '../lib/runLabel'
 import FlowInputFields, { focusMissingInput } from './FlowInputFields'
+import { hasRemoteStorage, health } from '../lib/client'
 
 const STATUS_ICON: Record<StepStatus, string> = {
   waiting: '·',
@@ -46,10 +47,31 @@ export default function RunPanel() {
   const setPanelHeight = useFlow((s) => s.setRunPanelHeight)
   const edges = useFlow((s) => s.edges)
   const pinData = useFlow((s) => s.pinData)
+  const canceling = useFlow((s) => s.canceling)
+  const runStall = useFlow((s) => s.runStall)
+
+  /**
+   * worker 活着没。服务端运行**全靠它**：createRun 只是插一行 queued，
+   * 捡起来执行的是 `npm run worker`（心跳和 claimRun 在同一轮 tick 里，
+   * 见 worker/index.ts）。它不在的时候点运行，得到的是一条永远排队的记录
+   * 和一个永远转圈的界面 —— 一句报错都没有。所以运行之前就得说出来。
+   *
+   * **每次打开面板重新探一次**，不吃 store 里那份：那份是整页加载时探的，
+   * 而"起一个 worker"恰恰是用户看到这条提示之后会去做的事 —— 用旧答案的话，
+   * worker 起来了提示还挂着，下一次它再喊狼来了就没人信了。
+   */
+  const [workerAlive, setWorkerAlive] = useState<boolean | null>(null)
+  useEffect(() => {
+    let alive = true
+    void health().then((h) => { if (alive) setWorkerAlive(h?.scheduler?.alive ?? null) })
+    return () => { alive = false }
+  }, [])
+  const needsWorker = hasRemoteStorage() && workerAlive === false
 
   const run = runs.find((r) => r.id === activeRunId) ?? runs[0] ?? null
   const resizeStart = useRef<{ pointerId: number; y: number; height: number } | null>(null)
   const formRef = useRef<HTMLDivElement>(null)
+  const runBtnRef = useRef<HTMLButtonElement>(null)
 
   const setAndRememberHeight = (height: number) => {
     const next = Math.min(maxPanelHeight(), Math.max(MIN_HEIGHT, height))
@@ -106,9 +128,22 @@ export default function RunPanel() {
     }
   }, [])
 
-  useEffect(() => {
-    focusMissingInput(formRef.current, missingRequiredInputs(flowInputs, form)[0]?.key)
+  /**
+   * 打开面板时把焦点放到该动的那一格上：缺必填就聚焦它，都齐了就聚焦运行按钮
+   * （落点明确，敲个回车就跑）。顶栏那颗「运行」不再直接执行，只把面板打开并
+   * 发这个事件 —— 面板本来就开着时不会重挂载，所以不能只靠挂载时跑一次。
+   */
+  const focusWhatMatters = useCallback(() => {
+    const missing = missingRequiredInputs(useFlow.getState().flowInputs, useFlow.getState().manualInputs)
+    if (missing.length > 0) focusMissingInput(formRef.current, missing[0].key)
+    else runBtnRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    focusWhatMatters()
+    window.addEventListener('autoflow-run-panel-focus', focusWhatMatters)
+    return () => window.removeEventListener('autoflow-run-panel-focus', focusWhatMatters)
+  }, [focusWhatMatters])
 
   const missingRequired = missingRequiredInputs(flowInputs, form)
   const workflowProblems = [
@@ -121,6 +156,8 @@ export default function RunPanel() {
 
   const doRun = () => {
     void startRun(triggerFromForm(flowInputs, form))
+    // 顺手再探一次：点运行是最需要这个答案准确的时刻
+    void health().then((h) => setWorkerAlive(h?.scheduler?.alive ?? null))
   }
 
   const nameOf = (id: string) => nodes.find((n) => n.id === id)?.data.label ?? id
@@ -155,6 +192,7 @@ export default function RunPanel() {
             <button className="linkbtn runpanel__reset" onClick={() => setForm(defaultForm(flowInputs))} title="把表单恢复成入参的默认值">恢复默认</button>
           )}
           <button
+            ref={runBtnRef}
             className="btn btn--primary"
             disabled={running || missingRequired.length > 0 || workflowProblems.length > 0}
             title={
@@ -165,9 +203,19 @@ export default function RunPanel() {
             }
             onClick={doRun}
           >
-            {running ? '运行中…' : <><Icon name="play" size={12} /> 运行</>}
+            {running ? (canceling ? '取消中…' : '运行中…') : <><Icon name="play" size={12} /> 运行</>}
           </button>
         </div>
+        {/* 已经卡住的那条排在前面：它说的是**眼前这一次**，比"点下去会怎样"更急。
+            两条只显示一条 —— 内容高度重合，并排放只是把面板占满 */}
+        {runStall ? (
+          <div className="runpanel__warn" role="status">{runStall}</div>
+        ) : needsWorker ? (
+          <div className="runpanel__warn" role="status">
+            worker 没在跑，点运行只会得到一条一直排队的记录（<b>定时触发同样不会执行</b>）。
+            起一个：<code>npm run worker</code>
+          </div>
+        ) : null}
 
         <div className="runpanel__title">历史</div>
         <div className="runpanel__history">

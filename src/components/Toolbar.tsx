@@ -5,7 +5,6 @@ import { graphProblems } from '../lib/graph'
 import { NODE_TYPE_MAP } from '../registry'
 import { focusValidationField } from '../lib/validationFocus'
 import { storageMode } from '../lib/library'
-import { decideRunRequest } from '../lib/runRequest'
 import Icon from './Icon'
 import { PublishDialog, VersionHistory } from './Versions'
 
@@ -16,7 +15,7 @@ export type DockPanel = 'flow' | 'json' | null
  *
  * 原来是一排八个同样大小的灰按钮，主操作（运行）和「清空」长得一模一样，
  * 眼睛没有落点。现在按频率分三档：左边是身份（返回 / 流程名 / 保存状态），
- * 右边保留高频操作（流程入参、保存、运行），导入导出和清空收进「更多」。
+ * 右边直接展示全部流程操作，不再用「更多」隐藏入口。
  */
 export interface PublishState {
   /** 已发布并生效的版本号。null = 从未发布 */
@@ -65,11 +64,9 @@ export default function Toolbar({
   const pinData = useFlow((s) => s.pinData)
   const backend = useFlow((s) => s.backend)
   const stopRun = useFlow((s) => s.stopRun)
-  const startRun = useFlow((s) => s.startRun)
-  const manualInputs = useFlow((s) => s.manualInputs)
+  const canceling = useFlow((s) => s.canceling)
   useFlow((s) => s.registryVersion) // 注册表换了要重算问题数
 
-  const [menuOpen, setMenuOpen] = useState(false)
   const [problemsOpen, setProblemsOpen] = useState(false)
   /** 发布弹窗开着没。**发布不再是"点一下就发出去"** —— 中间隔一个填变更说明的框 */
   const [publishOpen, setPublishOpen] = useState(false)
@@ -80,16 +77,7 @@ export default function Toolbar({
   const flowId = useFlow((s) => s.flowId)
   // 从没发布过就是第一版
   const nextVersion = (publish.activeVersion ?? 0) + 1
-  const menuRef = useRef<HTMLDivElement>(null)
   const problemsRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!menuOpen) return
-    const close = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [menuOpen])
 
   // pinned 节点执行时跳过参数校验（n8n 语义），问题计数也不算它；
   // 暂停的节点同理 —— 暂停的本意就是"先别管它"，它缺个 webhook 不该拦住别人跑
@@ -170,7 +158,6 @@ export default function Toolbar({
             className={`chip${problems.length ? ' chip--warn' : ' chip--ok'}${problemsOpen ? ' is-open' : ''}`}
             onClick={() => {
               if (!problems.length) return
-              setMenuOpen(false)
               setProblemsOpen((open) => !open)
             }}
             title={problems.length ? '查看全部校验问题' : '静态校验通过'}
@@ -217,76 +204,68 @@ export default function Toolbar({
 
         <i className="topbar__sep" />
 
-        <div className="menu" ref={menuRef}>
+        <div className="topbar__tools" aria-label="流程工具">
           <button
-            className="btn btn--icon"
+            className={`topbar__tool topbar__tool--text${dock === 'flow' ? ' is-active' : ''}`}
             onClick={() => {
-              setProblemsOpen(false)
-              setMenuOpen((v) => !v)
+              onDock(dock === 'flow' ? null : 'flow')
             }}
-            title="更多"
+            title="流程设置：名称 / 入参"
           >
-            <Icon name="more" size={14} />
+            <Icon name="settings" size={13} />
+            <span>流程设置</span>
           </button>
-          {menuOpen && (
-            <div className="menu__pop">
-              <button
-                className="menu__item"
-                onClick={() => {
-                  onDock(dock === 'flow' ? null : 'flow')
-                  setMenuOpen(false)
-                }}
-              >
-                流程设置<em>名称 / 入参</em>
-              </button>
-              <button
-                className="menu__item"
-                disabled={running || !canUndo}
-                onClick={() => { undo(); setMenuOpen(false) }}
-              >
-                撤销<em>⌘Z</em>
-              </button>
-              <button
-                className="menu__item"
-                disabled={running || !canRedo}
-                onClick={() => { redo(); setMenuOpen(false) }}
-              >
-                重做<em>⇧⌘Z</em>
-              </button>
-              <button
-                className="menu__item"
-                onClick={() => {
-                  onDock(dock === 'json' ? null : 'json')
-                  setMenuOpen(false)
-                }}
-              >
-                流程 JSON<em>导入 / 导出</em>
-              </button>
-              {/* 发过版才有历史可看。本地模式下没有"版本"这个概念，
-                  和发布按钮同一条判据 */}
-              {canPublish && (
-                <button
-                  className="menu__item"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    setHistoryOpen(true)
-                  }}
-                >
-                  历史版本<em>说明 / 回滚</em>
-                </button>
-              )}
-              <i className="menu__sep" />
-              <button
-                className="menu__item menu__item--danger"
-                onClick={() => {
-                  setMenuOpen(false)
-                  if (confirm('清空画布？节点、连线和入参都会删除。')) clear()
-                }}
-              >
-                清空画布
-              </button>
-            </div>
+
+          <button
+            className="topbar__tool"
+            disabled={running || !canUndo}
+            onClick={undo}
+            title="撤销（⌘Z）"
+            aria-label="撤销"
+          >
+            <Icon name="undo" size={14} />
+          </button>
+          <button
+            className="topbar__tool"
+            disabled={running || !canRedo}
+            onClick={redo}
+            title="重做（⇧⌘Z）"
+            aria-label="重做"
+          >
+            <Icon name="redo" size={14} />
+          </button>
+
+          <button
+            className={`topbar__tool topbar__tool--text${dock === 'json' ? ' is-active' : ''}`}
+            onClick={() => onDock(dock === 'json' ? null : 'json')}
+            title="流程 JSON：导入 / 导出"
+          >
+            <Icon name="vars" size={13} />
+            <span>流程 JSON</span>
+          </button>
+
+          {/* 发过版才有历史可看。本地模式下没有"版本"这个概念，
+              和发布按钮同一条判据 */}
+          {canPublish && (
+            <button
+              className="topbar__tool topbar__tool--text"
+              onClick={() => setHistoryOpen(true)}
+              title="历史版本：说明 / 回滚"
+            >
+              <span>历史版本</span>
+            </button>
           )}
+
+          <button
+            className="topbar__tool topbar__tool--danger"
+            onClick={() => {
+              if (confirm('清空画布？节点、连线和入参都会删除。')) clear()
+            }}
+            title="清空画布"
+            aria-label="清空画布"
+          >
+            <Icon name="trash" size={14} />
+          </button>
         </div>
 
         {(dirty || saveError) && (
@@ -332,30 +311,32 @@ export default function Toolbar({
         )}
 
         {running ? (
-          <button className="btn btn--stop" onClick={stopRun} title="中止运行，并取消平台上还在跑的任务">
-            <Icon name="stop" size={12} /> 停止
+          // 取消是发给 worker 的请求，不是一个瞬间（runstore.request_cancel）。
+          // 这段时间按钮必须改口 —— 停在「停止」上不动，用户的结论是「按钮坏了」
+          <button
+            className="btn btn--stop"
+            disabled={canceling}
+            onClick={stopRun}
+            title={canceling
+              ? '取消请求已发出，等 worker 收尾。worker 没在跑的话它不会自己结束'
+              : '中止运行，并取消平台上还在跑的任务'}
+          >
+            <Icon name="stop" size={12} /> {canceling ? '取消中…' : '停止'}
           </button>
         ) : (
           <button
             className="btn btn--primary"
             onClick={() => {
-              const decision = decideRunRequest({
-                running: false,
-                flowInputs,
-                form: manualInputs,
-                problems: problems.map((problem) => problem.e),
-              })
-              if (decision.action === 'stop') {
-                stopRun()
-                return
-              }
+              // **只打开面板，不执行**。真正的运行入口只有面板里那一颗 ——
+              // 这一颗按下去就跑的时候，跑的是一份用户没看过的入参：表单在
+              // 面板里，而面板此刻还没打开。和节点编辑页那条运行条同一个理由
               setRunPanelOpen(true)
-              if (decision.action === 'start') void startRun(decision.trigger)
+              window.dispatchEvent(new Event('autoflow-run-panel-focus'))
             }}
             title={
               backend?.ok
-                ? '运行当前草稿（非已发布版本）。有必填入参时先打开底部面板'
-                : '运行当前草稿（mock）。有必填入参时先打开底部面板'
+                ? '打开下方运行面板：填运行入参，再手动运行。点它不会直接执行'
+                : '打开下方运行面板（mock 模式）：填运行入参，再手动运行。点它不会直接执行'
             }
           >
             <Icon name="play" size={12} /> 运行

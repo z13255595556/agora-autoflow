@@ -22,7 +22,7 @@ import { stepRunState } from '../lib/runLabel'
  *
  * 以前是常驻的一整栏，没选节点时显示流程设置 —— 于是画布永远少 348px，
  * 而那一栏八成时间在显示一段"点击画布上的节点来配置它"的提示。现在改成
- * 浮层：选中才出现，没选中画布就是整块的；流程设置移到顶栏的「更多」里。
+ * 浮层：选中才出现，没选中画布就是整块的；流程设置移到顶栏的常驻工具组里。
  */
 export default function Inspector() {
   const selectedId = useFlow((s) => s.selectedId)

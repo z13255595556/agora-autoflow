@@ -381,6 +381,24 @@ button { cursor: pointer; padding: 0; }
 .savestate--error::before { content: '! '; font-weight: 700; }
 .topbar__right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .topbar__sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+.topbar__tools {
+  flex: none; display: flex; align-items: center; gap: 2px;
+  padding: 2px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surface-2);
+}
+.topbar__tool {
+  flex: none; width: 28px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: 0; border-radius: var(--r-sm); background: transparent;
+  color: var(--text-dim); font-size: 11.5px; font-weight: 500; white-space: nowrap;
+  transition: background .14s, color .14s, box-shadow .14s;
+}
+.topbar__tool--text { width: auto; padding: 0 8px; }
+.topbar__tool:hover:not(:disabled) { background: var(--surface); color: var(--text); box-shadow: var(--sh-xs); }
+.topbar__tool:active:not(:disabled) { transform: translateY(.5px); }
+.topbar__tool:disabled { opacity: .4; cursor: not-allowed; }
+.topbar__tool.is-active { background: var(--primary-soft); color: var(--primary); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent); }
+.topbar__tool--danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); box-shadow: none; }
 .topbar__inputs { flex: none; }
 .historytools {
   display: flex; align-items: center; padding: 2px;
@@ -1796,6 +1814,20 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
   padding: 2px 14px 12px;
   border-bottom: 1px solid var(--border);
 }
+/* worker 不在时的那条警告。放在运行按钮**下面**、面板里最显眼的位置 ——
+   它解释的正是按下去之后会发生的事（一条永远排队的记录） */
+.runpanel__warn {
+  flex: none; margin: -6px 14px 10px;
+  padding: 7px 9px; border-radius: var(--r);
+  background: var(--warn-soft); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  font-size: 11px; line-height: 1.55;
+}
+.runpanel__warn code {
+  font-family: var(--mono); font-size: 10.5px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  padding: 1px 5px; border-radius: 3px;
+}
 .runpanel__field { flex: 1 1 40%; min-width: 110px; font-size: 11px; color: var(--text-dim); }
 .runpanel__field span { display: block; margin-bottom: 4px; }
 .runpanel__history { flex: 1; overflow-y: auto; padding: 2px 10px 10px; }
@@ -2185,6 +2217,8 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 @media (max-width: 1100px) {
   .topbar { gap: 7px; padding-right: 9px; }
   .topbar__right { gap: 6px; }
+  .topbar__tools { gap: 1px; }
+  .topbar__tool--text { padding-inline: 6px; }
   .topbar__inputs { padding-inline: 9px; }
   .quickstart__label { display: none; }
   .dock { width: 360px; }
@@ -2541,5 +2575,4 @@ body.is-resizing-runpanel, body.is-resizing-runpanel * { cursor: ns-resize !impo
 }
 .ndv__cols { display: flex; }
 .ndv__col--output { order: -1; }
-
 

@@ -25,9 +25,19 @@ export function setSchedulerAlive(alive: boolean): void {
 }
 
 /** 节点上那一行短提示 */
-export const SCHEDULER_OFF_SHORT = '不会自动运行 —— 调度器没在跑'
+export const SCHEDULER_OFF_SHORT = '不会自动运行 —— worker 没在跑'
 
-/** 悬停/详情里的完整说法 */
+/**
+ * 悬停/详情里的完整说法。
+ *
+ * 以前这里写的是「这条流程只能手动点运行」—— **这句是错的，而且错得很贵**：
+ * 接了流程存储之后，手动运行走的也是 worker（createRun 插一行 queued，
+ * 捡起来执行的是 worker；心跳和 claimRun 在同一轮 tick 里）。worker 不在时
+ * 手动点运行同样跑不起来，只会得到一条永远排队的记录和一个永远转圈的界面。
+ * 照着这句话去点运行的人，只会更确信"是这个按钮坏了"。
+ */
 export const SCHEDULER_OFF_DETAIL =
-  '调度器没在跑，定时配置不会被执行。\n' +
-  '这条流程只能手动点「运行」。起一个 worker（npm run worker）后此提示会消失。'
+  'worker 没在跑，定时配置不会被执行。\n' +
+  '手动点「运行」同样跑不起来 —— 服务端运行也要 worker 捡起来执行，\n' +
+  '不起 worker 只会得到一条一直排队的记录。\n' +
+  '起一个：npm run worker'

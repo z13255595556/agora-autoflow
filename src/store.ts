@@ -21,6 +21,7 @@ import { connectionProblem, graphProblems } from './lib/graph.ts'
 import { inputFieldOf, inputSchemaOf, nodeDataOf, portOf } from './lib/flowGraph.ts'
 import * as api from './lib/client.ts'
 import { startRemoteRun } from './lib/remoteRun.ts'
+import { pushToast } from './lib/toast.ts'
 import { coerceInput, defaultForm } from './lib/runRequest.ts'
 
 export type FNode = Node<FlowNodeData>
@@ -229,6 +230,22 @@ interface FlowState {
   ndvNodeId: string | null
   runPanelOpen: boolean
   runPanelHeight: number
+  /**
+   * 已经点过停止、还没停下来。
+   *
+   * 取消**不是一个瞬间**：服务端只把 run 标成 canceling，真正收尾的是 worker
+   * （runstore.request_cancel）。中间这段时间按钮必须换个说法 ——
+   * 停在「停止」上不动，用户得到的结论是「这个按钮坏了」。
+   */
+  canceling: boolean
+  /**
+   * 这次运行卡在「没有 worker 推动」上了，值是给用户看的那句话。
+   *
+   * **必须常驻**，不能只发一条 toast：这条消息回答的是「我点了运行，屏幕上
+   * 什么都没发生」，而用户产生这个疑问往往是在几十秒之后 —— 那时四秒的
+   * toast 早没了，他看到的还是一个转圈的界面加一片安静。
+   */
+  runStall: string | null
   /** 参数改过但还没重跑的节点（n8n dirty/PARAMETERS_UPDATED：输出可能已过期） */
   dirtyNodes: Record<string, true>
   /** 运行代际：clear/load 时 +1，让还在跑的旧引擎回调作废 */
@@ -370,6 +387,8 @@ export const useFlow = create<FlowState>((set, get) => ({
   ndvNodeId: null,
   runPanelOpen: false,
   runPanelHeight: initialRunPanelHeight(),
+  canceling: false,
+  runStall: null,
   dirtyNodes: {},
   runGen: 0,
   registryVersion: 0,
@@ -1032,7 +1051,7 @@ export const useFlow = create<FlowState>((set, get) => ({
     }
     const gen = get().runGen
     const abort = new AbortController()
-    set({ running: true, runPanelOpen: true, abort })
+    set({ running: true, runPanelOpen: true, abort, canceling: false, runStall: null })
     const upsertRun = (run: FlowRun) => {
       if (get().runGen !== gen) return // clear/load 之后的旧回调作废
       const runs = get().runs
@@ -1062,6 +1081,14 @@ export const useFlow = create<FlowState>((set, get) => ({
           inputs: trigger,
           signal: abort.signal,
           onUpdate: upsertRun,
+          // 卡在没人接手上了。**不把 run 判错** —— worker 起来之后这条运行会
+          // 照常被捡走，替它判死会凭空造出一条不存在的失败。
+          // toast 负责"现在看一眼"，runStall 负责"过一会儿再来看还在"
+          onStall: (text) => {
+            if (get().runGen !== gen) return
+            set({ runStall: text })
+            pushToast({ tone: 'warn', text, ms: 12000 })
+          },
         })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
@@ -1075,7 +1102,7 @@ export const useFlow = create<FlowState>((set, get) => ({
           })
         }
       } finally {
-        if (get().runGen === gen) set({ running: false, abort: null })
+        if (get().runGen === gen) set({ running: false, abort: null, canceling: false, runStall: null })
       }
       return
     }
@@ -1113,12 +1140,19 @@ export const useFlow = create<FlowState>((set, get) => ({
         }
       }
     } finally {
-      if (get().runGen === gen) set({ running: false, abort: null })
+      if (get().runGen === gen) set({ running: false, abort: null, canceling: false, runStall: null })
     }
   },
 
-  /** 中止运行。引擎会把在跑的平台任务 cancel 掉，不留后台任务空烧资源。 */
+  /**
+   * 中止运行。引擎会把在跑的平台任务 cancel 掉，不留后台任务空烧资源。
+   *
+   * 立刻置 canceling：服务端那边只是进入 canceling 状态、等 worker 收尾，
+   * 这中间界面上必须有变化 —— 否则点完停止一切照旧，等同于「按钮坏了」。
+   */
   stopRun: () => {
+    if (!get().running) return
+    set({ canceling: true })
     get().abort?.abort()
   },
 

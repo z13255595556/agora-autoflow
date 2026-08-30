@@ -16,7 +16,6 @@ import { ReferencePickerProvider } from './components/ReferencePickerContext'
 import { appHref, stripAppBase } from './lib/basePath'
 import { routeFromPath } from './lib/appRoute'
 import { pushToast } from './lib/toast'
-import { decideRunRequest } from './lib/runRequest'
 import type { Command } from './lib/commands'
 import ToastHost from './components/ToastHost'
 import CommandPalette from './components/CommandPalette'
@@ -322,20 +321,17 @@ export default function App() {
       id: 'run',
       group: '运行',
       label: '运行流程',
-      hint: '当前草稿',
+      hint: '打开运行面板',
+      // 和顶栏那颗一样：**只打开面板，不执行**。执行入口只有面板里那一颗，
+      // 多一个能直接跑的入口就等于这道闸没装
       run: () => {
         const state = useFlow.getState()
-        const decision = decideRunRequest({
-          running: state.running,
-          flowInputs: state.flowInputs,
-          form: state.manualInputs,
-          problems: [],
-        })
-        if (decision.action === 'stop') state.stopRun()
-        else {
-          state.setRunPanelOpen(true)
-          if (decision.action === 'start') void state.startRun(decision.trigger)
+        if (state.running) {
+          state.stopRun()
+          return
         }
+        state.setRunPanelOpen(true)
+        window.dispatchEvent(new Event('autoflow-run-panel-focus'))
       },
     },
     { id: 'add', group: '节点', label: '添加节点', hint: 'Tab', run: () => window.dispatchEvent(new Event('autoflow-add-node')) },
