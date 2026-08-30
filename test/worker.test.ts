@@ -641,3 +641,58 @@ test('★★ 取消不等睡醒：一小时的等待，点停止秒级收尾', {
   }
 })
 
+
+// ─────────────────────────────────── webhook 触发器的预写步骤
+//
+// 原始 body 由 webhooks.py 在收请求那一刻连同 runs 行同一事务写成触发器的
+// success 步骤（runstore.create_run 的 trigger_step）。worker 一行没改 ——
+// 这里钉的是它赖以成立的两条既有语义：decide 对已终态的行不重跑；
+// ctx 从 success 行取 output 喂给下游。
+
+test('★★ 预写的触发器步骤：worker 不重跑不覆盖，下游能引用 body 全量（含嵌套）', { skip: SKIP }, async () => {
+  const fid = `wtest_hook_${Math.random().toString(36).slice(2, 8)}`
+  const def = {
+    id: fid, version: 1, name: 'webhook 预写', inputs: { type: 'object', properties: {} },
+    trigger: { kind: 'webhook' },
+    nodes: [
+      { id: 'hook', type: 'trigger.webhook', typeVersion: '1.0.0', name: 'Webhook', params: { authMode: 'secret' }, onError: 'fail' },
+      { id: 'm', type: 'transform.template', typeVersion: '1.0.0', name: '文本', params: { template: '订单 {{ $.nodes.hook.output.body.order.id }}' }, onError: 'fail' },
+    ],
+    edges: [{ from: 'hook', to: 'm' }],
+    layout: { hook: { x: 0, y: 0 }, m: { x: 1, y: 0 } },
+  }
+  await pool.query('INSERT INTO flows (id, name, draft, active_version) VALUES ($1,$2,$3,1)',
+    [fid, def.name, JSON.stringify(def)])
+  await pool.query('INSERT INTO flow_versions (flow_id, version, definition) VALUES ($1,1,$2)',
+    [fid, JSON.stringify(def)])
+
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  // trigger_input 故意留空：下游拿到数据只能来自预写的 output.body，
+  // 这正是「嵌套 body / 字段名对不上入参」场景的唯一通道
+  await pool.query(
+    "INSERT INTO runs (id, flow_id, flow_version, trigger_input, trigger_kind, mode) VALUES ($1,$2,1,'{}','webhook','production')",
+    [runId, fid])
+  const seeded = {
+    body: { order: { id: 7, items: [1, 2] } },
+    headers: { 'x-webhook-secret': '[REDACTED]', 'content-type': 'application/json' },
+    remoteIp: '10.0.0.9',
+    receivedAt: '2026-08-30T00:00:00+00:00',
+  }
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, status, output, seq, started_at, finished_at)
+     VALUES ($1,'hook','success',$2,1, now(), now())`,
+    [runId, JSON.stringify(seeded)])
+
+  try {
+    await tickUntilDone(fid, runId, 10000)
+    const r = await runRow(runId)
+    assert.equal(r.status, 'success', r.error ?? '')
+
+    const steps = await stepRows(runId)
+    assert.deepEqual(steps.map((s) => s.node_id), ['hook', 'm'], '触发器只有预写那一行，worker 没有另起')
+    assert.deepEqual(steps[0].output, seeded, '★ 预写的输出原样保留 —— 被 mock 覆盖成 {} 的话，body 就丢了')
+    assert.equal(steps[1].output.text, '订单 7', '★ 下游按 $.nodes.hook.output.body.order.id 取到嵌套字段')
+  } finally {
+    await dropWaitFlow(fid)
+  }
+})

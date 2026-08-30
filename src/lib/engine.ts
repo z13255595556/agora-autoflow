@@ -698,6 +698,13 @@ export function mockOutput(node: FNode, ctx: Ctx, resolved: Record<string, unkno
       // 手动点运行时，定时触发器就是立刻跑一次 —— scheduledFor 记的是这次的
       // 计划时间，真到点自动跑的时候由调度器填
       return { runId: ctx.run.id, startedAt: ctx.run.startedAt, scheduledFor: ctx.run.startedAt }
+    case 'trigger.webhook':
+      // 真触发不走这里：webhooks.py 在收请求那一刻已把这一步连 body 原文预写进
+      // steps（trigger_step_of），worker 见到终态行不会重跑。这个分支只服务
+      // 手动调试 / 离线运行 —— 用「入参就是 body 顶层字段」的反向近似造一份，
+      // 让 $.nodes.<hook>.output.body 的引用在调试时也取得到值。
+      // 嵌套 body 的真实形状只有真触发才有，这里不假装知道
+      return { body: ctx.trigger, headers: {}, remoteIp: '(手动运行)', receivedAt: ctx.run.startedAt }
     case 'sql.query':
     case 'postgres.workspace': {
       const cols = probedCols.length ? probedCols : ['vid', 'name', 'created_at']

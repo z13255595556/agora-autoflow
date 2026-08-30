@@ -44,6 +44,7 @@ def create_run(
     version: Optional[int] = None,
     idempotency_key: Optional[str] = None,
     actor: Optional[str] = None,
+    trigger_step: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """入队一条运行。**不执行** —— worker 会来认领。
 
@@ -53,6 +54,13 @@ def create_run(
     而"点一次运行顺手把线上也换掉"曾经正是它的反面。
 
     显式传 version 是重跑历史上那一版（redrive），此时两条规则都不适用。
+
+    trigger_step：调用方已经替触发器「执行」完的那一步（{"node_id", "output"}，
+    webhook 用它把原始 body 写进触发节点的输出）。**必须和 runs 行同一个事务**
+    写进 steps —— 分两次写的话，worker（每秒扫队列）会在缝隙里认领并把触发器
+    跑成 mock 的 {}，谁赢由毫秒决定。decide 对已终态的行不重跑（崩溃恢复
+    钉过这条语义），所以 worker 一行不用改。命中幂等去重时它整个不生效 ——
+    去重的全部意义是"没有产生任何副作用"。
     """
     with db.pool().connection() as conn:
         # 幂等**排在最前面**。它原先排在版本解析之后，于是命中去重时已经
@@ -101,6 +109,21 @@ def create_run(
             "INSERT INTO run_events (run_id, seq, type, payload) VALUES (%s, 1, 'run.queued', %s)",
             (run_id, Jsonb({"triggerKind": trigger_kind, "mode": mode})),
         )
+        if trigger_step:
+            # seq 从 1 起，worker 的 writeStep 按 MAX(seq)+1 接着排。
+            # started_at/finished_at 都是"收到请求这一刻"：这一步没有执行耗时
+            conn.execute(
+                "INSERT INTO steps (run_id, node_id, status, output, seq, started_at, finished_at)"
+                " VALUES (%s, %s, 'success', %s, 1, now(), now())",
+                (run_id, trigger_step["node_id"], Jsonb(trigger_step["output"])),
+            )
+            # 事件流也要有痕迹：事后回放不该出现一个"没见它跑过却成功了"的节点。
+            # prewritten 标出这一步不是 worker 写的 —— 查竞态问题时这是唯一线索
+            conn.execute(
+                "INSERT INTO run_events (run_id, seq, type, node_id, payload)"
+                " VALUES (%s, 2, 'node.succeeded', %s, %s)",
+                (run_id, trigger_step["node_id"], Jsonb({"prewritten": True})),
+            )
         conn.commit()
     return {"runId": run_id, "status": "queued", "flowVersion": v}
 

@@ -195,6 +195,43 @@ finally:
     webhooks.runstore.get_run = original_get_run
 
 
+# ---------------------------------------------------------------- 触发器预写
+#
+# 原始 body 只在收请求这一刻在手上，预写是它进运行记录的唯一通道。
+# 这里钉两件事：形状和前端 registry 声明的输出一致（少一个字段就是一处
+# 取值面板引导出来的必炸引用）；认证头绝不带原文落库。
+
+redacted = webhooks.redact_headers({
+    "x-webhook-secret": "s3cret",
+    "x-signature": "sha256=abc",
+    "authorization": "Bearer xyz",
+    "content-type": "application/json",
+})
+ok("认证头进运行记录前打码", redacted["x-webhook-secret"], "[REDACTED]")
+ok("★ hmac 签名头同样打码 —— 签名 + 原始 body 就能重放那次请求", redacted["x-signature"], "[REDACTED]")
+ok("authorization 打码", redacted["authorization"], "[REDACTED]")
+ok("普通头原样保留", redacted["content-type"], "application/json")
+
+DEFN = {"nodes": [
+    {"id": "n0", "type": "flow.if"},
+    {"id": "hook1", "type": "trigger.webhook"},
+]}
+step = webhooks.trigger_step_of(
+    DEFN, b'{"order":{"id":7,"items":[1,2]}}', {"x-webhook-secret": "s"}, "10.0.0.9")
+ok("预写步骤挂在 webhook 触发节点上", step["node_id"], "hook1")
+ok("★ body 是原始全量，嵌套结构不裁剪 —— map_inputs 只搬顶层同名字段，这条是嵌套 body 的唯一通道",
+   step["output"]["body"], {"order": {"id": 7, "items": [1, 2]}})
+ok("预写输出里的认证头已打码", step["output"]["headers"]["x-webhook-secret"], "[REDACTED]")
+ok("来源 IP 带上", step["output"]["remoteIp"], "10.0.0.9")
+ok("receivedAt 是 ISO 时间", "T" in (step["output"]["receivedAt"] or ""), True)
+ok("输出形状和 registry 声明逐键一致", sorted(step["output"].keys()),
+   ["body", "headers", "receivedAt", "remoteIp"])
+
+ok("定义里没有 webhook 触发节点时不预写",
+   webhooks.trigger_step_of({"nodes": [{"id": "t", "type": "trigger.manual"}]}, b"{}", {}, None), None)
+ok("空 body 预写成空对象", webhooks.trigger_step_of(DEFN, b"", {}, None)["output"]["body"], {})
+
+
 # ---------------------------------------------------------------- 管理接口回显
 
 public = webhooks._public({

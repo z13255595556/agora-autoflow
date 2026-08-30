@@ -13,6 +13,7 @@ import re
 import os
 import secrets
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from psycopg.types.json import Jsonb
@@ -254,6 +255,61 @@ def deliveries(flow_id: str, limit: int = 20):
         }
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------- 触发器预写
+
+# 和前端 src/lib/secrets.ts 的 isSensitiveHeaderName 是**同一条规则的镜像**，
+# 改任何一边都要同步另一边。x-webhook-secret 命中 secret、x-signature 命中
+# signature —— 都是自家认证头，签名 + 原始 body 就能重放那次请求，等同凭证
+_EXACT_SENSITIVE_HEADERS = {
+    "authorization", "proxy-authorization", "cookie", "set-cookie",
+    "x-api-key", "api-key", "x-auth-token",
+}
+_SENSITIVE_HEADER_RE = re.compile(r"token|secret|api[-_]?key|signature", re.IGNORECASE)
+
+
+def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """把敏感请求头的值换成 [REDACTED]，其余原样。头名保留、值不落库 ——
+    运行记录会被截图、贴群、进工单（和 wecom.py 打码 key 同一个理由）。"""
+    return {
+        k: ("[REDACTED]"
+            if k.strip().lower() in _EXACT_SENSITIVE_HEADERS or _SENSITIVE_HEADER_RE.search(k)
+            else v)
+        for k, v in (headers or {}).items()
+    }
+
+
+def trigger_step_of(
+    definition: Dict[str, Any],
+    raw_body: bytes,
+    headers: Dict[str, str],
+    remote_ip: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """webhook 触发节点的预写步骤（node_id + output）；定义里没有该节点时 None。
+
+    原始 body 全量只在**这里**进入运行记录 —— worker 那边触发器走 mock，
+    产不出它（也不该产：body 只有收请求的这一刻在手上）。output 的形状必须和
+    前端 registry 给 trigger.webhook 声明的输出结构一致，取值面板按那份 schema
+    引导用户写 $.nodes.<hook>.output.body，这里少一个字段就是一处必炸的引用。
+
+    body 在这里重新 parse 一次：map_inputs 已经验证过它是合法 JSON 对象，
+    这里不会失败。不复用它的解析结果是为了不改它的签名 —— 它是纯函数，
+    一堆测试直接调它。
+    """
+    nodes = definition.get("nodes") or []
+    hook = next((n for n in nodes if n.get("type") == "trigger.webhook"), None)
+    if not hook or not hook.get("id"):
+        return None
+    return {
+        "node_id": hook["id"],
+        "output": {
+            "body": json.loads(raw_body or b"{}"),
+            "headers": redact_headers(headers),
+            "remoteIp": remote_ip,
+            "receivedAt": datetime.now(timezone.utc).isoformat(),
+        },
+    }
 
 
 # ---------------------------------------------------------------- 入参映射
@@ -526,6 +582,11 @@ def handle(
         # 实际跑的却是新版本。窗口很窄，但它是真的
         version=flow["active_version"],
         idempotency_key=idem,
+        # 触发器这一步在**收请求的此刻**替 worker 写好（原始 body / 打码后的
+        # 请求头 / 来源）。必须托付给 create_run 和 runs 行同一个事务落库，
+        # 不能在它返回后补写 —— worker 每秒扫队列，两次写之间它就能认领并把
+        # 触发器跑成 mock 的 {}，谁赢由毫秒决定，而且只在线上偶发
+        trigger_step=trigger_step_of(flow["definition"] or {}, raw_body, headers, remote_ip),
     )
 
     with db.pool().connection() as conn:

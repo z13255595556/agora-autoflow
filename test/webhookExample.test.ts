@@ -9,6 +9,8 @@ import {
   SECRET_PLACEHOLDER,
 } from '../src/lib/webhookExample.ts'
 import type { FlowInputField } from '../src/types.ts'
+import { mockOutput } from '../src/lib/engine.ts'
+import type { FNode } from '../src/store.ts'
 
 /**
  * 调用示例的测试。
@@ -121,4 +123,25 @@ test('类型不对的节点参数不算漂移', () => {
   // params 是 Record<string, unknown>，画布上什么都可能被存进去
   assert.deepEqual(settingsDrift({ rateLimitPerMin: '60' }, live), [])
   assert.deepEqual(settingsDrift({ rateLimitPerMin: 1.5 }, live), [])
+})
+
+// ---------------------------------------------------------------- 手动调试的触发器输出
+//
+// 真触发的 output.body 由服务端在收请求那一刻预写（webhooks.trigger_step_of）；
+// 手动调试和离线运行不经过那条路，靠 mockOutput 的近似。这里钉的是**形状一致**：
+// 取值面板按 registry 的 schema 引导用户写 $.nodes.<hook>.output.body，
+// 三条执行路径上这个引用都必须取得到值。
+
+test('mock 的 webhook 触发器：body = 入参近似，形状和真触发预写的逐键一致', () => {
+  const node: FNode = {
+    id: 'hook',
+    position: { x: 0, y: 0 },
+    data: { typeId: 'trigger.webhook', typeVersion: '1.0.0', label: 'Webhook', params: { authMode: 'secret' }, onError: 'fail' },
+  }
+  const ctx = { trigger: { vid: 7 }, run: { id: 'r1', startedAt: '2026-08-30T00:00:00.000Z' }, nodes: {} }
+  const out = mockOutput(node, ctx, {}, []) as Record<string, unknown>
+  assert.deepEqual(Object.keys(out).sort(), ['body', 'headers', 'receivedAt', 'remoteIp'])
+  assert.deepEqual(out.body, { vid: 7 })
+  // 确定性：同 ctx 重复调用逐字相同（mockOutput 无随机源的硬约束）
+  assert.deepEqual(mockOutput(node, ctx, {}, []), out)
 })

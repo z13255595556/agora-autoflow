@@ -82,7 +82,8 @@ test('redactOutput：非 HTTP 节点原样返回同一个对象', () => {
 })
 
 test('isSensitiveHeaderName 覆盖精确名和模式', () => {
-  for (const n of ['Set-Cookie', 'authorization', 'X-Api-Key', 'x-refresh-token', 'MY_SECRET']) {
+  // x-webhook-secret / x-signature 是自家 webhook 的认证头，进运行记录前必须打码
+  for (const n of ['Set-Cookie', 'authorization', 'X-Api-Key', 'x-refresh-token', 'MY_SECRET', 'x-webhook-secret', 'X-Signature']) {
     assert.equal(isSensitiveHeaderName(n), true, n)
   }
   for (const n of ['content-type', 'accept', 'user-agent']) {

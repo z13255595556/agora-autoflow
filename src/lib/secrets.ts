@@ -10,7 +10,10 @@ const EXACT_SENSITIVE_HEADERS = new Set([
 
 export function isSensitiveHeaderName(name: string): boolean {
   const normalized = name.trim().toLowerCase()
-  return EXACT_SENSITIVE_HEADERS.has(normalized) || /(?:token|secret|api[-_]?key)/i.test(normalized)
+  // signature 是为自家 webhook 收上来的 x-signature 加的：签名 + 原始 body 就能
+  // 重放那次请求，等同凭证。这条规则在服务端有一份镜像
+  // （sql_service/webhooks.py 的 redact_headers），改这里必须同步那边
+  return EXACT_SENSITIVE_HEADERS.has(normalized) || /(?:token|secret|api[-_]?key|signature)/i.test(normalized)
 }
 
 /**
