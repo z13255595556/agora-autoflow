@@ -258,6 +258,65 @@ with db.pool().connection() as conn:
     conn.execute("DELETE FROM flows WHERE id = %s", (nfid,))
     conn.commit()
 
+# ---------------------------------------------------------------- 启停开关
+#
+# 停止 = 自动触发（定时 + webhook）不跑，手动运行不受影响（016 迁移）。
+# 存储层要守住的：状态存对、可见性和别的写入同一条规则、审计成对、
+# 停止时「下次触发」跟着闭嘴。
+
+pfid = new_id()
+flowstore.create_flow(pfid, definition("要停的流程"), "alice")
+ok("新建默认在跑", flowstore.get_flow(pfid)["pausedAt"], None)
+
+stopped = flowstore.set_paused(pfid, True, "alice")
+ok("停止后 pausedAt 有值", bool(stopped["pausedAt"]), True)
+ok("列表里也看得到停止状态",
+   bool(next(f for f in flowstore.list_flows(viewer="alice") if f["id"] == pfid)["pausedAt"]), True)
+
+# 停止的流程不该再报「下次触发」—— 那句话为假：调度器对它只推进不触发
+with db.pool().connection() as conn:
+    conn.execute(
+        "INSERT INTO schedules (flow_id, cron, next_fire_at)"
+        " VALUES (%s, '0 9 * * *', now() + interval '1 day')",
+        (pfid,))
+    conn.commit()
+ok("★ 停止时不报下次触发", flowstore.get_flow(pfid)["nextFireAt"], None)
+
+resumed = flowstore.set_paused(pfid, False, "alice")
+ok("启用后 pausedAt 清空", resumed["pausedAt"], None)
+ok("启用后下次触发又出现", bool(flowstore.get_flow(pfid)["nextFireAt"]), True)
+
+# 幂等：同方向重复按（双击、两个标签页）不重复写审计 —— 否则审计里
+# 出现成对的 pause/pause，读的人会以为中间丢了一条 resume
+flowstore.set_paused(pfid, False, "alice")
+flowstore.set_paused(pfid, True, "alice")
+flowstore.set_paused(pfid, True, "alice")
+flowstore.set_paused(pfid, False, "alice")
+with db.pool().connection() as conn:
+    prow = conn.execute(
+        "SELECT action FROM audit WHERE target_id = %s AND action IN ('flow.pause','flow.resume')"
+        " ORDER BY id", (pfid,)).fetchall()
+ok("审计一开一关成对，不重复",
+   [r[0] for r in prow], ["flow.pause", "flow.resume", "flow.pause", "flow.resume"])
+
+# 启停刻意不动 updated_at：那一列是"内容改于何时"，首页按它排序 ——
+# 停一下再开不该把半年没动的流程顶到最前
+with db.pool().connection() as conn:
+    t0 = conn.execute("SELECT updated_at FROM flows WHERE id = %s", (pfid,)).fetchone()[0]
+flowstore.set_paused(pfid, True, "alice")
+with db.pool().connection() as conn:
+    t1 = conn.execute("SELECT updated_at FROM flows WHERE id = %s", (pfid,)).fetchone()[0]
+ok("★ 启停不动 updated_at", t1, t0)
+flowstore.set_paused(pfid, False, "alice")
+
+raises("别人的流程停不了（404 不是 403）", flowstore.NotFound,
+       lambda: flowstore.set_paused(pfid, True, "bob", viewer="bob"))
+
+flowstore.archive(pfid, "alice")
+raises("归档的没有启停开关", flowstore.FlowArchived,
+       lambda: flowstore.set_paused(pfid, True, "alice"))
+flowstore.restore(pfid, "alice")
+
 # ---------------------------------------------------------------- 归属与隔离
 #
 # 每个人是自己的工作台。别人的流程在这里不是"看得到点不动"，而是**不存在** ——

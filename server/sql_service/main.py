@@ -869,6 +869,28 @@ def update_webhook(
     )
 
 
+class PausedBody(BaseModel):
+    """paused=true 停止，false 重新启用。布尔必传 —— 这不是"切换"接口：
+    toggle 语义在两个标签页各按一下时会互相抵消成没人想要的状态。"""
+    paused: bool
+
+
+@app.put("/api/flows/{flow_id}/paused")
+def set_paused(
+    flow_id: str,
+    body: PausedBody,
+    request: Request,
+    x_forwarded_user: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    """首页卡片的启停开关。停止 = 定时和 webhook 都不再触发，手动运行不受影响。
+
+    **不挂在 PUT /api/flows/{id} 上**：那是编辑器每几秒一次的草稿自动保存，
+    不记审计；启停是运维动作，改一次记一次（理由同 /notify）。
+    """
+    return _guard(flowstore.set_paused, flow_id, body.paused,
+                  _actor(request, x_forwarded_user), _viewer(request, x_forwarded_user))
+
+
 class NotifyConfigBody(BaseModel):
     """失败时通知到哪。webhook 为空 = 关掉。"""
     webhook: Optional[str] = None

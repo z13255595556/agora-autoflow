@@ -35,6 +35,12 @@ export interface SavedFlow {
   hasUnpublishedChanges?: boolean
   /** 调度器记的下次触发时刻（ISO）。只有服务端知道 —— 它含 misfire / 重叠之后的实际值 */
   nextFireAt?: string | null
+  /**
+   * 停止的时刻（首页卡片的启停开关）。null/undefined = 在跑。
+   * 停止只关自动触发（定时 + webhook），手动运行照常。
+   * 只在本机的流程没有这个状态 —— 没有服务端就没有自动触发，无所谓停不停。
+   */
+  pausedAt?: string | null
   /** 这条是从哪来的。'local' 表示服务端上没有它 */
   origin?: 'server' | 'local'
   /**
@@ -140,6 +146,7 @@ function fromRemote(r: api.RemoteFlow, def: FlowDefinition): SavedFlow {
     activeVersion: r.activeVersion,
     hasUnpublishedChanges: r.hasUnpublishedChanges,
     nextFireAt: r.nextFireAt ?? null,
+    pausedAt: r.pausedAt ?? null,
     triggerKind: r.triggerKind,
     origin: 'server',
     owner: r.owner,
@@ -411,6 +418,33 @@ export async function rollbackFlow(id: string, version: number): Promise<Rollbac
     // 写进来就是首页上一张「只在本机」。画布照样要换，只是不缓存
     if (def && r.mine !== false) saveFlowSync(def, r.updatedAt ? Date.parse(r.updatedAt) : Date.now())
     return { ok: true, version: r.activeVersion ?? undefined, def }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export interface SetPausedResult {
+  ok: boolean
+  /** 服务端确认后的状态。乐观翻转的开关要用它校正，别信自己刚才猜的 */
+  pausedAt?: string | null
+  /** 重新启用后的下次触发时刻。停止期间调度器一直在推进它，恢复即有值 */
+  nextFireAt?: string | null
+  error?: string
+}
+
+/**
+ * 首页卡片的启停开关。停止 = 定时和 webhook 不再触发；手动运行不受影响。
+ *
+ * 只有服务端模式有这个开关：本地模式没有 worker，本来就什么都不会自动跑 ——
+ * 画一个"停止"给一台不会动的机器，等于暗示它平时在动。
+ */
+export async function setFlowPaused(id: string, paused: boolean): Promise<SetPausedResult> {
+  if (storageMode() !== 'server') {
+    return { ok: false, error: '未连接流程存储，启停开关需要服务端（配置 DATABASE_URL）' }
+  }
+  try {
+    const r = await api.setRemoteFlowPaused(id, paused)
+    return { ok: true, pausedAt: r.pausedAt ?? null, nextFireAt: r.nextFireAt ?? null }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

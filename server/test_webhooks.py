@@ -253,6 +253,63 @@ ok("管理接口不返回认证 hash", "secret_hash" in public, False)
 ok("管理接口返回同步等待时间", public["responseTimeoutSeconds"], 300)
 
 
+# ---------------------------------------------------------------- 已停止的流程拒触发（要库）
+#
+# 卡片开关（flows.paused_at，016 迁移）在 webhook 这条路上的表现：
+# 409 + 落 webhook_deliveries。这段需要真的 Postgres —— handle() 的上半段
+# 全是查库。没配就明说跳过，不能让"没跑"看起来像"跑过了"。
+
+from sql_service import db, flowstore  # noqa: E402
+
+if db.configured():
+    import uuid
+
+    _fid = f"whtest_{uuid.uuid4().hex[:12]}"
+    _def = {
+        "name": "webhook 停止测试",
+        "inputs": {"type": "object", "properties": {}},
+        "trigger": {"kind": "manual"},
+        "nodes": [{"id": "n1", "type": "trigger.manual", "typeVersion": "1.0.0",
+                   "name": "手动", "params": {}, "onError": "fail"}],
+        "edges": [],
+        "layout": {"n1": {"x": 0, "y": 0}},
+    }
+    flowstore.create_flow(_fid, _def, "wh_tester")
+    flowstore.publish(_fid, "wh_tester")
+    # immediate 模式：lastNode 会同步轮询到超时，测试里没有 worker 接活，会干等
+    _hook = webhooks.ensure(_fid, "none", 60, "immediate", 30)
+
+    flowstore.set_paused(_fid, True, "wh_tester")
+    rejects("★ 已停止的流程 webhook 打进来 409",
+            lambda: webhooks.handle(_hook["token"], b"{}", {}, "127.0.0.1"), 409, "已停止")
+    with db.pool().connection() as _c:
+        _d = _c.execute(
+            "SELECT reject_reason FROM webhook_deliveries"
+            " WHERE webhook_id = (SELECT id FROM webhooks WHERE flow_id = %s)"
+            " ORDER BY id DESC LIMIT 1", (_fid,)).fetchone()
+    ok("★ 拒绝落进 deliveries —— 「上游说发了但没跑」要查得到", "已停止" in (_d[0] or ""), True)
+
+    # 正面对照：重新启用后同一个请求就该放行 —— 否则上面那条 409 可能只是
+    # 因为整条路都不通
+    flowstore.set_paused(_fid, False, "wh_tester")
+    _status, _body = webhooks.handle(_hook["token"], b"{}", {}, "127.0.0.1")
+    ok("重新启用后放行（202 入队）", _status, 202)
+
+    with db.pool().connection() as _c:
+        _c.execute("DELETE FROM webhook_deliveries WHERE webhook_id ="
+                   " (SELECT id FROM webhooks WHERE flow_id = %s)", (_fid,))
+        _c.execute("DELETE FROM webhooks WHERE flow_id = %s", (_fid,))
+        _c.execute("DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (_fid,))
+        _c.execute("DELETE FROM steps WHERE run_id IN (SELECT id FROM runs WHERE flow_id = %s)", (_fid,))
+        _c.execute("DELETE FROM runs WHERE flow_id = %s", (_fid,))
+        _c.execute("DELETE FROM flow_versions WHERE flow_id = %s", (_fid,))
+        _c.execute("DELETE FROM audit WHERE target_id = %s", (_fid,))
+        _c.execute("DELETE FROM flows WHERE id = %s", (_fid,))
+        _c.commit()
+else:
+    print("（没配数据库，「已停止拒触发」那几条没跑；其余不需要库）")
+
+
 for name, got, want in FAIL:
     print(f"✗ {name}\n    实际: {got!r}\n    期望: {want!r}")
 print(f"\n{len(PASS)} 通过, {len(FAIL)} 失败")

@@ -501,6 +501,14 @@ button { cursor: pointer; padding: 0; }
   border-style: dashed;
   border-color: color-mix(in srgb, var(--text-dim) 45%, var(--border));
 }
+/* 已停止（卡片开关）：实线灰底。和 --sched-off 的虚线刻意分开 ——
+   虚线是"它以为自己在跑"（调度器没接上），这里是"我让它停"，一个明确的状态 */
+.fcard__tag--paused {
+  color: var(--text-faint);
+  background: var(--surface-3);
+  border-color: var(--border);
+}
+.fcard__icon--off { background: var(--surface-3); color: var(--text-faint); }
 .fcard__foot {
   grid-area: foot; margin-top: 10px; padding-top: 9px;
   border-top: 1px solid var(--border);
@@ -513,6 +521,11 @@ button { cursor: pointer; padding: 0; }
   border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
 }
 .fcard__menu { position: absolute; top: 10px; right: 10px; }
+/* 启停开关：挂在 ⋯ 左边。只有会自己动的流程（定时/Webhook 且在服务端）
+   才有 —— 见 Home.tsx 的 canPause */
+.fcard__switch { position: absolute; top: 13px; right: 42px; z-index: 1; }
+/* 有开关时右上角占了两件东西，标签的避让宽度跟着加（原来那 22px 只躲 ⋯） */
+.fcard--switch .fcard__tag { margin-right: 60px; }
 .fcard__more {
   width: 24px; height: 24px; display: grid; place-items: center;
   background: none; border: none; border-radius: var(--r-sm);

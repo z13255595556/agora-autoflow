@@ -24,6 +24,8 @@ export interface DueSchedule {
   on_overlap: string
   concurrency_key: string | null
   active_version: number | null
+  /** 首页卡片上的启停开关（016 迁移）。非 null = 已停止，只推进不触发 */
+  paused_at: Date | null
 }
 
 /**
@@ -44,7 +46,7 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<number> 
     try {
       const { rows } = await client.query<DueSchedule>(
         `SELECT s.flow_id, s.cron, s.timezone, s.next_fire_at, s.misfire, s.grace_seconds,
-                f.on_overlap, f.concurrency_key, f.active_version
+                f.on_overlap, f.concurrency_key, f.active_version, f.paused_at
            FROM schedules s JOIN flows f ON f.id = s.flow_id
           WHERE s.enabled AND s.next_fire_at <= $1 AND f.archived_at IS NULL`,
         [now],
@@ -58,7 +60,15 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<number> 
         // 不是"跳过所有错过的"——那样服务停一天就一次都不补；
         // 也不是"全部补跑"——那样恢复后会连发一堆。只补最近的一次
         const tooLate = lateSeconds > s.grace_seconds
-        const shouldFire = s.misfire === 'fire_once' ? !tooLate : lateSeconds <= 60
+        // 已停止（卡片开关）的流程**留在扫描里，只推进不触发**。
+        //
+        // 不能图省事在 WHERE 里过滤掉它：那样 next_fire_at 冻在过去，
+        // 重新启用的一瞬间它就"到期"—— misfire=fire_once 加上一小时的 grace
+        // 会立刻补跑一发根本没人错过的运行。停止一条流程常常正是因为它在刷屏，
+        // "一启用先自己跑一次"是最糟的欢迎仪式。留在扫描里推进，
+        // 恢复后就从下一个正常时点开始，一次不补。
+        const paused = s.paused_at !== null
+        const shouldFire = !paused && (s.misfire === 'fire_once' ? !tooLate : lateSeconds <= 60)
 
         if (shouldFire && s.active_version !== null) {
           const ok = await enqueue(client, s, due)

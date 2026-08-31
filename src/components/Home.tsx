@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createFlow, deleteFlow, forgetLocal, listFlows, newFlowId,
-  restoreAndUpload, uploadAsCopy, uploadOne,
+  restoreAndUpload, setFlowPaused, uploadAsCopy, uploadOne,
   type FlowList, type SavedFlow,
 } from '../lib/library'
 import { whoami } from '../lib/client'
@@ -160,7 +160,28 @@ export default function Home({
     onExport: () => exportJson(f),
     onDelete: () => remove(f),
     onHistory: () => setHistory(f),
+    onTogglePaused: (paused: boolean) => togglePaused(f, paused),
   })
+
+  /**
+   * 卡片上的启停开关。**乐观翻转**：开关必须跟手，等一个来回再动的开关
+   * 会被再按一次。服务端确认后用真值校正（重新启用时 nextFireAt 只有它知道），
+   * 失败翻回原样并说原因 —— 不能让界面上的"已停止"和线上实际行为对不上。
+   */
+  const togglePaused = async (f: SavedFlow, paused: boolean) => {
+    const patch = (p: Partial<SavedFlow>) => setList((l) => ({
+      ...l,
+      flows: l.flows.map((x) => (x.id === f.id ? { ...x, ...p } : x)),
+    }))
+    patch({ pausedAt: paused ? new Date().toISOString() : null, nextFireAt: paused ? null : f.nextFireAt })
+    const r = await setFlowPaused(f.id, paused)
+    if (r.ok) {
+      patch({ pausedAt: r.pausedAt ?? null, nextFireAt: r.nextFireAt ?? null })
+    } else {
+      patch({ pausedAt: f.pausedAt ?? null, nextFireAt: f.nextFireAt ?? null })
+      pushToast({ tone: 'error', text: `${paused ? '停止' : '启用'}「${f.name}」失败：${r.error}` })
+    }
+  }
 
   const remove = async (f: SavedFlow) => {
     // 服务端上没有的那些，删掉就是真没了 —— 不能套用"服务端会归档"那句话
@@ -499,6 +520,7 @@ function FlowCard({
   onExport,
   onDelete,
   onHistory,
+  onTogglePaused,
 }: {
   flow: SavedFlow
   onOpen: () => void
@@ -506,8 +528,11 @@ function FlowCard({
   onExport: () => void
   onDelete: () => void
   onHistory: () => void
+  onTogglePaused: (paused: boolean) => Promise<void>
 }) {
   const [menu, setMenu] = useState(false)
+  /** 启停请求在路上。挡住连点 —— 两个反向的 PUT 赛跑，最后谁生效看运气 */
+  const [pausing, setPausing] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!menu) return
@@ -523,26 +548,34 @@ function FlowCard({
   const kind = flow.triggerKind ?? flow.def.trigger?.kind
   const scheduled = kind === 'schedule'
   const hooked = kind === 'webhook'
+  const paused = Boolean(flow.pausedAt)
+  // 开关只给会自己动的流程（定时/Webhook），且要有服务端可存。
+  // 手动流程没有可停的东西 —— 画一个不起作用的开关，等于暗示它平时在自己跑
+  const canPause = flow.origin === 'server' && (scheduled || hooked)
   const meta = flowCardMeta(flow.def)
   // 「下次 明天 09:00」来自调度器（含 misfire / 重叠之后的实际值），不从草稿算：
   // 草稿和线上可能不是一份，而且壳定义里根本没有排程参数
-  const nextFire = scheduled && isSchedulerAlive() ? describeNextFire(flow.nextFireAt, new Date()) : null
+  const nextFire = scheduled && !paused && isSchedulerAlive() ? describeNextFire(flow.nextFireAt, new Date()) : null
+  // 已停止盖过「未生效」：用户亲手停的流程不跑，和调度器接没接上无关
   const triggerLabel = scheduled
-    ? (isSchedulerAlive() ? `${meta.scheduleText ?? '定时触发'}${nextFire ? ` · 下次 ${nextFire}` : ''}` : '定时触发 · 未生效')
-    : hooked ? 'Webhook 触发' : '手动触发'
+    ? paused ? `${meta.scheduleText ?? '定时触发'} · 已停止`
+    : (isSchedulerAlive() ? `${meta.scheduleText ?? '定时触发'}${nextFire ? ` · 下次 ${nextFire}` : ''}` : '定时触发 · 未生效')
+    : hooked ? (paused ? 'Webhook 触发 · 已停止' : 'Webhook 触发') : '手动触发'
   return (
     // 菜单展开时把整张卡抬起来。.fcard:hover 的 transform 会造一个层叠上下文，
     // 把菜单的 z-index 关在卡片内部 —— 于是下一行的卡片会盖住菜单下半截。
     // 只提菜单自己的 z-index 没用，被困住的正是它
-    <div className={`fcard${menu ? ' fcard--menu' : ''}`}>
+    <div className={`fcard${menu ? ' fcard--menu' : ''}${canPause ? ' fcard--switch' : ''}`}>
       <button className="fcard__hit" onClick={onOpen} title={`打开「${flow.name}」`}>
-        <span className={`fcard__icon${scheduled ? ' fcard__icon--sched' : ''}`}>{scheduled ? '⏰' : hooked ? '🔗' : '▶'}</span>
+        <span className={`fcard__icon${paused ? ' fcard__icon--off' : scheduled ? ' fcard__icon--sched' : ''}`}>{scheduled ? '⏰' : hooked ? '🔗' : '▶'}</span>
         <span className="fcard__name">{flow.name}</span>
         {/* 「定时触发」这个标签本身就在暗示它会自己跑。调度器没接上之前，
             纠正必须紧挨着它 —— 否则用户在列表页扫一眼就会相信它在跑 */}
         <span
-          className={`fcard__tag${scheduled ? (isSchedulerAlive() ? ' fcard__tag--sched' : ' fcard__tag--sched-off') : ''}`}
-          title={scheduled && !isSchedulerAlive() ? SCHEDULER_OFF_DETAIL : undefined}
+          className={`fcard__tag${paused ? ' fcard__tag--paused' : scheduled ? (isSchedulerAlive() ? ' fcard__tag--sched' : ' fcard__tag--sched-off') : ''}`}
+          title={paused
+            ? '已停止：定时和 Webhook 不会自动触发；手动运行不受影响'
+            : scheduled && !isSchedulerAlive() ? SCHEDULER_OFF_DETAIL : undefined}
         >
           {triggerLabel}
         </span>
@@ -554,6 +587,28 @@ function FlowCard({
           {flow.nodeCount} 个节点 · 更新于 {formatDate(new Date(flow.updatedAt), 'yyyy-MM-dd HH:mm')}
         </span>
       </button>
+
+      {/* 启停开关。是 fcard__hit 的**兄弟**不是孩子 —— 卡片本身是个 <button>，
+          按钮里嵌开关既是非法 DOM，点开关也会连带打开流程 */}
+      {canPause && (
+        <label
+          className="switch fcard__switch"
+          title={paused
+            ? '已停止：定时和 Webhook 不会触发。点击重新启用'
+            : `已启用：${scheduled ? '定时到点会自动跑' : 'Webhook 打进来会自动跑'}。点击停止（手动运行不受影响）`}
+        >
+          <input
+            type="checkbox"
+            checked={!paused}
+            disabled={pausing}
+            aria-label={paused ? `启用「${flow.name}」` : `停止「${flow.name}」`}
+            onChange={() => {
+              setPausing(true)
+              void onTogglePaused(!paused).finally(() => setPausing(false))
+            }}
+          />
+        </label>
+      )}
 
       <div className="menu fcard__menu" ref={ref}>
         <button className="fcard__more" onClick={() => setMenu((v) => !v)} title="更多操作">

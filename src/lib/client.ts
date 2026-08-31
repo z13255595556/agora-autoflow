@@ -203,8 +203,14 @@ export interface RemoteFlow {
   triggerKind: string
   /** 草稿和已发布那一版不一致（只比逻辑不比布局） */
   hasUnpublishedChanges: boolean
-  /** 调度器记的下次触发时刻（ISO）。没发布 / 没定时 / 调度停用时为 null */
+  /** 调度器记的下次触发时刻（ISO）。没发布 / 没定时 / 调度停用 / 已停止时为 null */
   nextFireAt?: string | null
+  /**
+   * 停止的时刻（首页卡片的启停开关）。null/缺失 = 在跑。
+   * 停止只关**自动触发**（定时 + webhook），手动运行照常 —— 语义定义在
+   * 服务端 016 迁移，前端别自己发明第二种解释。老服务端没有这个字段。
+   */
+  pausedAt?: string | null
   /**
    * 归属（邮箱）。null = 还没有主 —— 是 owner 那次迁移之前建的流程。
    *
@@ -417,6 +423,14 @@ export function getRemoteVersion(id: string, version: number) {
 /** 取消归档。归档的流程在列表里是看不见的，但 id 仍然被它占着 */
 export function restoreRemoteFlow(id: string) {
   return req<RemoteFlow>(`/api/flows/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+}
+
+/** 首页卡片的启停开关。paused=true 停止自动触发（定时/webhook），false 重新启用 */
+export function setRemoteFlowPaused(id: string, paused: boolean) {
+  return req<RemoteFlow>(`/api/flows/${encodeURIComponent(id)}/paused`, {
+    method: 'PUT',
+    body: JSON.stringify({ paused }),
+  })
 }
 
 export function archiveRemoteFlow(id: string) {

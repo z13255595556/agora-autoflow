@@ -553,13 +553,18 @@ def handle(
 
             flow = _one(
                 conn,
-                "SELECT f.active_version, v.definition FROM flows f"
+                "SELECT f.active_version, f.paused_at, v.definition FROM flows f"
                 " LEFT JOIN flow_versions v ON v.flow_id = f.id AND v.version = f.active_version"
                 " WHERE f.id = %s AND f.archived_at IS NULL",
                 (row["flow_id"],),
             )
             if not flow:
                 raise WebhookError(404, "流程不存在或已归档")
+            # 409 而不是伪装成 404：走到这里认证已经过了，对方是合法调用方，
+            # 该知道真实原因。这条拒绝会落进 webhook_deliveries（走下面的
+            # record）——「上游说发了但没跑」的第一个排查入口就是那张表
+            if flow["paused_at"] is not None:
+                raise WebhookError(409, "流程已停止，webhook 暂不触发（在首页卡片上重新启用）")
             if flow["active_version"] is None:
                 # 草稿改坏了不该影响线上，这是 active_version 存在的全部理由
                 raise WebhookError(409, "流程尚未发布，webhook 只触发已发布的版本")

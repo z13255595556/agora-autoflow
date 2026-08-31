@@ -123,15 +123,21 @@ def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "activeVersion": row["active_version"],
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
         "archivedAt": row["archived_at"].isoformat() if row.get("archived_at") else None,
+        # 停止的时刻。NULL = 在跑。停止只关自动触发（定时 + webhook），
+        # 手动运行照常 —— 语义的完整定义见 016 迁移
+        "pausedAt": row["paused_at"].isoformat() if row.get("paused_at") else None,
         "nodeCount": len(draft.get("nodes") or []),
         "nodeTypes": flowdef.node_types(draft),
         "triggerKind": (draft.get("trigger") or {}).get("kind", "manual"),
         # 调度器记的下次触发时刻（含 misfire / 重叠之后的实际值）。
         # 列表页的「下次 明天 09:00」只能从这来 —— 从草稿算出来的是"发布后会怎样"，
-        # 而且本机没缓存过的流程在列表里只是个没有 trigger 的壳
+        # 而且本机没缓存过的流程在列表里只是个没有 trigger 的壳。
+        # 已停止的流程报 None，不是"不显示"而是这句话本身为假：
+        # 调度器对它只推进时刻、不触发（见 worker/scheduler.ts）
         "nextFireAt": (
             row["next_fire_at"].isoformat()
-            if row.get("next_fire_at") and row.get("schedule_enabled") else None
+            if row.get("next_fire_at") and row.get("schedule_enabled")
+            and not row.get("paused_at") else None
         ),
         # 失败时通知到哪。这一列 worker 一直在读（alerts.ts），但在此之前没有任何
         # 接口能写它 —— 告警链路是条修好了路没有入口的死路
@@ -191,6 +197,39 @@ def set_notify_config(flow_id: str, config: Optional[Dict[str, Any]], actor: Opt
 def _mask(hook: str) -> str:
     key = hook.split("key=")[-1] if "key=" in hook else hook
     return f"…key={key[:4]}***{key[-2:]}" if len(key) > 8 else "…key=***"
+
+
+def set_paused(flow_id: str, paused: bool, actor: Optional[str],
+               viewer: Any = SELF) -> Dict[str, Any]:
+    """停止 / 重新启用自动触发（定时 + webhook）。首页卡片上那个开关的后端。
+
+    **手动运行不受影响** —— 完整语义见 016 迁移。和 set_notify_config 同类：
+    这是运维开关不是草稿编辑，不走 save_draft（不该跟着击键走），改一次记一次审计。
+
+    **刻意不动 updated_at**：那一列的含义是"内容改于何时"，首页按它排序。
+    停一下再开不该把一条半年没动的流程顶到列表最前 —— 那个位置的含义会
+    从"我最近在编什么"变成"我最近碰过什么开关"。
+    """
+    with db.pool().connection() as conn:
+        clause, args = _visible(_scope(actor, viewer))
+        row = _one(conn, "SELECT archived_at, paused_at FROM flows f WHERE id = %s" + clause,
+                   (flow_id,) + args)
+        if not row:
+            raise NotFound(f"流程 {flow_id} 不存在")
+        # 归档 = 用户删了它，本来就什么都不跑。放行这个写入只会造出一条
+        # "已删除但显示为已停止"的幽灵状态，恢复归档时还得解释一遍
+        if row["archived_at"] is not None:
+            raise FlowArchived(f"流程 {flow_id} 已删除（已归档），没有启停开关")
+        # 幂等：同方向重复按（双击、两个标签页各按一次）不再写库也不再记审计 ——
+        # 否则审计里会出现成对的 pause/pause，读的人会以为中间丢了一条 resume
+        if bool(row["paused_at"]) != paused:
+            conn.execute(
+                "UPDATE flows SET paused_at = CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
+                (paused, flow_id),
+            )
+            _audit(conn, actor, "flow.pause" if paused else "flow.resume", flow_id)
+            conn.commit()
+    return get_flow(flow_id)
 
 
 # ---------------------------------------------------------------- 用户级失败通知
@@ -311,7 +350,7 @@ def list_flows(include_archived: bool = False, viewer: Any = None) -> List[Dict[
         rows = _rows(
             conn,
             "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
-            "       f.notify_config, v.definition AS published_definition,"
+            "       f.paused_at, f.notify_config, v.definition AS published_definition,"
             "       s.next_fire_at, s.enabled AS schedule_enabled"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"
@@ -330,7 +369,7 @@ def get_flow(flow_id: str, viewer: Optional[str] = ANY) -> Dict[str, Any]:
         row = _one(
             conn,
             "SELECT f.id, f.name, f.draft, f.active_version, f.updated_at, f.archived_at, f.owner,"
-            "       f.notify_config, v.definition AS published_definition,"
+            "       f.paused_at, f.notify_config, v.definition AS published_definition,"
             "       s.next_fire_at, s.enabled AS schedule_enabled"
             "  FROM flows f"
             "  LEFT JOIN flow_versions v"

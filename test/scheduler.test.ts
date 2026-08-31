@@ -147,6 +147,29 @@ test('停用的排程不触发', { skip: SKIP }, async () => {
   await pool.query('UPDATE schedules SET enabled = true WHERE flow_id = $1', [flowId])
 })
 
+test('★★ 已停止的流程：不触发，但 next_fire_at 照常推进（恢复后不补跑）', { skip: SKIP }, async () => {
+  // 卡片开关（flows.paused_at，016 迁移）。钉住"只推进不触发"这半边：
+  // 图省事在 WHERE 里过滤掉已停止流程的话，next_fire_at 会冻在过去，
+  // 重新启用的一瞬间它就"到期"—— misfire=fire_once 加一小时 grace 会立刻
+  // 补跑一发根本没人错过的运行。停止一条流程常常正是因为它在刷屏，
+  // "一启用先自己跑一次"是最糟的欢迎仪式
+  const before = await runCount()
+  await pool.query('UPDATE flows SET paused_at = now() WHERE id = $1', [flowId])
+  await pool.query(
+    "UPDATE schedules SET next_fire_at = now() - interval '10 seconds', misfire = 'fire_once' WHERE flow_id = $1",
+    [flowId])
+  await runSchedulerTick(new Date())
+  assert.equal(await runCount(), before, '停着就一次都不跑')
+
+  const nf = await nextFire()
+  assert.ok(nf.next_fire_at.getTime() > Date.now(), '★ 时刻必须推进到未来，不许冻在过去')
+
+  // 恢复后立刻再扫一轮：next_fire_at 已在未来，什么都不该发生
+  await pool.query('UPDATE flows SET paused_at = NULL WHERE id = $1', [flowId])
+  await runSchedulerTick(new Date())
+  assert.equal(await runCount(), before, '恢复不补跑，从下一个正常时点开始')
+})
+
 test('★★ 改了草稿不发布：定时跑的仍是已发布那一版', { skip: SKIP }, async () => {
   // 这是整件事的验收核心。手动运行改成跑草稿之后，最容易出的事故是
   // 「调试快照被定时器也捡走了」—— 那等于不点发布就上线了。
