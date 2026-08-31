@@ -177,6 +177,21 @@ def _child_env(tmpdir: str) -> Dict[str, str]:
         "PYTHONIOENCODING": "utf-8",
         "HOME": tmpdir,
         "TMPDIR": tmpdir,
+        # ★ 数值库线程池钉成单线程。不是性能调优，是防炸：numpy 的 linux 轮子
+        # 捆着 OpenBLAS，dlopen 时按**宿主机核数**起线程池（compose 的 cpus 是
+        # 配额，挡不住它数核）；沙箱容器有 pids_limit，runner 又设了
+        # RLIMIT_NPROC/RLIMIT_AS，pthread_create 一失败，OpenBLAS 的失败路径
+        # 是给自己 raise(SIGINT)（blas_server.c，失败提示里自己建议设
+        # OPENBLAS_NUM_THREADS）—— 用户看到的是「第 N 行：KeyboardInterrupt」，
+        # 行号落在 import numpy 的那行（import openpyxl/pandas 会连带触发），
+        # 完全看不出是环境问题。而且 mac 的 numpy 轮子走 Accelerate 没这条路，
+        # **本地永远测不出来**，只在线上炸。
+        # 单线程对沙箱本来也是对的：并发的 run 各起满核线程池只会互相踩。
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "VECLIB_MAXIMUM_THREADS": "1",
     }
 
 

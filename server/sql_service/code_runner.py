@@ -120,6 +120,14 @@ def _user_error(exc: BaseException, kind: str):
     if isinstance(exc, ImportError):
         message += ("。预装包与状态见管理员「Python 依赖」页；"
                     "需要新包请管理员在那里添加（不支持在代码里自装）")
+    elif isinstance(exc, KeyboardInterrupt):
+        # 这不是用户代码写得出来的错：KeyboardInterrupt == 进程收到 SIGINT。
+        # 已知来源是数值库线程起不来时 OpenBLAS 给自己 raise(SIGINT)
+        # （_child_env 已钉单线程堵掉），剩下的就是有人/有东西真发了信号。
+        # 不说明的话用户会盯着报错行号找自己代码的毛病 —— 那行只是恰好在跑
+        message += ("（进程收到了中断信号 SIGINT，通常不是这行代码的问题 —— "
+                    "多为沙箱线程/内存额度不足时数值库初始化失败，"
+                    "或进程被外部打断；这行只是信号到达时恰好在执行）")
     detail = "".join(traceback.format_list(frames)).rstrip()
     return {"ok": False, "kind": kind, "message": message, "line": line,
             **({"traceback": detail} if detail else {})}

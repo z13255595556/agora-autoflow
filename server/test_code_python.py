@@ -73,6 +73,15 @@ ok("★ 凭证 canary 不出现在子进程环境里", "canary-secret-123" not i
 ok("★ 环境里没有任何 OAUTH_*", "OAUTH" not in out["logs"], out["logs"])
 del os.environ["OAUTH_CLIENT_SECRET"]
 
+# 数值库线程池必须钉成单线程：线上容器 pids/rlimit 收紧后，OpenBLAS 起线程
+# 失败会给自己 raise(SIGINT)，用户看到的是 import 行的 KeyboardInterrupt——
+# 而 mac 上 numpy 走 Accelerate，这条路本地永远测不出来，只能靠这里钉住 env
+out = run("import os\n"
+          "def main(inputs):\n"
+          "    return {'blas': os.environ.get('OPENBLAS_NUM_THREADS'),"
+          " 'omp': os.environ.get('OMP_NUM_THREADS')}")
+ok("★ OpenBLAS/OMP 线程池钉成 1", out.get("blas") == "1" and out.get("omp") == "1", out)
+
 # ---------------------------------------------------------------- ★ 超时
 t0 = time.monotonic()
 raises("★ 死循环到点被 SIGKILL", lambda: run("def main(inputs):\n    while True:\n        pass", timeout=1),
@@ -113,6 +122,10 @@ raises("撞保留键", lambda: run("def main(inputs):\n    return {'logs': 1, 'x
 raises("空代码", lambda: run("   "), "BAD_REQUEST", "为空")
 raises("用户 sys.exit 按运行时错报，不误判成沙箱挂了",
        lambda: run("import sys\ndef main(inputs):\n    sys.exit(3)"), "CODE_RUNTIME_ERROR", "SystemExit")
+# KeyboardInterrupt == 收到 SIGINT，不是代码写得出来的错。光报
+# 「第 N 行：KeyboardInterrupt:」用户会盯着那行找自己的毛病 —— 必须说明是信号
+raises("KeyboardInterrupt 要说明是信号不是代码问题",
+       lambda: run("def main(inputs):\n    raise KeyboardInterrupt"), "CODE_RUNTIME_ERROR", "SIGINT")
 
 # 失败时 print 的内容要能看到 —— worker 的失败路径只带 message
 exc = raises("失败消息带 stdout 尾部", lambda: run('def main(inputs):\n    print("debug mark 42")\n    raise ValueError("boom")'),
