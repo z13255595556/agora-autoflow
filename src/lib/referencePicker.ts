@@ -1,4 +1,4 @@
-import type { JsonType } from './outputShape.ts'
+import type { ExpectedType } from './referenceFit.ts'
 
 /**
  * 取值面板的一次请求。
@@ -18,7 +18,7 @@ export interface ReferenceTarget {
   fieldLabel?: string
   query: string
   mixed: boolean
-  expectedType?: JsonType
+  expectedType?: ExpectedType
   initialExpression?: string
   replace: (snippet: string) => void
 }

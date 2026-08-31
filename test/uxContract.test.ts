@@ -39,11 +39,37 @@ test('URL 字段不能插入整表', () => {
   assert.ok(reason)
 })
 
+test('「取前 N 行 · 作为表格」和「表格」同罪 —— URL 一样进不去', () => {
+  // 两个入口编译出的都是 | table(...)，只拦其一等于规则失效一半
+  const reason = fitReason({
+    sourceNodeId: 'n2', sourceLabel: 'SQL', path: 'rows',
+    mode: 'top', sortColumn: 'dc', direction: 'desc', limit: 10, columns: ['a'], valueType: 'string', label: '前 10 行 · 表格',
+  }, 'url')
+  assert.ok(reason)
+})
+
 test('文本字段可以插入标量', () => {
   assert.equal(fitReason({
     sourceNodeId: 'n2', sourceLabel: 'SQL', path: 'rowCount',
     mode: 'field', valueType: 'integer', label: '行数',
   }, 'string'), null)
+})
+
+test('多行文本放行表格 —— 企微正文的官方示例就是文字里混表格', () => {
+  const table = {
+    sourceNodeId: 'n2', sourceLabel: 'SQL', path: 'rows',
+    mode: 'table' as const, columns: ['uid', 'dc'], valueType: 'string' as const, label: '表格 · 2 列',
+  }
+  assert.equal(fitReason(table, 'text'), null)
+  // 单行字段仍然拦：换行会把请求头 / @成员这类值直接撑破
+  assert.ok(fitReason(table, 'string'))
+})
+
+test('整行对象在多行文本里也要先选字段', () => {
+  assert.ok(fitReason({
+    sourceNodeId: 'n2', sourceLabel: 'SQL', path: 'rows',
+    mode: 'first', valueType: 'object', label: '第一行',
+  }, 'text'))
 })
 
 test('第二批选择（筛选 / 前 N / 汇总）的展示文案也不含 $. 和节点 id', () => {

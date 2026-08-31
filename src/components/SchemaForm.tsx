@@ -194,7 +194,10 @@ export default function SchemaForm({
                   labelCtx={labelCtx}
                   nodeId={nodeId}
                   fieldLabel={sub.title ?? key}
-                  expectedType="string"
+                  // text 不是 string：多行文本（消息正文、结束结果、转换模板）
+                  // 本来就是「文字混多个变量」的地方，表格这类多行产物要放行；
+                  // 单行字段传 string，取值面板会替它挡掉带换行的东西
+                  expectedType="text"
                 />
                 {inserters.includes('message') && nodeId && (
                   <MessagePreview

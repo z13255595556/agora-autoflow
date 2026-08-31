@@ -5,7 +5,7 @@ import { canChipify, tokenizeRefs, type TokenizeOptions } from '../lib/blocks'
 import { describeBlock, type LabelCtx } from '../lib/refLabel'
 import { sqlInertAt } from '../lib/placeholders'
 import { slashMatchAt } from '../lib/slash'
-import type { JsonType } from '../lib/outputShape'
+import type { ExpectedType } from '../lib/referenceFit'
 import type { TextEl } from '../lib/caret'
 import {
   adjacentChip, caretInfo, chipClickIntent, chipRange, expandChip, hasForeignNodes, renderTokens,
@@ -77,7 +77,7 @@ export interface RefFieldProps {
   nodeId?: string
   /** 字段的显示名，取值栏顶上要写出来 */
   fieldLabel?: string
-  expectedType?: JsonType
+  expectedType?: ExpectedType
 }
 
 interface SlashState {

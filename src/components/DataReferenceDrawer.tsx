@@ -547,8 +547,11 @@ function findRegionOrNull(region: RegionDesc, path: string): RegionDesc | null {
 const parentPath = (path: string) => path.includes('.') ? path.slice(0, path.lastIndexOf('.')) : ''
 const blockReason = (target: ReferenceTarget, selection: ReferenceSelection) =>
   fitReason(selection, target.expectedType)
+  // 混在文字里的非字符串会被引擎 JSON.stringify 成一坨（engine.resolveTemplate），
+  // 所以拦；文案必须指到真正可用的出口 —— 曾经这里让用户去「格式化结果」，
+  // 而「表格」又被 fitReason 无条件拦掉，两条提示合起来是个死胡同
   ?? (target.mixed && (selection.valueType === 'array' || selection.valueType === 'object')
-    ? '对象 / 列表不能混在文字中，请改选具体字段或格式化结果。'
+    ? '对象 / 列表不能混在文字中 —— 改选具体字段，或用「表格」「顿号拼接」把它变成文本。'
     : null)
 const incompatible = (target: ReferenceTarget, type: JsonType) => target.mixed && (type === 'array' || type === 'object')
 const asJsonType = (type: string): JsonType => type.endsWith('[]') ? 'array' : ['string', 'integer', 'number', 'boolean', 'object', 'array'].includes(type) ? type as JsonType : 'unknown'
