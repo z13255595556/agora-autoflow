@@ -85,6 +85,15 @@ services:
     # ③ 端口不 publish —— 只有 api 从内网调它。
     # 出网（公网/内网）是有意放开的，代价见 README「Python 代码节点」
     networks: [sandbox_net]
+    # 不设 hostname 时容器主机名是 12 位十六进制容器 ID —— 没有点，不成 FQDN。
+    # 用户代码里 smtplib 这类「默认拿 socket.getfqdn() 当协议身份」的标准库，
+    # EHLO 要么报出裸容器 ID，要么因为名字里没点退化成 [内网IP] 地址字面量，
+    # 严格的服务端（如 smtp.partner.outlook.cn）直接回 501 5.5.4 Invalid domain
+    # name，srv.starttls() 处抛 SMTPHeloError。这个坑是静默的：本地 execute_local
+    # 是宿主机子进程、不进容器，主机名正常，**本地永远复现不了** —— 只有生产
+    # 沙箱里第一次真正走到 SMTP 才炸。名字本身随意，带点、语法合法即可
+    # （SMTP 服务端不做反查）；改这行要重建容器（up -d 会检测到配置变化重建）才生效。
+    hostname: sandbox.autoflow.internal
     mem_limit: 1g
     pids_limit: 128
     cpus: 2
