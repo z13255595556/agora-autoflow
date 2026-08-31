@@ -44,7 +44,9 @@ export const TEMPLATES: Template[] = [
           id: 'n3', type: 'notify.wecom', typeVersion: '1.0.0', name: '企微通知',
           params: {
             msgtype: 'markdown_v2',
-            content: '查询完成，共 {{ $.nodes.n2.output.rowCount }} 条\n\n{{ $.nodes.n2.output.rows | table() }}',
+            // 正文只有一张表：查出来什么发什么，开场白让用户自己写。
+            // table() 不带列名 = 全部列，SQL 一改列自动跟着变
+            content: '{{ $.nodes.n2.output.rows | table() }}',
           },
           onError: 'fail',
         },
