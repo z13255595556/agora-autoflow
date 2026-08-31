@@ -168,11 +168,78 @@ def sandbox_python() -> Optional[str]:
     return p if os.access(p, os.X_OK) else None
 
 
-def _child_env(tmpdir: str) -> Dict[str, str]:
+def _mpl_cache_dir(interp: str) -> str:
+    """matplotlib 字体缓存的持久母本：<沙箱 venv>/mpl-cache。
+
+    为什么必须持久：_child_env 把 HOME 指到每次执行新建的 tmpdir，matplotlib
+    找缓存跟着 HOME 走 —— 也就是**每次执行都是冷缓存**。冷缓存要当场构建，
+    构建前 font_manager 先 threading.Timer 起一个「建得慢就提示」的线程
+    （FontManager.__init__），沙箱容器 pids_limit + RLIMIT_NPROC 顶着时
+    pthread_create 直接 EAGAIN —— 用户看到的是 import matplotlib.pyplot
+    那行「RuntimeError: can't start new thread」，且**每次必炸**不是偶发。
+    mac 上线程限额不同源，本地永远测不出来 —— 和 OpenBLAS 那条（见下面
+    _child_env 的注释）是同一族坑。
+
+    缓存命中时 matplotlib 不构建、零线程。所以缓存放进和已装包同生命周期的
+    持久目录（venv 旁，pip 能写的地方 65534 一样能写），配合 _ensure_mpl_warm
+    在受信任阶段先建好。缓存文件名自带版本号（fontlist-vNNN.json），升级
+    matplotlib 后旧文件无害、新文件由下一次预热补上。
+    """
+    return str(Path(interp).parent.parent / "mpl-cache")
+
+
+_mpl_warm_lock = threading.Lock()
+_mpl_warm_done = False
+
+
+def reset_mpl_warm() -> None:
+    """装/卸包之后调：matplotlib 可能刚装上或换了版本，下一次执行前要重新
+    预热。pip 跑在哪个进程，哪个进程失效 —— sandbox/service.py（容器模式）
+    和 sandbox_packages 的本地分支各钉一处。"""
+    global _mpl_warm_done
+    _mpl_warm_done = False
+
+
+def _ensure_mpl_warm(interp: str) -> None:
+    """在服务进程侧（无 per-run 限额）替沙箱把字体缓存建好。
+
+    fail-open：预热失败只打日志绝不拦执行 —— 不用 matplotlib 的代码不该被
+    它拖死；用 matplotlib 的还有 MPLCONFIGDIR 持久目录兜底（首次构建仍可能
+    撞线程上限，但建成一次后所有后续执行都命中缓存，坏也只坏第一次）。
+    没装 matplotlib 是常态（ModuleNotFoundError），静默完成不刷屏。
+    """
+    global _mpl_warm_done
+    if _mpl_warm_done:
+        return
+    with _mpl_warm_lock:
+        if _mpl_warm_done:
+            return
+        cache = _mpl_cache_dir(interp)
+        try:
+            os.makedirs(cache, exist_ok=True)
+            proc = subprocess.run(
+                [interp, "-c",
+                 "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot"],
+                env=_child_env(cache, interp),
+                capture_output=True,
+                # 字体构建通常几秒；60s 是极端保护，且只可能慢这一次 ——
+                # 无论成败都置 done，绝不把每个 run 都拖住重试
+                timeout=60,
+            )
+            if proc.returncode != 0:
+                tail = proc.stderr.decode("utf-8", errors="replace")[-400:]
+                if "ModuleNotFoundError" not in tail:
+                    print(f"⚠ matplotlib 字体缓存预热失败（不拦执行）：{tail}", flush=True)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"⚠ matplotlib 字体缓存预热失败（不拦执行）：{exc}", flush=True)
+        _mpl_warm_done = True
+
+
+def _child_env(tmpdir: str, interp: Optional[str] = None) -> Dict[str, str]:
     # ★ 显式白名单，**绝不继承** —— server/.env 的 OAUTH_* 全在本进程环境里，
     # 用户代码又能联网，继承一次就是可外传的全套凭证。
     # 刻意不给 PATH：用户代码起子进程只能写绝对路径，少一条顺手摸到系统工具的路
-    return {
+    env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8",
         "HOME": tmpdir,
@@ -193,6 +260,12 @@ def _child_env(tmpdir: str) -> Dict[str, str]:
         "NUMEXPR_NUM_THREADS": "1",
         "VECLIB_MAXIMUM_THREADS": "1",
     }
+    if interp:
+        # matplotlib 字体缓存指到持久母本，不跟每次新建的 HOME 走 ——
+        # 否则每次执行都冷缓存重新构建，构建前的提示线程在 pids/NPROC
+        # 限额下起不来，import matplotlib.pyplot 当场炸。见 _mpl_cache_dir
+        env["MPLCONFIGDIR"] = _mpl_cache_dir(interp)
+    return env
 
 
 def _drain(stream, keep: int) -> Tuple[bytes, int]:
@@ -215,6 +288,7 @@ def _run_local(code: str, inputs: Dict[str, Any], timeout_s: int) -> Dict[str, A
         raise CodeNodeError(503, "CODE_SANDBOX_UNAVAILABLE",
                             "沙箱解释器不存在（server/.venv-sandbox）。跑一次 scripts/dev.sh 会自动建；"
                             "或用 SANDBOX_PYTHON 指定解释器")
+    _ensure_mpl_warm(interp)
 
     tmpdir = tempfile.mkdtemp(prefix="codepy-")
     read_fd, write_fd = os.pipe()
@@ -227,7 +301,7 @@ def _run_local(code: str, inputs: Dict[str, Any], timeout_s: int) -> Dict[str, A
                 pass_fds=(write_fd,),  # 结果 fd 以原号继承，fd 号通过 argv 告知。
                 # 不用 preexec_fn 把它 dup2 到 3：uvicorn 是多线程进程，
                 # preexec_fn 在多线程下有 fork 死锁风险（官方文档明说 not thread-safe）
-                env=_child_env(tmpdir),
+                env=_child_env(tmpdir, interp),
                 cwd=tmpdir,
                 start_new_session=True,  # 新进程组：SIGKILL 连带用户 fork 出的子孙
             )

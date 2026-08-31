@@ -197,6 +197,10 @@ def _reconcile() -> None:
     _apply(plan(_desired(), installed),
            install=lambda name, version: _pip(interp, "install", f"{name}=={version}"),
            uninstall=lambda name: _pip(interp, "uninstall", "-y", name))
+    # 本地模式 pip 在本进程侧动了沙箱 venv：matplotlib 可能刚装/换版本，
+    # 让下一次执行重新预热字体缓存。无变更时 reset 的代价只是下次执行
+    # 多一次探测子进程（对账只在启动和管理页增删时跑，无所谓）
+    code_python.reset_mpl_warm()
 
 
 def _reconcile_remote() -> None:

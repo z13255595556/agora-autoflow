@@ -127,6 +127,31 @@ raises("用户 sys.exit 按运行时错报，不误判成沙箱挂了",
 raises("KeyboardInterrupt 要说明是信号不是代码问题",
        lambda: run("def main(inputs):\n    raise KeyboardInterrupt"), "CODE_RUNTIME_ERROR", "SIGINT")
 
+# ---------------------------------------------------------------- ★ matplotlib 字体缓存
+# 线上沙箱 pids/NPROC 顶着时，matplotlib 冷缓存构建前的提示线程起不来，
+# import matplotlib.pyplot 当场 can't start new thread；而 HOME=每次新建的
+# tmpdir 意味着每次执行都是冷缓存 —— 必炸不是偶发。两道防线：子进程
+# MPLCONFIGDIR 指持久母本 + 执行前受信任侧预热（_ensure_mpl_warm）。
+# mac 线程限额不同源，这条和 OpenBLAS 一样本地测不出爆炸本身，只能钉环境
+out = run("import os\ndef main(inputs):\n    return {'mpl': os.environ.get('MPLCONFIGDIR', '')}")
+ok("★ 子进程 MPLCONFIGDIR 指向持久 mpl-cache", out.get("mpl", "").endswith("mpl-cache"), out)
+
+raises("线程起不来要说明是沙箱限额不是代码问题",
+       lambda: run("def main(inputs):\n    raise RuntimeError(\"can't start new thread\")"),
+       "CODE_RUNTIME_ERROR", "线程数有上限")
+
+_warm_calls = []
+_real_sub_run = code_python.subprocess.run
+code_python.subprocess.run = lambda *a, **k: (_warm_calls.append(1), _real_sub_run(*a, **k))[1]
+code_python.reset_mpl_warm()
+code_python._ensure_mpl_warm(sys.executable)
+code_python._ensure_mpl_warm(sys.executable)
+ok("★ 预热幂等：done 后不再起探测子进程", len(_warm_calls) == 1, _warm_calls)
+code_python.reset_mpl_warm()
+code_python._ensure_mpl_warm(sys.executable)
+ok("装/卸包 reset 后会重新预热", len(_warm_calls) == 2, _warm_calls)
+code_python.subprocess.run = _real_sub_run
+
 # 失败时 print 的内容要能看到 —— worker 的失败路径只带 message
 exc = raises("失败消息带 stdout 尾部", lambda: run('def main(inputs):\n    print("debug mark 42")\n    raise ValueError("boom")'),
              "CODE_RUNTIME_ERROR", "boom")

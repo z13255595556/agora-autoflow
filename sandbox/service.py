@@ -120,6 +120,11 @@ def install_package(body: PackageBody):
     if bad:
         return bad
     ok, log = _pip("install", f"{_norm(body.name)}=={body.version}")
+    if ok:
+        # matplotlib 可能刚装上/换了版本 —— 下一次 /execute 前重新预热字体
+        # 缓存（code_python._ensure_mpl_warm），否则首次导入在沙箱限额下起
+        # 不来提示线程，直接 can't start new thread
+        code_python.reset_mpl_warm()
     return {"ok": ok, "log": log}
 
 
@@ -129,4 +134,6 @@ def uninstall_package(body: PackageBody):
     if bad:
         return bad
     ok, log = _pip("uninstall", "-y", _norm(body.name))
+    if ok:
+        code_python.reset_mpl_warm()
     return {"ok": ok, "log": log}

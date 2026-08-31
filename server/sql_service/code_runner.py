@@ -128,6 +128,14 @@ def _user_error(exc: BaseException, kind: str):
         message += ("（进程收到了中断信号 SIGINT，通常不是这行代码的问题 —— "
                     "多为沙箱线程/内存额度不足时数值库初始化失败，"
                     "或进程被外部打断；这行只是信号到达时恰好在执行）")
+    elif isinstance(exc, RuntimeError) and "can't start new thread" in str(exc):
+        # 沙箱有 pids/NPROC 限额，pthread_create 一失败 Python 层就是这句。
+        # 已知来源是 matplotlib 首次构建字体缓存前的提示线程（平台已在执行前
+        # 预热缓存堵掉，见 code_python._ensure_mpl_warm）；报错行落在 import
+        # 上时基本都是这一族 —— 不说明的话用户会盯着 import 行冤枉自己的代码
+        message += ("（沙箱对线程数有上限：报错行是 import 时，多为某个库在"
+                    "初始化线程池/缓存，属平台限制，请把报错发给管理员；"
+                    "是你自己 threading 起线程时，请减少并发线程数）")
     detail = "".join(traceback.format_list(frames)).rstrip()
     return {"ok": False, "kind": kind, "message": message, "line": line,
             **({"traceback": detail} if detail else {})}
