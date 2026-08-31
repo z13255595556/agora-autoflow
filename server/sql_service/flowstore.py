@@ -128,7 +128,9 @@ def _summary(row: Dict[str, Any]) -> Dict[str, Any]:
         "pausedAt": row["paused_at"].isoformat() if row.get("paused_at") else None,
         "nodeCount": len(draft.get("nodes") or []),
         "nodeTypes": flowdef.node_types(draft),
-        "triggerKind": (draft.get("trigger") or {}).get("kind", "manual"),
+        # 从入口节点推导，不读顶层 trigger.kind —— 老前端存下的草稿那个字段
+        # 可能是错的（webhook 写成 manual），理由见 flowdef.trigger_kind
+        "triggerKind": flowdef.trigger_kind(draft),
         # 调度器记的下次触发时刻（含 misfire / 重叠之后的实际值）。
         # 列表页的「下次 明天 09:00」只能从这来 —— 从草稿算出来的是"发布后会怎样"，
         # 而且本机没缓存过的流程在列表里只是个没有 trigger 的壳。

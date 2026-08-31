@@ -38,6 +38,23 @@ test('★ 画布上是 trigger.webhook，存出来就得是 webhook', () => {
   assert.equal(roundTrip('trigger.webhook').kind, 'webhook')
 })
 
+test('★ 存量坏定义：顶层写 manual、节点是 webhook，normalize 就地纠正', () => {
+  // toDefinition 修好之前存下/导出的定义就是这个形状，而且除非重新保存一次
+  // 永远不会自愈。首页的本地流程和「导入 JSON」只经过 normalizeFlowDefinition
+  // （不做 store 往返），所以纠正必须发生在这一层 —— 服务端那份草稿由
+  // flowdef.trigger_kind 按同一条规则兜住
+  assert.equal(normalizeFlowDefinition(def('trigger.webhook')).trigger.kind, 'webhook')
+  assert.equal(normalizeFlowDefinition(def('trigger.schedule')).trigger.kind, 'schedule')
+})
+
+test('没有触发节点时才信顶层字段', () => {
+  const d = normalizeFlowDefinition({
+    ...def('sql.query'),
+    trigger: { kind: 'webhook' },
+  })
+  assert.equal(d.trigger.kind, 'webhook')
+})
+
 test('trigger.schedule 存出来是 schedule', () => {
   assert.equal(roundTrip('trigger.schedule').kind, 'schedule')
 })

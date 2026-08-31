@@ -317,6 +317,29 @@ raises("归档的没有启停开关", flowstore.FlowArchived,
        lambda: flowstore.set_paused(pfid, True, "alice"))
 flowstore.restore(pfid, "alice")
 
+# ---------------------------------------------------------------- triggerKind 从节点推导
+#
+# 老前端把节点推导成顶层 trigger.kind 时漏了 webhook 那一支，修复前存下的
+# 草稿字段写着 manual 而画布上是 trigger.webhook —— 不重新保存一次永远不会
+# 自愈。列表必须以节点为准，否则这些流程的标签、筛选、启停开关全是错的。
+
+tkid = new_id()
+wh_def = definition("触发字段是错的")
+wh_def["trigger"] = {"kind": "webhook"}
+wh_def["nodes"][0] = {"id": "n1", "type": "trigger.webhook", "typeVersion": "1.0.0",
+                      "name": "hook", "params": {}, "onError": "fail"}
+flowstore.create_flow(tkid, wh_def, "alice")
+# 直接把库里那份草稿的顶层字段改坏，精确复刻老前端存下的形状
+with db.pool().connection() as conn:
+    conn.execute(
+        "UPDATE flows SET draft = jsonb_set(draft, '{trigger,kind}', '\"manual\"') WHERE id = %s",
+        (tkid,))
+    conn.commit()
+ok("★ 存量坏行：顶层 manual + 节点 webhook，列表按 webhook 报",
+   next(f for f in flowstore.list_flows(viewer="alice") if f["id"] == tkid)["triggerKind"],
+   "webhook")
+ok("单条读同样", flowstore.get_flow(tkid)["triggerKind"], "webhook")
+
 # ---------------------------------------------------------------- 归属与隔离
 #
 # 每个人是自己的工作台。别人的流程在这里不是"看得到点不动"，而是**不存在** ——

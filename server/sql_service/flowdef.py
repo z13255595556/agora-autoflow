@@ -165,6 +165,32 @@ def for_storage(value: Any, flow_id: str, version: int) -> Dict[str, Any]:
     return raw
 
 
+def trigger_kind(value: Any) -> str:
+    """这条流程怎么触发。**正本是画布上的入口节点，顶层 trigger.kind 只是推导缓存。**
+
+    老版编辑器把节点推导成顶层字段时漏了 webhook 那一支（落进 else 写成
+    manual）。前端早修好了，但**修复前存下的草稿顶层字段一直是错的** ——
+    不重新打开保存一次就永远不会自愈，而受害的流程恰恰是"配完就不再动"的
+    那种。症状全部静默且全在列表页：标签写「手动触发」、按 Webhook 筛不出、
+    启停开关不出现；webhook 本身照常触发（handle 显式传 trigger_kind 给
+    create_run，从不读这个字段），所以没人会从运行侧发现。
+
+    所以读取时一律从节点推导，顶层字段只作没有触发节点时的兜底。
+    不改存量数据：改数据要在迁移里重演一遍前端的推导规则，那份规则漂了
+    才有的这个坑。
+    """
+    for node in (value or {}).get("nodes", []) or []:
+        if isinstance(node, dict):
+            t = node.get("type")
+            if isinstance(t, str) and t.startswith("trigger."):
+                kind = t.split(".", 1)[1]
+                # 后缀不是已知 kind（将来新增触发器类型时）就继续走兜底，
+                # 别把一个界面认不得的值塞给列表页
+                if kind in TRIGGER_KINDS:
+                    return kind
+    return ((value or {}).get("trigger") or {}).get("kind") or "manual"
+
+
 def node_types(value: Any) -> List[str]:
     """定义里用到的节点类型，去重后按出现顺序。列表页展示和影响面分析都要用。"""
     out: List[str] = []

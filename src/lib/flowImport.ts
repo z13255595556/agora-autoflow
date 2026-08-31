@@ -106,10 +106,20 @@ export function normalizeFlowDefinition(value: unknown, fallbackId = 'flow_impor
   const rawTrigger = raw.trigger && typeof raw.trigger === 'object' && !Array.isArray(raw.trigger)
     ? raw.trigger as JsonObject
     : {}
-  const inferredKind = nodes.some((node) => node.type === 'trigger.schedule') ? 'schedule' : 'manual'
-  const kind = rawTrigger.kind === 'schedule' || rawTrigger.kind === 'webhook' || rawTrigger.kind === 'manual'
-    ? rawTrigger.kind
-    : inferredKind
+  // kind 从**入口节点**推导，顶层字段只作没有触发节点时的兜底 —— 和服务端
+  // flowdef.trigger_kind 同一条规则。老版 toDefinition 推导时漏了 webhook
+  // 那一支，修复前存下/导出的定义顶层写着 manual 而画布上是 trigger.webhook；
+  // 只信字段的话，这些流程的卡片标签、Webhook 筛选、启停开关全是错的，
+  // 而且除非重新保存一次，永远不会自愈
+  const entryKind = nodes
+    .map((node) => (node.type === 'trigger.schedule' ? 'schedule'
+      : node.type === 'trigger.webhook' ? 'webhook'
+      : node.type === 'trigger.manual' ? 'manual' : null))
+    .find((k): k is 'schedule' | 'webhook' | 'manual' => k !== null)
+  const kind = entryKind
+    ?? (rawTrigger.kind === 'schedule' || rawTrigger.kind === 'webhook' || rawTrigger.kind === 'manual'
+      ? rawTrigger.kind
+      : 'manual')
 
   const pinData = raw.pinData === undefined ? undefined : objectAt(raw.pinData, 'pinData')
   return {

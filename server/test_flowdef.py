@@ -187,6 +187,33 @@ ok("node_types 去重且保持出现顺序",
 ok("node_types 容忍脏数据", flowdef.node_types({"nodes": [None, {"nope": 1}, {"type": ""}]}), [])
 ok("node_types 容忍空定义", flowdef.node_types({}), [])
 
+# ---------------------------------------------------------------- trigger_kind
+#
+# 正本是入口节点，顶层字段只是推导缓存 —— 老前端漏推 webhook 那一支时
+# 存下的草稿，字段写着 manual 而节点是 trigger.webhook。读取必须以节点为准。
+
+ok("★ 顶层写 manual、节点是 webhook：以节点为准",
+   flowdef.trigger_kind({"trigger": {"kind": "manual"},
+                         "nodes": [{"type": "trigger.webhook"}]}),
+   "webhook")
+ok("节点是 schedule 就是 schedule",
+   flowdef.trigger_kind({"trigger": {"kind": "manual"},
+                         "nodes": [{"type": "trigger.schedule"}]}),
+   "schedule")
+ok("节点与字段一致时照常",
+   flowdef.trigger_kind({"trigger": {"kind": "manual"},
+                         "nodes": [{"type": "trigger.manual"}]}),
+   "manual")
+ok("没有触发节点时才信顶层字段",
+   flowdef.trigger_kind({"trigger": {"kind": "webhook"}, "nodes": [{"type": "sql.query"}]}),
+   "webhook")
+ok("认不得的触发器后缀不外泄，走兜底",
+   flowdef.trigger_kind({"trigger": {"kind": "manual"},
+                         "nodes": [{"type": "trigger.future"}, {"type": "sql.query"}]}),
+   "manual")
+ok("空定义按 manual", flowdef.trigger_kind({}), "manual")
+ok("容忍脏数据", flowdef.trigger_kind({"nodes": [None, {"type": 3}], "trigger": None}), "manual")
+
 # ---------------------------------------------------------------- 结果
 
 for name, got, want in FAIL:
