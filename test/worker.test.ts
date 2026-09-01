@@ -641,6 +641,64 @@ test('★★ 取消不等睡醒：一小时的等待，点停止秒级收尾', {
   }
 })
 
+test('★★ 取消不等查询跑完：等平台结果的 run，点停止秒级收尾', { skip: SKIP }, async () => {
+  // trigger → sql.query 的最小形状。构造的是 deferRun 之后的库状态：
+  // submit 已发出、handle 在手、run 是 running/无租约人/租约在一小时后 ——
+  // claimRun 捡不到它，唯一能把它领回来的是 wakeDeferred。next_wake_at
+  // 故意拨到一小时后（真实 pollIntervalMs 是 3 秒）：「取消靠下一次自然醒
+  // 兜底」的错觉正是要测掉的东西 —— 自然醒了也只是继续轮询平台，
+  // !body.done 分支不把 run 交回队列，decide 根本看不到取消
+  const fid = `wtest_poll_${Math.random().toString(36).slice(2, 8)}`
+  const def = {
+    id: fid, version: 1, name: '慢查询取消', inputs: { type: 'object', properties: {} },
+    trigger: { kind: 'manual' },
+    nodes: [
+      { id: 't', type: 'trigger.manual', typeVersion: '1.0.0', name: '手动', params: {}, onError: 'fail' },
+      { id: 'q', type: 'sql.query', typeVersion: '2.0.0', name: '查询', params: { sql: 'SELECT 1' }, onError: 'fail' },
+    ],
+    edges: [{ from: 't', to: 'q' }],
+    layout: { t: { x: 0, y: 0 }, q: { x: 1, y: 0 } },
+  }
+  await pool.query('INSERT INTO flows (id, name, draft, active_version) VALUES ($1,$2,$3,1)',
+    [fid, def.name, JSON.stringify(def)])
+  await pool.query('INSERT INTO flow_versions (flow_id, version, definition) VALUES ($1,1,$2)',
+    [fid, JSON.stringify(def)])
+  const runId = `run_${Math.random().toString(36).slice(2, 10)}`
+  await pool.query(
+    `INSERT INTO runs (id, flow_id, flow_version, trigger_input, status, started_at, lease_expires)
+     VALUES ($1,$2,1,'{}','running', now(), now() + interval '1 hour')`,
+    [runId, fid])
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, loop_path, status, output, seq, started_at, finished_at)
+     VALUES ($1,'t','{}','success','{}',1, now(), now())`,
+    [runId])
+  await pool.query(
+    `INSERT INTO steps (run_id, node_id, loop_path, status, wait_kind, progress, next_wake_at, seq, started_at)
+     VALUES ($1,'q','{}','waiting','poll',$2, now() + interval '1 hour', 2, now())`,
+    [runId, JSON.stringify({ handle: 'h-test', deadlineAt: new Date(Date.now() + 600_000).toISOString(), submitKey: 'sk' })])
+  try {
+    // 反向门禁先测：没被取消、也没到自然醒的点，tick 一轮不许动它 ——
+    // 钉住唤醒条件放宽之后，「没到点也没被取消」的行不被误唤醒
+    await tick(fid)
+    assert.equal((await runRow(runId)).status, 'running', '没取消就不唤醒')
+    const before = await pool.query("SELECT status FROM steps WHERE run_id=$1 AND node_id='q'", [runId])
+    assert.equal(before.rows[0].status, 'waiting')
+
+    await pool.query('UPDATE runs SET cancel_requested_at = now() WHERE id = $1', [runId])
+    await tickUntilDone(fid, runId, 5000)
+
+    const r = await runRow(runId)
+    assert.equal(r.status, 'canceled',
+      '★ 提前唤醒不认 poll 行的话，这里要等查询自己跑完 —— 而停一条慢查询正是停止按钮最主要的用例')
+    const { rows } = await pool.query("SELECT status FROM steps WHERE run_id=$1 AND node_id='q'", [runId])
+    assert.equal(rows[0].status, 'canceled', '等结果的行按取消收尾，不是 failed（撤销平台任务失败不改这一点）')
+    const { rows: evs } = await pool.query('SELECT type FROM run_events WHERE run_id=$1 ORDER BY seq', [runId])
+    assert.equal(evs.at(-1)?.type, 'run.finished')
+  } finally {
+    await dropWaitFlow(fid)
+  }
+})
+
 
 // ─────────────────────────────────── webhook 触发器的预写步骤
 //

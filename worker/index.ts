@@ -498,9 +498,12 @@ function timeoutMinutesOf(t: NodeType, input: Record<string, unknown>): number {
  * **不需要单独的 triggerer 进程** —— 塞进同一个 worker 循环即可。
  * 恢复路径的关键：按 progress.handle 继续 poll，**绝不重新 submit**。
  *
- * sleep 行多一条唤醒条件：run 被请求取消就**提前**醒。轮询行每 3 秒
- * 自然醒一次，取消最多迟到一轮；而 sleep 一觉最长 1 小时，不提前醒的话
- * 「点了停止」要等睡醒才生效 —— 用户看到的就是停止按钮坏了。
+ * 所有 waiting 行共用一条提前唤醒规则：run 被请求取消就**提前**醒。
+ * 以前只有 sleep 有这条路（一觉最长 1 小时，不提前醒「点了停止」要等
+ * 睡醒才生效）；poll 行看似「每 3 秒自然醒一次，取消最多迟到一轮」——
+ * 但醒了只是继续轮询平台，`!body.done` 分支不把 run 交回队列，decide
+ * 根本没有机会看到取消。于是停一条正在跑的慢 SQL 要等查询自己跑完才
+ * 生效，而那正是停止按钮最主要的用例。
  */
 async function wakeDeferred(): Promise<number> {
   const { rows } = await pool.query(
@@ -508,25 +511,28 @@ async function wakeDeferred(): Promise<number> {
             r.flow_id, r.flow_version, r.cancel_requested_at
      FROM steps s JOIN runs r ON r.id = s.run_id
      WHERE s.status = 'waiting' AND s.wait_kind IN ('poll','retry','sleep')
-       AND s.next_wake_at IS NOT NULL
-       AND (s.next_wake_at <= now()
-            OR (s.wait_kind = 'sleep' AND r.cancel_requested_at IS NOT NULL))
+       AND ((s.next_wake_at IS NOT NULL AND s.next_wake_at <= now())
+            OR r.cancel_requested_at IS NOT NULL)
        AND r.status IN ('running','queued')
      FOR UPDATE OF s SKIP LOCKED
      LIMIT 10`,
   )
   for (const row of rows) {
-    // ── 等待节点到点（或被取消提前唤醒）。**必须排在 !handle 的 retry 分支
-    //    之前**：sleep 行没有 handle，掉进那个分支会被置回 queued 重新执行，
-    //    重新执行又掷一次时长、再睡一觉 —— 一个永远睡不完的循环
+    // ── 取消优先于一切等待形态（sleep / poll / retry 同一条路）：这一行
+    //    **不动**，只把 run 交回队列。撤平台任务、把 waiting 行记成 canceled
+    //    都是 decide 的 canceling 分支统一做的（driveRun 的 toCancel 带着
+    //    progress.handle 去撤）—— 在这里顺手撤会出现第二处撤销逻辑，
+    //    两处迟早长歪。run 已经是 queued 的（还没被认领）这条 UPDATE 是
+    //    no-op，行会被重复选中几轮直到认领，无害
+    if (row.cancel_requested_at) {
+      await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
+      continue
+    }
+    // ── 等待节点到点。**必须排在 !handle 的 retry 分支之前**：sleep 行
+    //    没有 handle，掉进那个分支会被置回 queued 重新执行，重新执行又掷
+    //    一次时长、再睡一觉 —— 一个永远睡不完的循环
     if (row.wait_kind === 'sleep') {
       const target = { nodeId: row.node_id, loopPath: row.loop_path as number[] }
-      if (row.cancel_requested_at) {
-        // 只把 run 交回队列，这一行不动 —— 「取消」是 run 级语义，
-        // 由 decide 的 canceling 分支统一把 waiting 行记成 canceled
-        await pool.query("UPDATE runs SET status='queued', lease_owner=NULL WHERE id=$1 AND status='running'", [row.run_id])
-        continue
-      }
       const waited = (row.progress as { waitSeconds?: number })?.waitSeconds ?? null
       await writeStep(row.run_id, {
         ...target, status: 'success',
