@@ -405,6 +405,63 @@ raises("别人取不到事件流", runstore.NotFound, lambda: runstore.events_si
 raises("别人取消不了", runstore.NotFound, lambda: runstore.request_cancel(rid, "bob@agora.io"))
 ok("自己读得到", runstore.get_run(rid, "alice@agora.io")["id"], rid)
 
+# ---------------------------------------------------------------- 请求取消
+#
+# 取消是过程不是瞬间（见 runstore.request_cancel），但「从未被认领过」的
+# run 是例外：它没跑过任何东西，直接原子收尾。这一节钉的就是这条分界线 ——
+# 判据是 started_at IS NULL，不是 status，两边都不许漂移。
+
+
+def _force_run(run_id, set_sql):
+    """把 run 行改成想要的样子，模拟 worker 认领/收尾后的状态"""
+    with db.pool().connection() as conn:
+        conn.execute("UPDATE runs SET " + set_sql + " WHERE id = %s", (run_id,))
+        conn.commit()
+
+
+# ① 排队且从未认领：直接收尾，不需要 worker。
+#    以前这条路把 run 置成 canceling，然后永远没人收尾（claimRun 只认 queued、
+#    reaper 只扫有租约的行、清理器只清终态）—— 界面上就是「取消中」挂死
+ok("★ 没认领过的排队 run 直接取消收尾",
+   runstore.request_cancel(rid, "alice@agora.io")["status"], "canceled")
+got = runstore.get_run(rid, "alice@agora.io")
+ok("收尾后是终态 canceled", got["status"], "canceled")
+ok("收尾要写 finishedAt（清理器按它删行）", got["finishedAt"] is not None, True)
+ok("取消不是失败，error 必须是空", got["error"], None)
+ok("取消时间戳带出来了", got["cancelRequestedAt"] is not None, True)
+evs = [e["type"] for e in runstore.events_since(rid, 0, "alice@agora.io")]
+ok("★ 事件流有请求也有收尾（回放不该出现「没见它结束却终态了」的 run）",
+   evs[-2:], ["run.cancel_requested", "run.finished"])
+
+# ② 已终态的再取消：alreadyFinished，且不许盖 cancel_requested_at ——
+#    取消赶在结束之后到就是没取消成，不能把一次 success 涂改成「被取消过」
+r_done = runstore.create_run(mine, inputs={})["runId"]
+_force_run(r_done, "status = 'success', finished_at = now()")
+got = runstore.request_cancel(r_done, "alice@agora.io")
+ok("★ 已结束的取消只报 alreadyFinished",
+   (got["status"], got.get("alreadyFinished")), ("success", True))
+ok("★ 结束后的取消不留时间戳", runstore.get_run(r_done)["cancelRequestedAt"], None)
+
+# ③ 在跑的：只表达意图，status 不动 —— worker 要先撤平台任务才能收尾
+r_running = runstore.create_run(mine, inputs={})["runId"]
+_force_run(r_running, "status = 'running', started_at = now()")
+ok("★ 在跑的取消返回 canceling",
+   runstore.request_cancel(r_running, "alice@agora.io")["status"], "canceling")
+got = runstore.get_run(r_running, "alice@agora.io")
+ok("★ status 有意保持 running（取消是过程）", got["status"], "running")
+ok("取消意图落在 cancelRequestedAt 上", got["cancelRequestedAt"] is not None, True)
+ok("列表行同样带取消时间戳",
+   next(r["cancelRequestedAt"] for r in runstore.list_runs(mine, viewer="alice@agora.io")
+        if r["id"] == r_running) is not None, True)
+
+# ④ 排队但跑过（wakeDeferred 把等结果的 run 交回队列时就是这个形态）：
+#    **不许**直接收尾 —— 它可能还持着平台 handle，越过 worker 就永远没人撤了
+r_requeued = runstore.create_run(mine, inputs={})["runId"]
+_force_run(r_requeued, "status = 'queued', started_at = now()")
+ok("★★ 跑过又回队列的不许直接判终态",
+   runstore.request_cancel(r_requeued, "alice@agora.io")["status"], "canceling")
+ok("★★ 它仍在队列里等 worker 收尾", runstore.get_run(r_requeued)["status"], "queued")
+
 # ---------------------------------------------------------------- 手动运行 = 调试 = 跑草稿
 #
 # 在此之前手动运行跑的是**已发布版本**：改完图点运行结果没变；而流程从未发布时

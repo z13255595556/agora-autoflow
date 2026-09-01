@@ -143,6 +143,10 @@ def _run_json(r: Dict[str, Any]) -> Dict[str, Any]:
         "finishedAt": r["finished_at"].isoformat() if r.get("finished_at") else None,
         "error": r.get("error"),
         "attempt": r.get("attempt", 0),
+        # running 的 run 被请求取消后 status **有意**保持 running（取消是过程
+        # 不是瞬间，见 request_cancel）。「取消中」要靠这个字段推导 ——
+        # 不带的话前端点了停止界面纹丝不动，看起来就是按钮坏了
+        "cancelRequestedAt": r["cancel_requested_at"].isoformat() if r.get("cancel_requested_at") else None,
     }
 
 
@@ -252,30 +256,63 @@ def events_since(run_id: str, from_seq: int = 0, viewer: Optional[str] = flowsto
 
 
 def request_cancel(run_id: str, viewer: Optional[str] = flowstore.ANY) -> Dict[str, Any]:
-    """请求取消。**不直接改成 canceled** —— 正在跑的节点要先撤掉。
+    """请求取消。**在跑的不直接改成 canceled** —— 正在跑的节点要先撤掉。
 
     worker 下一轮 decide 会看到 cancel_requested_at，把在跑的 http-async
     任务 cancel 掉（不撤的话平台那边继续跑完，白烧集群资源），
     然后才收尾。取消是一个过程，不是一个瞬间。
+
+    唯一的例外：**从未被 worker 认领过的 run**（started_at 还是 NULL ——
+    claimRun 认领时才写它）直接原子收尾成 canceled。它一个节点都没跑过、
+    没有要撤的平台任务，走「过程」反而是死路：以前这里把排队的 run 置成
+    canceling，而没有任何角色会认领这个状态 —— claimRun 只认 queued、
+    reaper 只扫租约过期的行（排队的 run 没有租约）、清理器只清终态 ——
+    它会永远挂在「取消中」，且界面上看不出任何异常。
+
+    钉住 started_at IS NULL 这个判据，不要放宽成「所有 queued」：
+    跑到一半被 wakeDeferred 交回队列的 run 也是 queued，但它可能还持着
+    平台 handle —— 越过 worker 收尾，那个任务就永远没人撤了。
     """
     with db.pool().connection() as conn:
         _assert_visible(conn, run_id, viewer)
-        r = _one(conn, "SELECT status FROM runs WHERE id = %s", (run_id,))
-        if not r:
-            raise NotFound(f"运行 {run_id} 不存在")
-        if r["status"] in ("success", "error", "canceled"):
-            return {"status": r["status"], "alreadyFinished": True}
-        conn.execute(
-            "UPDATE runs SET cancel_requested_at = COALESCE(cancel_requested_at, now()),"
-            "  status = CASE WHEN status = 'queued' THEN 'canceling' ELSE status END"
-            " WHERE id = %s",
+        # 单条 UPDATE，CASE 全部读旧值：与 claimRun 的认领靠行锁天然互斥，
+        # 谁先提交谁说了算，输的一方按赢家定下的状态走自己的分支。
+        # WHERE 排除终态 —— 取消赶在结束之后到就是没取消成，
+        # 不能往一条已经 success 的 run 上盖 cancel_requested_at。
+        # CASE 里带上 canceling 是给旧代码写出的存量行自愈用的（再点一次就收尾）
+        r = _one(
+            conn,
+            "UPDATE runs SET"
+            "  cancel_requested_at = COALESCE(cancel_requested_at, now()),"
+            "  status = CASE WHEN status IN ('queued', 'canceling') AND started_at IS NULL"
+            "                THEN 'canceled' ELSE status END,"
+            "  finished_at = CASE WHEN status IN ('queued', 'canceling') AND started_at IS NULL"
+            "                     THEN now() ELSE finished_at END"
+            " WHERE id = %s AND status IN ('queued', 'running', 'canceling')"
+            " RETURNING status",
             (run_id,),
         )
+        if not r:
+            cur = _one(conn, "SELECT status FROM runs WHERE id = %s", (run_id,))
+            if not cur:
+                raise NotFound(f"运行 {run_id} 不存在")
+            return {"status": cur["status"], "alreadyFinished": True}
         conn.execute(
             "INSERT INTO run_events (run_id, seq, type, payload)"
             " VALUES (%s, (SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id=%s),"
             "         'run.cancel_requested', '{}'::jsonb)",
             (run_id, run_id),
         )
+        if r["status"] == "canceled":
+            # 直接收尾的也要有 run.finished —— worker 的 finishRun 收尾时写它
+            # （payload 同形，见 worker/store.ts），事件流回放不该出现一条
+            # 「没见它结束却已终态」的 run。同一事务里第二条 INSERT 的
+            # MAX(seq) 看得见第一条，seq 不会撞
+            conn.execute(
+                "INSERT INTO run_events (run_id, seq, type, payload)"
+                " VALUES (%s, (SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id=%s),"
+                "         'run.finished', %s)",
+                (run_id, run_id, Jsonb({"status": "canceled"})),
+            )
         conn.commit()
-    return {"status": "canceling"}
+    return {"status": "canceled"} if r["status"] == "canceled" else {"status": "canceling"}
