@@ -449,10 +449,13 @@ button { cursor: pointer; padding: 0; }
 .fcard:hover { border-color: var(--border-strong); box-shadow: var(--sh-md); transform: translateY(-2px); }
 /* 菜单展开时整张卡抬到同行/后续行卡片之上 —— 理由见 Home.tsx 的 fcard--menu */
 .fcard--menu { z-index: 60; }
+/* 名字和触发标签分两行。曾经同挤一行：标签「每天 10:30 · 下次 今天 10:30」
+   加上右上角开关+⋯ 的避让，把 1fr 的名字压到只剩两三个字。
+   名字是用户找卡片的唯一线索，让路的只能是标签 */
 .fcard__hit {
   display: grid; width: 100%;
-  grid-template-columns: 34px 1fr auto;
-  grid-template-areas: 'icon name tag' 'foot foot foot';
+  grid-template-columns: 34px 1fr;
+  grid-template-areas: 'icon name' 'icon tag' 'foot foot';
   gap: 4px 10px; align-items: center;
   background: none; border: none; border-radius: var(--r-lg);
   padding: 14px 15px 13px; text-align: left; cursor: pointer;
@@ -468,13 +471,17 @@ button { cursor: pointer; padding: 0; }
   grid-area: name; min-width: 0;
   font-size: 13.5px; font-weight: 600; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 右上角悬着绝对定位的 ⋯，和名字同一行 —— 名字长了会钻到它底下 */
+  margin-right: 22px;
 }
 .fcard__tag {
-  grid-area: tag;
+  grid-area: tag; justify-self: start;
+  /* 也可能溢出（长排程 + 窄卡）。pill 换行会裂成两截，截断掉的是「下次」
+     的具体时刻 —— 排程本体在前面，被裁也不至于误导 */
+  max-width: 100%; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 10.5px; color: var(--text-faint);
   border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px;
-  /* 卡片右上角留给 ⋯，标签往左躲一格 */
-  margin-right: 22px;
 }
 /* 首页的状态条：只存在本地的流程、服务端读失败。
    两件事都不能静默 —— "我的流程不见了" 比多一行提示糟糕得多 */
@@ -524,8 +531,8 @@ button { cursor: pointer; padding: 0; }
 /* 启停开关：挂在 ⋯ 左边。只有会自己动的流程（定时/Webhook 且在服务端）
    才有 —— 见 Home.tsx 的 canPause */
 .fcard__switch { position: absolute; top: 13px; right: 42px; z-index: 1; }
-/* 有开关时右上角占了两件东西，标签的避让宽度跟着加（原来那 22px 只躲 ⋯） */
-.fcard--switch .fcard__tag { margin-right: 60px; }
+/* 有开关时右上角占了两件东西，名字的避让宽度跟着加（22px 只够躲 ⋯） */
+.fcard--switch .fcard__name { margin-right: 60px; }
 .fcard__more {
   width: 24px; height: 24px; display: grid; place-items: center;
   background: none; border: none; border-radius: var(--r-sm);
