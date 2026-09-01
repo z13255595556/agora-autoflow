@@ -92,15 +92,20 @@ export interface RemoteRunOptions {
  * 真正执行它的是 `npm run worker` 那个进程。worker 不在的时候：
  *
  * - 点运行 → 一条永远 queued 的记录，前端一直轮询 → 界面永远「运行中」
- * - 点停止 → 服务端只把它标成 **canceling**（取消是发给 worker 的请求，
- *   不是一个瞬间，见 runstore.request_cancel），没有 worker 去收尾，
- *   于是它永远停在 canceling → 前端把 canceling 归成 running →
- *   **按钮纹丝不动，看起来就是「停止无效」**
+ * - 对**跑起来过**的 run 点停止 → 服务端只记下取消意图（status 保持
+ *   running，取消是发给 worker 的请求，见 runstore.request_cancel），
+ *   没有 worker 去撤平台任务收尾 → **按钮停在「取消中」不动**
+ *
+ * 还没被认领过的 run 点停止**不在此列**：服务端直接原子收尾成 canceled，
+ * 不需要 worker（以前那条路也走 canceling，然后没有任何角色认领它 ——
+ * 永远挂在「取消中」，就是下面 STALL_CANCELING 那句话描述的症状）。
  *
  * 两件事都没有任何报错，本地和线上一模一样地静默。所以卡住必须喊出来，
  * 而且要把话说到"去起 worker"这一步 —— 只说"排队中"等于没说。
  */
 const STALL_QUEUED = '运行已入队，但一直没有 worker 接手 —— 服务端运行全靠 worker，先起一个：npm run worker'
+// canceling 这个 status 如今只有旧代码写出的存量行、或新旧共存的部署缝隙
+// 才会出现，但出现了仍然只有 worker 能收尾 —— 这句话和函数都留着
 const STALL_CANCELING = '取消请求已发出，但没有 worker 去收尾 —— 取消要 worker 执行，先起一个：npm run worker'
 
 /**
@@ -118,6 +123,27 @@ export function stallMessage(status: string, waitedMs: number, stallMs: number):
 }
 
 /**
+ * 运行记录面板显示的状态。服务端**有意**不把在跑的 run 改成 canceling
+ * （取消是过程不是瞬间，见 runstore.request_cancel），「取消中」要靠
+ * cancelRequestedAt 推导 —— 不推导的话点了停止界面纹丝不动。
+ *
+ * 已到终态的即使带着取消时间戳也照终态显示：取消赶在结束之后到，
+ * 就是没取消成 —— 不能把一次 success 画成「已取消」。
+ */
+export function displayRunStatus(run: { status: string; cancelRequestedAt?: string | null }): string {
+  const active = run.status === 'queued' || run.status === 'running'
+  return active && run.cancelRequestedAt ? 'canceling' : run.status
+}
+
+/**
+ * 停止按钮出现在哪些（显示）状态下。canceling 也算 —— 按钮要在场但
+ * disabled：点完就消失的话，用户分不清「停完了」和「按钮忽然没了」。
+ */
+export function isRunActive(status: string): boolean {
+  return status === 'queued' || status === 'running' || status === 'canceling'
+}
+
+/**
  * 发起一次服务端运行并跟到终态。
  *
  * 中止时调 `POST /api/runs/{id}/cancel` —— **不是简单地停止轮询**：
@@ -126,7 +152,10 @@ export function stallMessage(status: string, waitedMs: number, stallMs: number):
 export async function startRemoteRun(opts: RemoteRunOptions): Promise<FlowRun> {
   const { runId } = await api.createRun(opts.flowId, opts.inputs)
 
-  const onAbort = () => { void api.cancelRun(runId) }
+  // 失败在这个调用点吞掉：abort 常发生在组件卸载途中，错误无处展示也无需
+  // 重试。**不能退回 client 层去吞** —— cancelRun 还有运行记录面板在用，
+  // 那边的失败必须能弹出来，否则就是「停止按钮点了没反应」
+  const onAbort = () => { void api.cancelRun(runId).catch(() => {}) }
   // **先补一次显式检查，再挂监听**：createRun 是一次网络往返，而
   // `running` 在它之前就置上了 —— 这段时间里"停止"按钮已经可以点。点下去
   // signal 立刻 abort，但那时 runId 还不存在、监听也还没挂上，而

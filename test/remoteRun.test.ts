@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { stallMessage, toFlowRun } from '../src/lib/remoteRun.ts'
+import { displayRunStatus, isRunActive, stallMessage, toFlowRun } from '../src/lib/remoteRun.ts'
 
 const STALL = 8000
 
@@ -44,4 +44,39 @@ test('★ canceling 在前端算「进行中」—— 它确实还没停下来�
     startedAt: null, finishedAt: null, error: null, attempt: 0, steps: [],
   } as never)
   assert.equal(run.status, 'running')
+})
+
+// ---------------------------------------------------------------- 运行记录面板的可停止判定
+//
+// 服务端**有意**不把在跑的 run 改成 canceling（取消是过程不是瞬间），
+// 「取消中」靠 cancelRequestedAt 推导。这两个函数钉死推导规则和按钮的
+// 出现条件 —— 组件没有渲染测试，这里是唯一的门禁。
+
+test('★ 停止按钮恰好出现在 queued / running / canceling 三态', () => {
+  // canceling 也在场（disabled）：点完就消失的话，
+  // 用户分不清「停完了」和「按钮忽然没了」
+  const want: Record<string, boolean> = {
+    queued: true, running: true, canceling: true,
+    success: false, error: false, canceled: false,
+  }
+  for (const [status, active] of Object.entries(want)) {
+    assert.equal(isRunActive(status), active, status)
+  }
+})
+
+test('★ 活着的 run 带取消时间戳 → 显示「取消中」', () => {
+  assert.equal(displayRunStatus({ status: 'running', cancelRequestedAt: '2026-09-01T00:00:00Z' }), 'canceling')
+  assert.equal(displayRunStatus({ status: 'queued', cancelRequestedAt: '2026-09-01T00:00:00Z' }), 'canceling')
+})
+
+test('没请求取消的照原样显示', () => {
+  assert.equal(displayRunStatus({ status: 'running', cancelRequestedAt: null }), 'running')
+  assert.equal(displayRunStatus({ status: 'queued' }), 'queued')
+  assert.equal(displayRunStatus({ status: 'canceling' }), 'canceling')
+})
+
+test('★ 终态即使带取消时间戳也照终态显示 —— 取消赶在结束之后到就是没取消成，不许把 success 画成已取消', () => {
+  for (const status of ['success', 'error', 'canceled']) {
+    assert.equal(displayRunStatus({ status, cancelRequestedAt: '2026-09-01T00:00:00Z' }), status)
+  }
 })

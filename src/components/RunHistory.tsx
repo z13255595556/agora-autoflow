@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { getRemoteVersion, getRun, listRuns, type RemoteRun, type RemoteStep } from '../lib/client'
+import { cancelRun, getRemoteVersion, getRun, listRuns, type RemoteRun, type RemoteStep } from '../lib/client'
+import { displayRunStatus, isRunActive } from '../lib/remoteRun'
 import type { SavedFlow } from '../lib/library'
 import { formatDate } from '../lib/datefn'
+import { pushToast } from '../lib/toast'
 import Icon from './Icon'
 
 /**
@@ -134,9 +136,68 @@ export default function RunHistory({ flow, initialRunId, onClose }: { flow: Save
     return () => { cancelled = true }
   }, [activeId, flow.id])
 
+  // 有非终态的 run 才每 3 秒刷一遍列表 —— 都结束时这个面板不该在后台打点
+  // （和 SandboxPackages 同一条规则）。「取消中」只有 worker 能推进，没有
+  // 轮询的话点了停止界面永远停在乐观态上，看起来就是按钮坏了
+  useEffect(() => {
+    if (!runs?.some((r) => isRunActive(displayRunStatus(r)))) return
+    let cancelled = false
+    const t = window.setTimeout(() => {
+      listRuns(flow.id)
+        .then((got) => { if (!cancelled) { setRuns(got); setListErr('') } })
+        .catch((err) => { if (!cancelled) setListErr(err instanceof Error ? err.message : String(err)) })
+    }, 3000)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [runs, flow.id])
+
+  // 正在看的这条还活着才刷详情。deps 是 detail 本身 —— setDetail 落地就
+  // 自动排下一轮；切换选中时上面的 effect 会 setDetail(null)，这里随之
+  // 清理，在途响应被 cancelled 挡掉，不会把上一条的详情盖到新选中的行上
+  useEffect(() => {
+    if (!detail || !isRunActive(displayRunStatus(detail))) return
+    let cancelled = false
+    const t = window.setTimeout(() => {
+      getRun(detail.id)
+        .then((got) => { if (!cancelled) setDetail(got) })
+        .catch((err) => { if (!cancelled) setDetailErr(err instanceof Error ? err.message : String(err)) })
+    }, 3000)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [detail])
+
+  // 停止一次运行。乐观置上取消意图：按钮必须立刻改口「取消中…」——
+  // 等一个网络来回才动的按钮会被再按一次（Home.togglePaused 同款考量）
+  const stop = async (run: RemoteRun) => {
+    if (!confirm('停止这次运行？已经跑完的步骤保留，正在平台上跑的查询会被撤销。')) return
+    const patch = (p: Partial<RemoteRun>) => {
+      setDetail((d) => (d && d.id === run.id ? { ...d, ...p } : d))
+      setRuns((l) => l?.map((r) => (r.id === run.id ? { ...r, ...p } : r)) ?? l)
+    }
+    patch({ cancelRequestedAt: new Date().toISOString() })
+    try {
+      const r = await cancelRun(run.id)
+      if (r.alreadyFinished) {
+        // 取消赶在结束之后到 —— 按服务端的终态显示，不许画成「已取消」
+        patch({ status: r.status, cancelRequestedAt: run.cancelRequestedAt ?? null })
+        pushToast({ tone: 'warn', text: '这次运行已经结束，不用停了' })
+      } else if (r.status === 'canceled') {
+        // 还没被 worker 认领过的，服务端直接收尾，不用等
+        patch({ status: 'canceled' })
+        pushToast({ tone: 'ok', text: '已取消 —— 这次运行还没开始跑，直接收尾' })
+      } else {
+        pushToast({ tone: 'ok', text: '取消请求已发出，worker 撤完平台任务就会收尾' })
+      }
+    } catch (err) {
+      // 回滚乐观态 —— 界面不许和服务端对不上
+      patch({ cancelRequestedAt: run.cancelRequestedAt ?? null })
+      pushToast({ tone: 'error', text: `停止失败：${err instanceof Error ? err.message : String(err)}` })
+    }
+  }
+
   // 只存在于这台浏览器的流程没有服务端运行记录，说清楚而不是给一个空列表 ——
   // 空列表看着像"没跑过"，实际是"根本不在这儿存"
   const localOnly = flow.origin === 'local'
+  // 详情徽章和停止按钮共用的显示状态（「取消中」是推导出来的，见 displayRunStatus）
+  const detailStatus = detail ? displayRunStatus(detail) : ''
 
   return (
     <div className="modal__mask" onClick={onClose}>
@@ -162,7 +223,8 @@ export default function RunHistory({ flow, initialRunId, onClose }: { flow: Save
               {listErr && <div className="errors">读不到运行记录：{listErr}</div>}
               {runs?.length === 0 && !listErr && <div className="empty">这条流程还没跑过。</div>}
               {runs?.map((r) => {
-                const s = RUN_STATUS[r.status] ?? { icon: '?', text: r.status, cls: 'queued' }
+                const d = displayRunStatus(r)
+                const s = RUN_STATUS[d] ?? { icon: '?', text: d, cls: 'queued' }
                 return (
                   <button
                     key={r.id}
@@ -190,9 +252,21 @@ export default function RunHistory({ flow, initialRunId, onClose }: { flow: Save
               {detail && (
                 <>
                   <div className="rhist__sum">
-                    <span className={`rhist__badge rhist__badge--${RUN_STATUS[detail.status]?.cls ?? 'queued'}`}>
-                      {RUN_STATUS[detail.status]?.text ?? detail.status}
+                    <span className={`rhist__badge rhist__badge--${RUN_STATUS[detailStatus]?.cls ?? 'queued'}`}>
+                      {RUN_STATUS[detailStatus]?.text ?? detailStatus}
                     </span>
+                    {isRunActive(detailStatus) && (
+                      <button
+                        className="btn btn--stop"
+                        disabled={detailStatus === 'canceling'}
+                        onClick={() => stop(detail)}
+                        title={detailStatus === 'canceling'
+                          ? '取消请求已发出，等 worker 收尾。worker 没在跑的话它不会自己结束'
+                          : '停止这次运行，并撤销平台上还在跑的任务'}
+                      >
+                        <Icon name="stop" size={12} /> {detailStatus === 'canceling' ? '取消中…' : '停止'}
+                      </button>
+                    )}
                     <span>
                       {TRIGGER_TEXT[detail.triggerKind] ?? detail.triggerKind}触发 ·
                       跑的是 {versionText(detail.flowVersion)}

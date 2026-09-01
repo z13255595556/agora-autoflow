@@ -598,6 +598,12 @@ export interface RemoteRun {
   finishedAt: string | null
   error: string | null
   attempt: number
+  /**
+   * 在跑的 run 被请求取消后 status **有意**保持 running（取消是过程不是
+   * 瞬间，worker 要先撤平台任务）。「取消中」靠这个字段推导 ——
+   * 见 remoteRun.displayRunStatus
+   */
+  cancelRequestedAt?: string | null
   steps?: RemoteStep[]
 }
 
@@ -627,8 +633,18 @@ export function listRuns(flowId: string, limit = 50) {
   ).then((r) => r.runs)
 }
 
-/** 中止。**不是停止轮询** —— 平台上的任务要真的撤掉，不撤会继续跑完白烧资源 */
+/**
+ * 中止。**不是停止轮询** —— 平台上的任务要真的撤掉，不撤会继续跑完白烧资源。
+ *
+ * 失败正常抛，**不在这一层吞** —— 运行记录面板的停止按钮靠错误弹提示，
+ * 在这里吞掉的话失败长得和成功一模一样，就是「按钮点了没反应」。
+ * 编辑器的 abort 路径确实无处安放错误，但那是那个调用点自己的事（它自己 catch）。
+ *
+ * status 为 canceled 表示还没开始跑、服务端已直接收尾；canceling 表示
+ * 取消意图已记下，等 worker 撤完平台任务收尾。
+ */
 export function cancelRun(runId: string) {
-  return req<{ status: string }>(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
-    .catch(() => ({ status: 'unknown' }))
+  return req<{ status: string; alreadyFinished?: boolean }>(
+    `/api/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' },
+  )
 }
